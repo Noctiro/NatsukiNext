@@ -14,7 +14,7 @@ const plugin: BotPlugin = {
             description: '树洞',
             async handler(ctx: CommandContext) {
                 const text = md(await getTextFromAPI());
-                await ctx.message.answerText(text);
+                await ctx.message.replyText(text);
             }
         }
     ],
@@ -27,7 +27,7 @@ const plugin: BotPlugin = {
             },
             handler: async (ctx: MessageEventContext) => {
                 const text = md(await getTextFromAPI());
-                await ctx.message.replyText(text);
+                await ctx.message.answerText(text);
             }
         } as PluginEvent<MessageEventContext>
     ]
