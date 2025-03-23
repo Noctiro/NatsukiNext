@@ -1,6 +1,7 @@
-import { SqliteStorage, TelegramClient } from "@mtcute/bun";
+import { md, SqliteStorage, TelegramClient } from "@mtcute/bun";
 import { log } from './log';
 import { Features } from './features';
+import { Dispatcher } from "@mtcute/dispatcher";
 
 export const enableChats = process.env.ENABLE_CHATS?.split(',').map(Number) || [];
 export const managerIds = process.env.MANAGER_IDS?.split(',').map(Number) || [];
@@ -32,7 +33,7 @@ log.info(`Login in ${self.username} (${self.id})`, { remote: true });
 // Dispatcher.for(telegram).onNewMessage(
 //     async (ctx) => {
 //         const test = "test";
-//         ctx.replyText(md`**中文测试** **English Test**`)
+//         ctx.replyText(md`**${test}**\n\n**English Test**`)
 //     }
 // )
 

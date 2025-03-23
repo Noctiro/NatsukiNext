@@ -35,10 +35,10 @@ const INVALID_CHARS_REGEX = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF
 const NORMALIZE_SPACE_REGEX = /[\t\n\r ]+/g;
 const SMART_QUOTES_REGEX = /[\u2018\u2019\u201C\u201D]/g;
 const CONTROL_CHARS_REGEX = /[\x00-\x1F\x7F]/g;
-const TAG_CONTENT_REGEX = (tagName: string, isAll = false) => 
-    new RegExp(isAll 
-        ? `<${tagName}(?:\\s+[^>]*)?>([\\s\\S]*?)<\\/${tagName}>` 
-        : `<${tagName}(?:\\s+[^>]*)?>\\s*((?:<!\\[CDATA\\[)?.*?(?:]]>)?)\\s*<\\/${tagName}>|<${tagName}(?:\\s+[^>]*)?\\/>`, 
+const TAG_CONTENT_REGEX = (tagName: string, isAll = false) =>
+    new RegExp(isAll
+        ? `<${tagName}(?:\\s+[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`
+        : `<${tagName}(?:\\s+[^>]*)?>\\s*((?:<!\\[CDATA\\[)?.*?(?:]]>)?)\\s*<\\/${tagName}>|<${tagName}(?:\\s+[^>]*)?\\/>`,
         isAll ? "gis" : "is");
 const ATTRIBUTE_REGEX = (tag: string, attr: string) => new RegExp(`<${tag}[^>]+${attr}=["']([^"']+)["']`, "i");
 const ATTRIBUTE_REGEX_GLOBAL = (tag: string, attr: string) => new RegExp(`<${tag}[^>]+${attr}=["']([^"']+)["']`, "gi");
@@ -554,7 +554,7 @@ function extractTagContent(content: string, tagName: string): string {
 
 // 优化后的 extractAllTags 函数 - 不使用缓存
 function extractAllTags(content: string, tagName: string): string[] {
-    const regex = TAG_CONTENT_REGEX(tagName, true); 
+    const regex = TAG_CONTENT_REGEX(tagName, true);
     return [...content.matchAll(regex)]
         .map(m => decodeXMLEntities((m[1] || '').trim()))
         .filter(Boolean);
@@ -667,12 +667,34 @@ function parseDate(dateStr?: string): Date | undefined {
 async function fetchRSS(url: string, retries = 3): Promise<RSSFeed> {
     for (let i = 0; i < retries; i++) {
         try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return parseRSS(await response.text());
+            // Bun 环境 - 使用 Bun 特有的选项
+            const bunOptions: BunFetchRequestInit = {
+                signal: AbortSignal.timeout(15000), // 增加超时时间
+            };
+            const response = await fetch(url, bunOptions);
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const text = await response.text();
+            if (!text || text.trim() === '') {
+                throw new Error("Empty response body");
+            }
+
+            return parseRSS(text);
         } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error(`尝试 ${i + 1}/${retries} 失败:`, errorMessage);
+
+            // 处理特定错误类型
+            if (errorMessage.includes('certificate') && process && process.env) {
+                // 在 Node.js 环境下，提示用户设置环境变量
+                console.warn('遇到证书错误。如果您信任该网站，可以尝试设置 NODE_TLS_REJECT_UNAUTHORIZED=0 环境变量');
+            }
+
             if (i === retries - 1) throw error;
-            await Bun.sleep(1000 * (i + 1));
+            await (typeof Bun !== 'undefined' ? Bun.sleep(1000 * (i + 1)) : new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))));
         }
     }
     throw new Error("Max retries reached");

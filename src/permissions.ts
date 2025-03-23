@@ -150,7 +150,7 @@ export class PermissionManager {
         }
 
         const existing = this.permissions.get(permission.name);
-        
+
         // Don't allow changing isSystem flag
         if (existing?.isSystem && permission.isSystem === false) {
             log.warn(`Cannot change isSystem flag for system permission: ${permission.name}`);
@@ -273,25 +273,25 @@ export class PermissionManager {
     hasPermission(userId: number, permissionName: string): boolean {
         // 管理员拥有所有权限
         if (managerIds.includes(userId)) return true;
-        
+
         const permission = this.permissions.get(permissionName);
         if (!permission) return false;
-        
+
         // 检查用户是否直接拥有权限
         if (permission.allowedUsers?.includes(userId)) return true;
-        
+
         // 检查用户通过权限组获得的权限
         for (const group of this.groups.values()) {
             if (group.members.includes(userId) && group.permissions.includes(permissionName)) {
                 return true;
             }
         }
-        
+
         // 检查父权限
         if (permission.parent) {
             return this.hasPermission(userId, permission.parent);
         }
-        
+
         return false;
     }
 
@@ -305,16 +305,16 @@ export class PermissionManager {
         if (managerIds.includes(userId)) {
             return Array.from(this.permissions.keys());
         }
-        
+
         const userPermissions: Set<string> = new Set();
-        
+
         // 直接分配给用户的权限
         for (const [name, permission] of this.permissions.entries()) {
             if (permission.allowedUsers?.includes(userId)) {
                 userPermissions.add(name);
             }
         }
-        
+
         // 通过权限组分配的权限
         for (const group of this.groups.values()) {
             if (group.members.includes(userId)) {
@@ -323,11 +323,11 @@ export class PermissionManager {
                 }
             }
         }
-        
+
         // 处理继承权限（通过父权限）
         const result = Array.from(userPermissions);
         const expandedPermissions: Set<string> = new Set(result);
-        
+
         // 迭代检查是否有权限继承关系需要添加
         let changed = true;
         while (changed) {
@@ -339,7 +339,7 @@ export class PermissionManager {
                 }
             }
         }
-        
+
         return Array.from(expandedPermissions);
     }
 
@@ -363,15 +363,15 @@ export class PermissionManager {
     grantPermission(userId: number, permissionName: string): boolean {
         const permission = this.permissions.get(permissionName);
         if (!permission) return false;
-        
+
         if (!permission.allowedUsers) {
             permission.allowedUsers = [];
         }
-        
+
         if (!permission.allowedUsers.includes(userId)) {
             permission.allowedUsers.push(userId);
         }
-        
+
         return true;
     }
 
@@ -384,10 +384,10 @@ export class PermissionManager {
     revokePermission(userId: number, permissionName: string): boolean {
         const permission = this.permissions.get(permissionName);
         if (!permission || !permission.allowedUsers) return false;
-        
+
         const index = permission.allowedUsers.indexOf(userId);
         if (index === -1) return false;
-        
+
         permission.allowedUsers.splice(index, 1);
         return true;
     }
@@ -401,11 +401,11 @@ export class PermissionManager {
     addUserToGroup(userId: number, groupName: string): boolean {
         const group = this.groups.get(groupName);
         if (!group) return false;
-        
+
         if (!group.members.includes(userId)) {
             group.members.push(userId);
         }
-        
+
         return true;
     }
 
@@ -418,10 +418,10 @@ export class PermissionManager {
     removeUserFromGroup(userId: number, groupName: string): boolean {
         const group = this.groups.get(groupName);
         if (!group) return false;
-        
+
         const index = group.members.indexOf(userId);
         if (index === -1) return false;
-        
+
         group.members.splice(index, 1);
         return true;
     }
@@ -435,13 +435,13 @@ export class PermissionManager {
     addPermissionToGroup(permissionName: string, groupName: string): boolean {
         const group = this.groups.get(groupName);
         if (!group) return false;
-        
+
         if (!this.permissions.has(permissionName)) return false;
-        
+
         if (!group.permissions.includes(permissionName)) {
             group.permissions.push(permissionName);
         }
-        
+
         return true;
     }
 
@@ -454,10 +454,10 @@ export class PermissionManager {
     removePermissionFromGroup(permissionName: string, groupName: string): boolean {
         const group = this.groups.get(groupName);
         if (!group) return false;
-        
+
         const index = group.permissions.indexOf(permissionName);
         if (index === -1) return false;
-        
+
         group.permissions.splice(index, 1);
         return true;
     }
@@ -500,7 +500,7 @@ export class PermissionManager {
 
             const content = await fs.readFile(this.configPath, 'utf-8');
             const config = JSON.parse(content);
-            
+
             // 加载权限（不会覆盖系统权限）
             if (config.permissions && Array.isArray(config.permissions)) {
                 for (const permission of config.permissions) {
@@ -510,14 +510,14 @@ export class PermissionManager {
                     }
                 }
             }
-            
+
             // 加载权限组
             if (config.groups && Array.isArray(config.groups)) {
                 for (const group of config.groups) {
                     this.groups.set(group.name, group);
                 }
             }
-            
+
             log.info('Permission config loaded');
             return true;
         } catch (err) {

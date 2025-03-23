@@ -126,10 +126,10 @@ const AI_COMMENT_PROMPT = `你是一位幽默风趣的新闻评论者，擅长�
 
 // 垃圾内容关键词
 const SPAM_KEYWORDS = [
-    '广告', '推广', 'AD', '赞助', '美元', 
-    '售价', '续航', '价格', '折扣', '优惠', 
-    '促销', '买一送一', '特价', '秒杀', '清仓', 
-    '甩卖', '团购', '砍价', '返现', '红包', 
+    '广告', '推广', 'AD', '赞助', '美元',
+    '售价', '续航', '价格', '折扣', '优惠',
+    '促销', '买一送一', '特价', '秒杀', '清仓',
+    '甩卖', '团购', '砍价', '返现', '红包',
     '抽奖', '中奖', '中奖率'
 ] as const;
 
@@ -201,10 +201,10 @@ class NewsCache {
     wasSent(newsId: string): boolean {
         const timestamp = NewsCache.sent.get(newsId);
         if (!timestamp) return false;
-        
+
         // 检查缓存是否过期
         if (Date.now() - timestamp < NEWS_CONFIG.CACHE_CLEANUP_INTERVAL) return true;
-        
+
         // 如果过期则删除缓存条目
         NewsCache.sent.delete(newsId);
         return false;
@@ -269,7 +269,7 @@ abstract class NewsSelector {
         // 计算新闻年龄（毫秒）
         const pubDate = new Date(item.pubDate || '').getTime();
         const age = Date.now() - pubDate;
-        
+
         // 检查是否在有效期内且内容长度符合要求
         return (
             age <= NEWS_CONFIG.MAX_AGE_HOURS * 3600 * 1000 &&
@@ -293,7 +293,7 @@ abstract class NewsSelector {
             ...(item.source ? { sourceInfo: item.source } : {})
         } as NewsItem;
     }
-    
+
     /**
      * 从源中获取新闻
      * @param source - RSS源URL
@@ -307,7 +307,7 @@ abstract class NewsSelector {
         try {
             const feed = await fetchRSS(source);
             const sourceName = feed.channel.title || source.split('/').pop() || '';
-            
+
             return feed.channel.items
                 .filter(item => this.isNewsValid(item))
                 .map(item => this.convertToNewsItem(item, source, sourceName));
@@ -333,18 +333,18 @@ class AiNewsSelector extends NewsSelector {
     async selectNews(category: keyof typeof RSS_SOURCES, sources: string[]): Promise<NewsItem | null> {
         const config = RSS_SOURCES[category];
         if (!config) return null;
-        
+
         const maxItemsPerCategory = Math.floor(this.MAX_ITEMS_PER_BATCH / config.priority);
-        
+
         // 并行获取所有源的新闻
         const newsPromises = sources.map(source => this.fetchNewsWithLimit(source, maxItemsPerCategory, category));
         const allNewsArrays = await Promise.all(newsPromises);
-        
+
         // 合并并过滤新闻
         const allNews = this.mergeAndFilterNews(allNewsArrays.flat());
-        
+
         if (allNews.length === 0) return null;
-        
+
         return await this.selectBestNewsWithAI(allNews);
     }
 
@@ -363,9 +363,9 @@ class AiNewsSelector extends NewsSelector {
     ): Promise<NewsItem[]> {
         const news = await this.fetchNewsFromSource(source, category);
         const config = RSS_SOURCES[category];
-        
+
         if (!config) return [];
-        
+
         // 根据源的数量平均分配条目数量
         const itemsPerSource = Math.ceil(maxItems / config.sources.length);
         return news.slice(0, itemsPerSource);
@@ -379,14 +379,14 @@ class AiNewsSelector extends NewsSelector {
      */
     private mergeAndFilterNews(news: NewsItem[]): NewsItem[] {
         const uniqueNews = new Map<string, NewsItem>();
-        
+
         for (const item of news) {
             const key = item.title.toLowerCase();
             if (!uniqueNews.has(key) && !this.cache.wasSent(item.title)) {
                 uniqueNews.set(key, item);
             }
         }
-        
+
         return Array.from(uniqueNews.values());
     }
 
@@ -470,14 +470,14 @@ class AlgorithmNewsSelector extends NewsSelector {
     async selectNews(category: keyof typeof RSS_SOURCES, sources: string[]): Promise<NewsItem | null> {
         const config = RSS_SOURCES[category];
         if (!config) return null;
-        
+
         // 并行获取并评分所有源的新闻
         const newsPromises = sources.map(source => this.fetchAndScoreNews(source, config.priority, category));
         const newsArrays = await Promise.all(newsPromises);
-        
+
         // 合并所有新闻
         const allNews = newsArrays.flat();
-        
+
         // 根据综合得分排序并返回最佳新闻
         return this.selectBestNews(allNews);
     }
@@ -491,12 +491,12 @@ class AlgorithmNewsSelector extends NewsSelector {
      * @private
      */
     private async fetchAndScoreNews(
-        source: string, 
+        source: string,
         priority: number,
         category: keyof typeof RSS_SOURCES
     ): Promise<NewsItem[]> {
         const news = await this.fetchNewsFromSource(source, category);
-        
+
         // 为每个新闻项评分
         return news.map(item => ({
             ...item,
@@ -521,7 +521,7 @@ class AlgorithmNewsSelector extends NewsSelector {
 
         // 计算加权总分
         const totalScore = Object.entries(scores).reduce(
-            (total, [key, score]) => 
+            (total, [key, score]) =>
                 total + score * AlgorithmNewsSelector.SCORE_WEIGHTS[key as keyof typeof AlgorithmNewsSelector.SCORE_WEIGHTS],
             0
         );
@@ -578,14 +578,14 @@ class AlgorithmNewsSelector extends NewsSelector {
         const now = Date.now();
         const publishTime = new Date(item.pubDate || '').getTime();
         const age = now - publishTime;
-        
-        const { 
-            RECENT_HOURS, 
-            WORK_HOURS_START, 
-            WORK_HOURS_END, 
-            RECENT_BONUS, 
-            WORK_HOURS_BONUS, 
-            SIMILAR_TIME_PENALTY 
+
+        const {
+            RECENT_HOURS,
+            WORK_HOURS_START,
+            WORK_HOURS_END,
+            RECENT_BONUS,
+            WORK_HOURS_BONUS,
+            SIMILAR_TIME_PENALTY
         } = AlgorithmNewsSelector.TIMELINESS_CONFIG;
 
         // 基础时效性分数 - 年龄越小分数越高
@@ -619,9 +619,9 @@ class AlgorithmNewsSelector extends NewsSelector {
      */
     private calculateQualityScore(item: NewsItem): number {
         if (!item.content) return 0;
-        
+
         const content = item.content + (item.description || '');
-        
+
         // 计算各项指标得分
         const formatScore = this.calculateFormatScore(content);
         const richContentScore = this.calculateRichContentScore(content);
@@ -650,9 +650,9 @@ class AlgorithmNewsSelector extends NewsSelector {
         const hasBlockquote = content.includes('<blockquote');
         const hasLists = content.includes('<ul') || content.includes('<ol');
 
-        return (hasTable ? 0.1 : 0) + 
-               (hasBlockquote ? 0.1 : 0) + 
-               (hasLists ? 0.1 : 0);
+        return (hasTable ? 0.1 : 0) +
+            (hasBlockquote ? 0.1 : 0) +
+            (hasLists ? 0.1 : 0);
     }
 
     /**
@@ -667,9 +667,9 @@ class AlgorithmNewsSelector extends NewsSelector {
         const hasNumbers = /\d+([,.]\d+)?%?/.test(content);
         const hasQuotes = /"[^"]{10,}"/.test(content);
 
-        return (hasLinks ? 0.1 : 0) + 
-               (hasNumbers ? 0.1 : 0) + 
-               (hasQuotes ? 0.1 : 0);
+        return (hasLinks ? 0.1 : 0) +
+            (hasNumbers ? 0.1 : 0) +
+            (hasQuotes ? 0.1 : 0);
     }
 
     /**
@@ -686,61 +686,12 @@ class AlgorithmNewsSelector extends NewsSelector {
 }
 
 /**
- * 新闻消息发送类 - 处理不同格式的新闻消息发送
- */
-class NewsMessageSender {
-    /**
-     * 发送新闻消息
-     * @param ctx - 命令上下文
-     * @param news - 新闻项
-     * @param formattedContent - 格式化的内容
-     */
-    async sendNews(
-        ctx: CommandContext,
-        news: NewsItem,
-        formattedContent: { text: TextWithEntities; images: string[] }
-    ): Promise<void> {
-        const { text, images } = formattedContent;
-
-        // 如果没有图片，直接发送文本
-        if (!images.length) {
-            await ctx.message.replyText(text);
-            return;
-        }
-
-        // 如果只有一张图片，发送带图片的消息
-        const firstImage = images[0];
-        if (images.length === 1 && firstImage) {
-            await ctx.message.replyMedia(firstImage, { caption: text });
-            return;
-        }
-
-        // 如果有多张图片，创建媒体组
-        const mediaGroup = images
-            .filter(Boolean)
-            .map((img, index) => ({
-                type: 'photo' as const,
-                file: img,
-                caption: index === 0 ? text : undefined
-            }));
-
-        // 发送媒体组或文本
-        if (mediaGroup.length) {
-            await ctx.message.replyMediaGroup(mediaGroup);
-        } else {
-            await ctx.message.replyText(text);
-        }
-    }
-}
-
-/**
  * 新闻服务主控制器 - 协调各组件完成新闻获取和发送
  */
 class NewsService {
     private readonly cache = new NewsCache();
     private readonly lastUpdate = new Map<string, number>();
     private readonly categoryRotation: Array<keyof typeof RSS_SOURCES>;
-    private readonly messageSender = new NewsMessageSender();
     private readonly aiSelector: AiNewsSelector;
     private readonly algorithmSelector: AlgorithmNewsSelector;
     private readonly cleanupTimer: ReturnType<typeof setInterval>;
@@ -748,12 +699,12 @@ class NewsService {
     constructor() {
         // 初始化分类轮转队列
         this.categoryRotation = this.initCategoryRotation();
-        
+
         // 初始化选择器
         const deps = { cache: this.cache, lastUpdate: this.lastUpdate };
         this.aiSelector = new AiNewsSelector(deps);
         this.algorithmSelector = new AlgorithmNewsSelector(deps);
-        
+
         // 启动缓存清理定时器
         this.cleanupTimer = this.startCacheCleanup();
     }
@@ -778,11 +729,11 @@ class NewsService {
      */
     async fetchAndSendNews(ctx: CommandContext): Promise<void> {
         const waitMsg = await ctx.message.replyText("📰 正在获取新闻...");
-        
+
         try {
             // 获取下一个轮转分类的新闻
             const { category, news } = await this.getNextRotationNews();
-            
+
             if (!news) {
                 await ctx.client.editMessage({
                     message: waitMsg,
@@ -793,10 +744,40 @@ class NewsService {
 
             // 处理新闻内容
             const formattedContent = await this.processNewsContent(news);
-            
+
             // 发送新闻
-            await this.messageSender.sendNews(ctx, news, formattedContent);
-            
+            const { text, images } = formattedContent;
+            log.info(`Sending news: ${text}`);
+
+            // 如果没有图片，直接发送文本
+            if (!images.length) {
+                await ctx.message.replyText(text);
+                return;
+            }
+
+            // 如果只有一张图片，发送带图片的消息
+            const firstImage = images[0];
+            if (images.length === 1 && firstImage) {
+                await ctx.message.replyMedia(firstImage, { caption: text });
+                return;
+            }
+
+            // 如果有多张图片，创建媒体组
+            const mediaGroup = images
+                .filter(Boolean)
+                .map((img, index) => ({
+                    type: 'photo' as const,
+                    file: img,
+                    caption: index === 0 ? text : undefined
+                }));
+
+            // 发送媒体组或文本
+            if (mediaGroup.length) {
+                await ctx.message.replyMediaGroup(mediaGroup);
+            } else {
+                await ctx.message.replyText(text);
+            }
+
             // 删除等待消息
             await ctx.client.deleteMessagesById(ctx.message.chat.id, [waitMsg.id]);
         } catch (error) {
@@ -815,7 +796,7 @@ class NewsService {
      */
     async getServiceStatus(): Promise<ServiceStatus> {
         const { size, sentItems } = this.cache.getCacheInfo();
-        
+
         // 创建基本状态对象
         const status: ServiceStatus = {
             categories: {},
@@ -859,7 +840,7 @@ class NewsService {
 
         // 获取AI评论
         const aiComment = await this.getAiComment(news);
-        
+
         // 提取图片
         const images = this.extractImages(news.contentEncoded || '');
 
@@ -946,7 +927,7 @@ class NewsService {
      */
     private extractImages(content: string): string[] {
         if (!content) return [];
-        
+
         const imgRegex = /<img.*?src=['"](.*?)['"]/gi;
         return Array.from(content.matchAll(imgRegex), match => match[1])
             .filter((url): url is string => !!url);
@@ -960,7 +941,7 @@ class NewsService {
         return setInterval(() => {
             // 清理缓存
             this.cache.clear();
-            
+
             // 清理过期的最后更新时间记录
             const now = Date.now();
             for (const [source, time] of this.lastUpdate.entries()) {
@@ -977,7 +958,7 @@ class NewsService {
      */
     private initCategoryRotation(): Array<keyof typeof RSS_SOURCES> {
         const rotation: Array<keyof typeof RSS_SOURCES> = [];
-        
+
         // 根据优先级设置分类出现频率
         Object.entries(RSS_SOURCES).forEach(([category, config]) => {
             const frequency = Math.ceil(4 / config.priority);
@@ -1008,9 +989,9 @@ class NewsService {
     async getNews(category: keyof typeof RSS_SOURCES): Promise<NewsItem | null> {
         const config = RSS_SOURCES[category];
         if (!config) return null;
-        
+
         const sources = config.sources;
-        
+
         // 首先尝试使用AI选择器进行智能筛选
         let selectedNews = await this.aiSelector.selectNews(category, sources);
 
@@ -1035,10 +1016,10 @@ class NewsService {
     private async updateNewsTracking(news: NewsItem): Promise<void> {
         // 使用hash函数处理标题以生成唯一ID
         const newsId = await Bun.password.hash(news.title);
-        
+
         // 标记新闻为已发送
         this.cache.markSent(newsId);
-        
+
         // 更新源的最后更新时间
         this.lastUpdate.set(news.source, Date.now());
     }
@@ -1047,16 +1028,16 @@ class NewsService {
      * 获取下一个待发送的新闻
      * @returns 分类和对应的新闻项
      */
-    async getNextRotationNews(): Promise<{category: keyof typeof RSS_SOURCES, news: NewsItem | null}> {
+    async getNextRotationNews(): Promise<{ category: keyof typeof RSS_SOURCES, news: NewsItem | null }> {
         // 获取当前轮转队列中的第一个分类
         const currentCategory = this.categoryRotation[0];
         if (!currentCategory) {
             throw new Error('新闻分类轮转队列为空');
         }
-        
+
         // 将当前分类移到队列末尾，实现轮转
         this.rotateCategory();
-        
+
         // 获取该分类的新闻
         const news = await this.getNews(currentCategory);
         return { category: currentCategory, news };
@@ -1090,10 +1071,10 @@ class NewsService {
         try {
             // 记录开始时间
             const startTime = Date.now();
-            
+
             // 获取RSS源数据
             const feed = await this.fetchFeed(url, 1 as RetryCount);
-            
+
             // 计算响应时间
             const responseTime = Date.now() - startTime;
 
@@ -1136,10 +1117,10 @@ class NewsService {
         try {
             // 获取新数据
             const feed = await fetchRSS(url);
-            
+
             // 更新缓存
             this.cache.set(url, feed);
-            
+
             return feed;
         } catch (error) {
             // 重试机制
@@ -1162,7 +1143,7 @@ const plugin: BotPlugin = {
     name: 'rss',
     description: '多源RSS新闻订阅服务',
     version: '1.0.0',
-    
+
     commands: [
         {
             name: 'news',
@@ -1184,7 +1165,7 @@ const plugin: BotPlugin = {
                     await ctx.message.replyText("RSS服务未初始化");
                     return;
                 }
-                
+
                 const waitMsg = await ctx.message.replyText("⚙️ 正在检查RSS状态...");
                 try {
                     const status = await serviceInstance.getServiceStatus();

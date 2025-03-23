@@ -91,7 +91,7 @@ const HELP_TEXT = md`
 \`/wiki -r\`
 
 **支持语言：**
-${Object.entries(WIKI_API).map(([code, info]) => 
+${Object.entries(WIKI_API).map(([code, info]) =>
     `${info.flag} ${info.lang}(${code})`
 ).join(' | ')}`;
 
@@ -100,7 +100,7 @@ const plugin: BotPlugin = {
     name: 'wikipedia',
     description: '维基百科查询工具',
     version: '1.0.0',
-    
+
     commands: [
         {
             name: 'wiki',
@@ -112,37 +112,37 @@ const plugin: BotPlugin = {
                     await ctx.message.replyText(HELP_TEXT);
                     return;
                 }
-                
+
                 // 回复等待消息
                 const waitMsg = await ctx.message.replyText("🔍 正在查询中...");
                 if (!waitMsg?.id) {
                     log.error("无法发送等待消息");
                     return;
                 }
-                
+
                 try {
                     // 解析命令参数
                     const args = ctx.args;
                     // 获取语言选项，确保是有效的WikiLang
                     const langIdx = args.indexOf('-l');
-                    const langInput = langIdx !== -1 && args.length > langIdx + 1 ? 
+                    const langInput = langIdx !== -1 && args.length > langIdx + 1 ?
                         String(args[langIdx + 1]) : DEFAULT_LANG;
                     const selectedLang = isValidWikiLang(langInput) ? langInput : DEFAULT_LANG;
-                    
+
                     const options = {
                         lang: selectedLang,
-                        limit: args.includes('-p') ? 
+                        limit: args.includes('-p') ?
                             Math.min(parseInt(args[args.indexOf('-p') + 1] || '1'), MAX_RESULTS) : 1,
                         random: args.includes('-r'),
                         interwiki: args.includes('-i')
                     };
-        
+
                     // 检查语言是否支持
                     if (!isValidWikiLang(options.lang)) {
                         const supportedLangs = Object.keys(WIKI_API)
                             .map(code => `${WIKI_API[code as WikiLang].flag}${code}`)
                             .join(', ');
-                        
+
                         await ctx.client.editMessage({
                             chatId: ctx.chatId,
                             message: waitMsg.id,
@@ -150,15 +150,15 @@ const plugin: BotPlugin = {
                         });
                         return;
                     }
-        
+
                     let responseText: string[] = [];
-                    
+
                     if (options.random) {
                         // 获取随机条目
                         try {
                             const article = await getRandomArticle(options.lang);
                             responseText = [
-                                `📎 随机条目：\n`, 
+                                `📎 随机条目：\n`,
                                 formatSearchResult(article, options.lang, options.interwiki)
                             ];
                         } catch (err) {
@@ -175,16 +175,16 @@ const plugin: BotPlugin = {
                             });
                             return;
                         }
-                        
+
                         try {
                             const results = await searchWiki(cleanedKeyword, options.lang, options.limit, options.interwiki);
-                            
+
                             responseText = [
                                 `📚 维基百科搜索结果 (${WIKI_API[options.lang].lang})：`,
                                 `🔍 关键词: ${cleanedKeyword}`,
                                 ''
                             ];
-                            
+
                             results.forEach((result, i) => {
                                 responseText.push(formatSearchResult(result, options.lang, options.interwiki));
                                 if (i < results.length - 1) responseText.push('\n──────────\n');
@@ -193,7 +193,7 @@ const plugin: BotPlugin = {
                             throw new Error(`${WIKI_API[options.lang].flag} 搜索失败: ${err instanceof Error ? err.message : String(err)}`);
                         }
                     }
-        
+
                     // 更新等待消息
                     await ctx.client.editMessage({
                         chatId: ctx.chatId,
@@ -207,7 +207,7 @@ const plugin: BotPlugin = {
                         '',
                         '💡 提示：使用 /wiki help 查看帮助'
                     ];
-                    
+
                     await ctx.client.editMessage({
                         chatId: ctx.chatId,
                         message: waitMsg.id,
@@ -259,17 +259,17 @@ async function searchWiki(keyword: string, lang: WikiLang, limit = 1, withInterw
     // 发送请求
     const apiUrl = `${WIKI_API[lang].search}?${params.toString()}`;
     const response = await fetch(apiUrl);
-    
+
     if (!response.ok) {
         throw new Error(`维基百科API请求失败: ${response.status}`);
     }
-    
+
     const data = await response.json() as WikiResponse;
-    
+
     if (!data.query?.pages) {
         throw new Error(`${WIKI_API[lang].flag} 未找到相关条目`);
     }
-    
+
     return Object.values(data.query.pages);
 }
 
@@ -297,22 +297,22 @@ async function getRandomArticle(lang: WikiLang): Promise<WikiPage> {
     // 发送请求
     const apiUrl = `${WIKI_API[lang].search}?${params.toString()}`;
     const response = await fetch(apiUrl);
-    
+
     if (!response.ok) {
         throw new Error(`维基百科API请求失败: ${response.status}`);
     }
-    
+
     const data = await response.json() as WikiResponse;
-    
+
     if (!data.query?.pages) {
         throw new Error(`${WIKI_API[lang].flag} 获取随机条目失败`);
     }
-    
+
     const pages = Object.values(data.query.pages);
     if (pages.length === 0) {
         throw new Error(`${WIKI_API[lang].flag} 获取随机条目失败`);
     }
-    
+
     // 确保返回类型正确
     return pages[0] as WikiPage;
 }
@@ -349,7 +349,7 @@ function formatSearchResult(result: WikiPage, lang: WikiLang, showInterwiki = fa
 function cleanKeyword(content: string, args: string[]): string {
     let keyword = content;
     const options = ['-l', '-p', '-i', '-r'];
-    
+
     for (const opt of options) {
         if (args.includes(opt)) {
             const index = args.indexOf(opt);

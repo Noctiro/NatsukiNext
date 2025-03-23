@@ -238,7 +238,7 @@ export class Features {
             if (plugin.dependencies && plugin.dependencies.length > 0) {
                 for (const dependency of plugin.dependencies) {
                     let dep = this.plugins.get(dependency);
-                    
+
                     // 如果依赖不存在并且允许自动加载
                     if (!dep && autoLoadDependencies) {
                         log.info(`Auto-loading dependency plugin: ${dependency}`);
@@ -247,7 +247,7 @@ export class Features {
                             dep = this.plugins.get(dependency);
                         }
                     }
-                    
+
                     // 确认依赖存在并已启用
                     if (!dep) {
                         log.error(`Dependency ${dependency} not found for plugin ${name}`);
@@ -255,7 +255,7 @@ export class Features {
                         plugin.error = `Dependency ${dependency} not found`;
                         return false;
                     }
-                    
+
                     if (dep.status !== PluginStatus.ACTIVE) {
                         // 递归启用依赖
                         const success = await this.enablePlugin(dependency, autoLoadDependencies);
@@ -268,25 +268,25 @@ export class Features {
                     }
                 }
             }
-            
+
             // 执行插件的onLoad方法
             try {
                 if (plugin.onLoad) {
                     await plugin.onLoad(this.client);
                 }
-                
+
                 // 注册插件事件处理器
                 this.registerPluginEvents(plugin);
-                
+
                 // 如果有命令，注册命令处理器
                 if (plugin.commands?.length) {
                     log.debug(`Registering ${plugin.commands.length} commands for plugin ${name}`);
                 }
-                
+
                 // 设置插件状态为启用
                 plugin.status = PluginStatus.ACTIVE;
                 plugin.error = undefined;
-                
+
                 log.info(`Plugin ${name} successfully enabled`);
                 return true;
             } catch (err) {
@@ -295,7 +295,7 @@ export class Features {
                 if (error.stack) {
                     log.debug(`Error stack: ${error.stack}`);
                 }
-                
+
                 plugin.status = PluginStatus.ERROR;
                 plugin.error = error.message;
                 return false;
@@ -327,34 +327,34 @@ export class Features {
             }
 
             log.info(`Disabling plugin: ${name}`);
-            
+
             // 检查其他插件依赖
             for (const [otherName, otherPlugin] of this.plugins.entries()) {
                 // 跳过禁用状态的插件
                 if (otherPlugin.status !== PluginStatus.ACTIVE || otherName === name) {
                     continue;
                 }
-                
+
                 // 如果另一个插件依赖此插件，无法禁用
                 if (otherPlugin.dependencies?.includes(name)) {
                     log.warn(`Cannot disable plugin ${name}: plugin ${otherName} depends on it`);
                     return false;
                 }
             }
-            
+
             // 调用插件的卸载回调
             try {
                 if (plugin.onUnload) {
                     await plugin.onUnload();
                 }
-                
+
                 // 卸载事件处理器
                 this.unregisterPluginEvents(plugin);
-                
+
                 // 更新插件状态
                 plugin.status = PluginStatus.DISABLED;
                 plugin.error = undefined;
-                
+
                 log.info(`Plugin ${name} successfully disabled`);
                 return true;
             } catch (err) {
@@ -363,7 +363,7 @@ export class Features {
                 if (error.stack) {
                     log.debug(`Error stack: ${error.stack}`);
                 }
-                
+
                 // 更新插件状态为错误
                 plugin.status = PluginStatus.ERROR;
                 plugin.error = error.message;
@@ -386,10 +386,10 @@ export class Features {
         if (this.pluginConfigs.has(pluginName)) {
             return this.pluginConfigs.get(pluginName) as T;
         }
-        
+
         try {
             const configPath = path.join(this.configDir, `${pluginName}.json`);
-            
+
             // 检查文件是否存在
             try {
                 await fs.access(configPath);
@@ -397,13 +397,13 @@ export class Features {
                 // 文件不存在，返回null
                 return null;
             }
-            
+
             const content = await fs.readFile(configPath, 'utf-8');
             const config = JSON.parse(content) as T;
-            
+
             // 缓存配置
             this.pluginConfigs.set(pluginName, config);
-            
+
             return config;
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
@@ -422,15 +422,15 @@ export class Features {
         try {
             // 确保配置目录存在
             await this.ensureConfigDir();
-            
+
             const configPath = path.join(this.configDir, `${pluginName}.json`);
             const configJson = JSON.stringify(config, null, 2);
-            
+
             await fs.writeFile(configPath, configJson, 'utf-8');
-            
+
             // 更新缓存
             this.pluginConfigs.set(pluginName, config);
-            
+
             log.debug(`插件 ${pluginName} 配置已保存`);
             return true;
         } catch (err) {
@@ -452,7 +452,7 @@ export class Features {
         // 按优先级排序事件处理器（优先级高的先执行）
         const sortedHandlers = Array.from(handlers)
             .sort((a, b) => (b.priority || 0) - (a.priority || 0));
-        
+
         for (const handler of sortedHandlers) {
             try {
                 // 检查过滤器
@@ -492,7 +492,7 @@ export class Features {
 
                     // 创建消息事件上下文
                     const userId = ctx.sender.id
-                    
+
                     const context: MessageEventContext = {
                         type: 'message',
                         client: this.client,
@@ -537,7 +537,7 @@ export class Features {
                 if (error.stack) {
                     log.debug(`错误堆栈: ${error.stack}`);
                 }
-                
+
                 // 通知用户发生错误
                 await ctx.answer({
                     text: '❌ 系统错误',
@@ -567,10 +567,10 @@ export class Features {
             const command = rawCommand.toLowerCase().replace(/@.*$/, '');
             const args = parts.slice(1);
             const content = args.join(' ');
-            
+
             // 获取用户ID
             const userId = ctx.sender.id;
-            
+
             // 计算权限级别 (管理员=100，普通用户=0)
             const permissionLevel = userId && managerIds.includes(userId) ? 100 : 0;
 
@@ -589,7 +589,7 @@ export class Features {
             };
 
             // 查找命令处理器
-            const commandHandlers: {plugin: BotPlugin, cmd: PluginCommand}[] = [];
+            const commandHandlers: { plugin: BotPlugin, cmd: PluginCommand }[] = [];
 
             // 从所有活跃插件中查找匹配的命令
             for (const plugin of this.plugins.values()) {
@@ -597,55 +597,55 @@ export class Features {
 
                 for (const cmd of plugin.commands) {
                     if (cmd.name === command || (cmd.aliases && cmd.aliases.includes(command))) {
-                        commandHandlers.push({plugin, cmd});
+                        commandHandlers.push({ plugin, cmd });
                     }
                 }
             }
-            
+
             // 如果没有找到命令处理器，直接返回
             if (commandHandlers.length === 0) {
                 log.debug(`未找到命令处理器: ${command}`);
                 return;
             }
-            
+
             log.debug(`找到命令 ${command} 的处理器: ${commandHandlers.length} 个`);
-            
+
             // 执行第一个符合条件的命令
-            for (const {plugin, cmd} of commandHandlers) {
+            for (const { plugin, cmd } of commandHandlers) {
                 try {
                     // 检查权限
                     if (cmd.requiredPermission && !context.hasPermission(cmd.requiredPermission)) {
                         log.debug(`用户 ${userId} 缺少权限执行命令 ${command}: ${cmd.requiredPermission}`);
-                        await ctx.replyText('❌ 你没有执行此命令的权限').catch(() => {});
+                        await ctx.replyText('❌ 你没有执行此命令的权限').catch(() => { });
                         return;
                     }
-                    
+
                     // 检查冷却时间
                     if (cmd.cooldown && userId) {
                         if (!this.checkCommandCooldown(userId, cmd.name, cmd.cooldown)) {
                             const lastCmd = this.commandCooldowns.find(
                                 c => c.userId === userId && c.command === cmd.name
                             );
-                            
-                            const remainingSecs = lastCmd 
+
+                            const remainingSecs = lastCmd
                                 ? Math.ceil((cmd.cooldown - (Date.now() - lastCmd.timestamp) / 1000))
                                 : cmd.cooldown;
-                                
+
                             log.debug(`命令 ${command} 冷却中，剩余时间: ${remainingSecs}s`);
-                            await ctx.replyText(`⏱️ 命令冷却中，请等待 ${remainingSecs} 秒后再试`).catch(() => {});
+                            await ctx.replyText(`⏱️ 命令冷却中，请等待 ${remainingSecs} 秒后再试`).catch(() => { });
                             return;
                         }
                     }
-                    
+
                     // 执行命令
                     log.info(`执行命令: ${command} (插件: ${plugin.name}), 用户: ${userId}`);
                     await cmd.handler(context);
-                    
+
                     // 更新冷却时间
                     if (cmd.cooldown && userId) {
                         this.updateCommandCooldown(userId, cmd.name);
                     }
-                    
+
                     return;
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
@@ -653,7 +653,7 @@ export class Features {
                     if (error.stack) {
                         log.debug(`错误堆栈: ${error.stack}`);
                     }
-                    
+
                     await ctx.replyText(`❌ 命令执行出错: ${error.message}`).catch(() => { });
                     return;
                 }
@@ -710,26 +710,26 @@ export class Features {
     async loadPlugin(pluginName: string, autoEnable: boolean = true): Promise<boolean> {
         try {
             log.info(`Loading plugin: ${pluginName}`);
-            
+
             // 确定插件文件的扩展名
-            const ext = pluginName.endsWith('.ts') || pluginName.endsWith('.js') 
-                ? '' 
+            const ext = pluginName.endsWith('.ts') || pluginName.endsWith('.js')
+                ? ''
                 : (await fs.access(path.join(this.pluginsDir, `${pluginName}.ts`))
                     .then(() => '.ts')
                     .catch(() => '.js'));
-            
+
             const pluginPath = path.join(this.pluginsDir, `${pluginName}${ext}`);
             const actualName = path.basename(pluginName, ext);
-            
+
             log.debug(`Plugin path: ${pluginPath}`);
-            
+
             // 如果已加载，先禁用
             if (this.plugins.has(actualName)) {
                 log.info(`Plugin ${actualName} already exists, disabling first`);
                 await this.disablePlugin(actualName);
                 this.plugins.delete(actualName);
             }
-            
+
             // 清除缓存以确保获取最新版本
             try {
                 const nodeRequire = typeof require !== 'undefined' ? require : null;
@@ -740,18 +740,18 @@ export class Features {
                 // 忽略未找到的模块
                 log.debug(`Error clearing module cache: ${e}`);
             }
-            
+
             // 添加时间戳以防止缓存
             const timestampedPath = `${pluginPath}?update=${Date.now()}`;
-            
+
             // 加载插件
             const success = await this.loadSinglePlugin(actualName, timestampedPath, autoEnable);
-            
+
             if (!success) {
                 log.warn(`Failed to load plugin ${pluginName}`);
                 return false;
             }
-            
+
             return true;
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
@@ -773,33 +773,33 @@ export class Features {
     private async loadSinglePlugin(name: string, pluginPath: string, autoEnable: boolean = false): Promise<boolean> {
         try {
             log.info(`Loading plugin from: ${pluginPath}`);
-            
+
             // 获取插件模块
             const module = await import(pluginPath);
             const plugin: BotPlugin = module.default;
-            
+
             // 如果没有默认导出，或者不是合法的插件对象
             if (!plugin || !plugin.name) {
                 log.error(`Invalid plugin module: ${name}, no valid plugin object exported`);
                 return false;
             }
-            
+
             // 使用插件自己的名称而不是文件名
             const actualName = plugin.name;
-            
+
             // 检查插件名称是否已经存在
             if (this.plugins.has(actualName)) {
                 log.warn(`Plugin ${actualName} is already loaded`);
                 return false;
             }
-            
+
             // 设置默认状态
             plugin.status = PluginStatus.DISABLED;
-            
+
             // 注册插件
             this.plugins.set(actualName, plugin);
             log.info(`Loaded plugin: ${actualName} ${plugin.version || ''}`);
-            
+
             // 注册插件的权限（如果有）
             if (plugin.permissions && plugin.permissions.length > 0) {
                 try {
@@ -812,12 +812,12 @@ export class Features {
                     log.warn(`Failed to register permissions for plugin ${actualName}: ${error.message}`);
                 }
             }
-            
+
             // 自动启用插件(如果指定)
             if (autoEnable) {
                 return await this.enablePlugin(actualName, true);
             }
-            
+
             return true;
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
@@ -836,26 +836,26 @@ export class Features {
     async init(): Promise<boolean> {
         try {
             log.info('正在初始化功能管理器...');
-            
+
             // 正确初始化Dispatcher
             this.dispatcher = Dispatcher.for(this.client);
-            
+
             // 确保配置目录存在
             await this.ensureConfigDir();
-            
+
             // 初始化权限管理器
             this.permissionManager = new PermissionManager(this.configDir);
             log.info('正在初始化权限管理器...');
             await this.permissionManager.init();
             log.info('权限管理器初始化完成');
-            
+
             // 设置事件处理器
             this.setupHandlers();
-            
+
             // 加载插件（权限管理器初始化后）
             log.info('开始加载插件...');
             await this.loadPlugins();
-            
+
             log.info('功能管理器初始化完成');
             return true;
         } catch (error) {
@@ -875,14 +875,14 @@ export class Features {
     async reload(): Promise<boolean> {
         try {
             log.info('正在重新加载所有插件...');
-            
+
             // 保存当前启用的插件列表
             const enabledPlugins = Array.from(this.plugins.entries())
                 .filter(([_, plugin]) => plugin.status === PluginStatus.ACTIVE)
                 .map(([name]) => name);
-            
+
             log.debug(`当前启用的插件: ${enabledPlugins.join(', ')}`);
-                
+
             // 禁用所有插件
             for (const plugin of this.plugins.values()) {
                 this.unregisterPluginEvents(plugin);
@@ -905,10 +905,10 @@ export class Features {
 
             // 清空插件列表
             this.plugins.clear();
-            
+
             // 重新加载插件
             await this.loadPlugins();
-            
+
             // 重新启用之前启用的插件 (使用自动依赖加载)
             const enableResults = await Promise.all(
                 enabledPlugins.map(async pluginName => {
@@ -916,15 +916,15 @@ export class Features {
                     return { pluginName, success };
                 })
             );
-            
+
             const failedPlugins = enableResults
                 .filter(r => !r.success)
                 .map(r => r.pluginName);
-                
+
             if (failedPlugins.length > 0) {
                 log.warn(`以下插件启用失败: ${failedPlugins.join(', ')}`);
             }
-            
+
             // 重新设置事件处理器
             this.setupHandlers();
 
@@ -946,14 +946,14 @@ export class Features {
      */
     private async loadPlugins(): Promise<void> {
         log.info('Loading plugins...');
-        
+
         try {
             // 获取已安装的插件文件列表
             const pluginDir = this.pluginsDir;
 
             // 读取目录内容
             const files = await fs.readdir(pluginDir);
-            
+
             // 过滤出.ts文件和.js文件
             const pluginFiles = files
                 .filter((file: string) => file.endsWith('.ts') || file.endsWith('.js'))
@@ -964,9 +964,9 @@ export class Features {
                     const pluginPath = path.join(pluginDir, file);
                     return { name, path: pluginPath };
                 });
-                
+
             log.debug(`Found ${pluginFiles.length} plugin files`);
-            
+
             // 按依赖关系排序
             for (const { name, path: pluginPath } of pluginFiles) {
                 try {
@@ -976,10 +976,10 @@ export class Features {
                     log.error(`Failed to load plugin ${name}: ${error.message}`);
                 }
             }
-            
+
             // 按照依赖排序启用插件
             const sortedPluginNames = this.sortPluginsByDependencies();
-            
+
             for (const pluginName of sortedPluginNames) {
                 const plugin = this.plugins.get(pluginName);
                 if (plugin && plugin.status !== PluginStatus.ACTIVE) {
@@ -994,11 +994,11 @@ export class Features {
                     }
                 }
             }
-            
+
             // 统计加载的插件数量
             const loadedPlugins = this.plugins.size;
             const activePlugins = Array.from(this.plugins.values()).filter(p => p.status === PluginStatus.ACTIVE).length;
-            
+
             log.info(`Plugin loading completed. Loaded ${loadedPlugins} plugins, ${activePlugins} enabled.`);
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
@@ -1008,7 +1008,7 @@ export class Features {
             }
         }
     }
-    
+
     /**
      * 对插件进行拓扑排序，确保依赖在前，依赖者在后
      * @returns 排序后的插件名称数组
@@ -1019,38 +1019,38 @@ export class Features {
         const temp = new Set<string>();
         const order: string[] = [];
         const missingDeps = new Set<string>();
-        
+
         // 检测是否存在循环依赖
         const hasCycle = (pluginName: string, path: string[] = []): boolean => {
             if (!this.plugins.has(pluginName)) {
                 missingDeps.add(pluginName);
                 return false;
             }
-            
+
             if (temp.has(pluginName)) {
                 const cycle = [...path, pluginName].join(' -> ');
                 log.error(`⚠️ 检测到循环依赖: ${cycle}`);
                 return true;
             }
-            
+
             if (visited.has(pluginName)) return false;
-            
+
             const plugin = this.plugins.get(pluginName)!;
             if (!plugin.dependencies || plugin.dependencies.length === 0) return false;
-            
+
             temp.add(pluginName);
-            
+
             let hasCycleFound = false;
             for (const dep of plugin.dependencies) {
                 if (hasCycle(dep, [...path, pluginName])) {
                     hasCycleFound = true;
                 }
             }
-            
+
             temp.delete(pluginName);
             return hasCycleFound;
         };
-        
+
         // 深度优先搜索进行拓扑排序
         const visit = (pluginName: string): void => {
             if (visited.has(pluginName)) return;
@@ -1059,9 +1059,9 @@ export class Features {
                 log.warn(`⚠️ 未找到依赖项: ${pluginName}`);
                 return;
             }
-            
+
             temp.add(pluginName);
-            
+
             const plugin = this.plugins.get(pluginName)!;
             if (plugin.dependencies && plugin.dependencies.length > 0) {
                 // 处理依赖项
@@ -1080,12 +1080,12 @@ export class Features {
                     }
                 }
             }
-            
+
             temp.delete(pluginName);
             visited.add(pluginName);
             order.push(pluginName);
         };
-        
+
         // 先检查循环依赖
         let cycleDetected = false;
         for (const [name] of this.plugins) {
@@ -1093,28 +1093,28 @@ export class Features {
                 cycleDetected = true;
             }
         }
-        
+
         if (cycleDetected) {
             log.warn('⚠️ 检测到循环依赖，插件可能无法正常加载');
         }
-        
+
         // 对所有插件进行排序
         for (const [name] of this.plugins) {
             if (!visited.has(name)) {
                 visit(name);
             }
         }
-        
+
         // 输出排序后的插件加载顺序
         if (order.length > 0) {
             log.debug(`插件加载顺序: ${order.join(' -> ')}`);
         }
-        
+
         // 警告缺失的依赖
         if (missingDeps.size > 0) {
             log.warn(`⚠️ 缺失的依赖项: ${Array.from(missingDeps).join(', ')}，这些依赖项的插件可能无法正常工作`);
         }
-        
+
         return order;
     }
 
@@ -1128,18 +1128,18 @@ export class Features {
      */
     private checkCommandCooldown(userId: number, command: string, cooldownSeconds: number): boolean {
         const now = Date.now();
-        
+
         // 清理过期的冷却记录
         this.commandCooldowns = this.commandCooldowns.filter(
             record => now - record.timestamp < (record.command === command ? cooldownSeconds * 1000 : 60000)
         );
-        
+
         const cooldownRecord = this.commandCooldowns.find(
             record => record.userId === userId && record.command === command
         );
-        
+
         if (!cooldownRecord) return true;
-        
+
         const elapsedSeconds = (now - cooldownRecord.timestamp) / 1000;
         return elapsedSeconds >= cooldownSeconds;
     }
@@ -1152,11 +1152,11 @@ export class Features {
      */
     private updateCommandCooldown(userId: number, command: string): void {
         const now = Date.now();
-        
+
         const existingIndex = this.commandCooldowns.findIndex(
             record => record.userId === userId && record.command === command
         );
-        
+
         if (existingIndex !== -1) {
             // 检查索引是否有效，防止潜在的未定义问题
             if (existingIndex < this.commandCooldowns.length) {
@@ -1173,7 +1173,7 @@ export class Features {
             });
         }
     }
-} 
+}
 
 /**
  * Plugin Development Guide

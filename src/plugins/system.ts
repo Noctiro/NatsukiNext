@@ -65,7 +65,7 @@ function getCpuInfo() {
 
         // 计算CPU使用率
         const totalIdle = cpus.reduce((acc, cpu) => acc + (cpu.times as CpuTimes).idle, 0);
-        const totalTick = cpus.reduce((acc, cpu) => 
+        const totalTick = cpus.reduce((acc, cpu) =>
             acc + Object.values(cpu.times as CpuTimes).reduce((a, b) => a + b, 0), 0);
         const usage = ((1 - totalIdle / totalTick) * 100).toFixed(1);
 
@@ -94,13 +94,13 @@ async function getNetworkInfo() {
         } catch {
             return null;
         }
-        
+
         const data = await fs.readFile(statsPath, 'utf8');
         const lines = data.split('\n').filter(line => line.includes(':'));
-        
+
         let rxBytes = 0;
         let txBytes = 0;
-        
+
         for (const line of lines) {
             const parts = line.trim().split(/\s+/);
             if (parts.length >= 10) {
@@ -110,24 +110,24 @@ async function getNetworkInfo() {
                 txBytes += parseInt(parts[9] || '0', 10) || 0;
             }
         }
-        
+
         const now = Date.now();
         let rxRate = '未知';
         let txRate = '未知';
-        
+
         if (lastNetworkStats) {
             const timeDiff = (now - lastNetworkStats.timestamp) / 1000; // 秒
             if (timeDiff > 0) {
                 const rxDiff = rxBytes - lastNetworkStats.rx;
                 const txDiff = txBytes - lastNetworkStats.tx;
-                
+
                 rxRate = formatBytesPerSec(rxDiff / timeDiff);
                 txRate = formatBytesPerSec(txDiff / timeDiff);
             }
         }
-        
+
         lastNetworkStats = { rx: rxBytes, tx: txBytes, timestamp: now };
-        
+
         return {
             rx: rxRate,
             tx: txRate
@@ -162,7 +162,7 @@ async function getSystemInfo(): Promise<SystemInfo> {
         const cpuInfo = getCpuInfo();
         const networkInfo = await getNetworkInfo();
         const processInfo = getProcessInfo();
-        
+
         return {
             uptime: formatUptime(os.uptime()),
             botUptime: formatUptime((Date.now() - startTime) / 1000),
@@ -255,12 +255,12 @@ const plugin: BotPlugin = {
             aliases: ['sys', '系统'],
             async handler(ctx: CommandContext) {
                 const subCommand = ctx.args[0]?.toLowerCase() || '';
-                
+
                 if (!subCommand) {
                     const memoryUsage = process.memoryUsage();
                     const uptime = process.uptime();
                     const osUptime = os.uptime();
-                    
+
                     const formatBytes = (bytes: number) => {
                         if (bytes === 0) return '0 Bytes';
                         const k = 1024;
@@ -268,7 +268,7 @@ const plugin: BotPlugin = {
                         const i = Math.floor(Math.log(bytes) / Math.log(k));
                         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
                     };
-                    
+
                     const formatTime = (seconds: number) => {
                         const days = Math.floor(seconds / 86400);
                         seconds %= 86400;
@@ -276,7 +276,7 @@ const plugin: BotPlugin = {
                         seconds %= 3600;
                         const minutes = Math.floor(seconds / 60);
                         seconds = Math.floor(seconds % 60);
-                        
+
                         if (days > 0) {
                             return `${days}天${hours}小时${minutes}分钟`;
                         } else if (hours > 0) {
@@ -285,10 +285,10 @@ const plugin: BotPlugin = {
                             return `${minutes}分钟${seconds}秒`;
                         }
                     };
-                    
+
                     const loadedPlugins = ctx.client.features.getPlugins();
                     const activePlugins = loadedPlugins.filter(p => p.status === 'active');
-                    
+
                     await ctx.message.replyText(md`
 🖥️ **系统信息**
 
@@ -310,7 +310,7 @@ const plugin: BotPlugin = {
 `);
                     return;
                 }
-                
+
                 switch (subCommand) {
                     case 'reload':
                         // 检查权限
@@ -318,21 +318,21 @@ const plugin: BotPlugin = {
                             await ctx.message.replyText('❌ 你没有执行此命令的权限');
                             return;
                         }
-                        
+
                         await ctx.message.replyText('🔄 正在重新加载插件系统...');
-                        
+
                         const success = await ctx.client.features.reload();
-                        
+
                         if (success) {
                             const loadedPlugins = ctx.client.features.getPlugins();
                             const activePlugins = loadedPlugins.filter(p => p.status === 'active');
-                            
+
                             await ctx.message.replyText(`✅ 插件系统已重新加载。\n已加载 ${loadedPlugins.length} 个插件，其中 ${activePlugins.length} 个已启用。`);
                         } else {
                             await ctx.message.replyText('❌ 重新加载插件系统失败。');
                         }
                         break;
-                        
+
                     default:
                         await ctx.message.replyText(`❌ 未知子命令: ${subCommand}\n使用 /system 查看可用命令`);
                 }
@@ -346,34 +346,34 @@ const plugin: BotPlugin = {
                 const plugins = ctx.client.features.getPlugins();
                 // 获取发送命令的用户ID
                 const userId = ctx.message.sender.id;
-                
+
                 // 分类存储命令
                 const categories = new Map<string, {
                     plugin: BotPlugin,
                     commands: PluginCommand[]
                 }>();
-                
+
                 // 按插件分类并过滤用户有权限的命令
                 for (const plugin of plugins) {
                     if (!plugin.commands?.length) continue;
                     if (plugin.status !== PluginStatus.ACTIVE) continue; // 只显示已启用的插件命令
-                    
+
                     // 过滤出用户有权限的命令
                     const availableCommands = plugin.commands.filter(cmd => {
                         // 如果命令没有权限要求，或用户有该权限，则可显示
                         return !cmd.requiredPermission || ctx.hasPermission(cmd.requiredPermission);
                     });
-                    
+
                     // 如果没有可用命令，跳过此插件
                     if (availableCommands.length === 0) continue;
-                    
+
                     // 记录此插件的可用命令
                     categories.set(plugin.name, {
                         plugin,
                         commands: availableCommands
                     });
                 }
-                
+
                 // 预定义常用的表情符号
                 const emoji = {
                     system: '⚙️',
@@ -392,7 +392,7 @@ const plugin: BotPlugin = {
                     star: '⭐',
                     warning: '⚠️'
                 };
-                
+
                 // 获取插件的表情符号
                 const getPluginEmoji = (name: string): string => {
                     const lowerName = name.toLowerCase();
@@ -405,26 +405,26 @@ const plugin: BotPlugin = {
                     if (lowerName.includes('translator') || lowerName.includes('translate')) return emoji.translate;
                     return emoji.default;
                 };
-                
+
                 // 生成美化的帮助信息
                 let message = `# ${emoji.star} 命令帮助中心 ${emoji.star}\n\n`;
-                
+
                 // 对插件按名称排序
                 const sortedCategories = Array.from(categories.entries())
                     .sort(([nameA], [nameB]) => nameA.localeCompare(nameB));
-                
+
                 // 如果没有可用命令
                 if (sortedCategories.length === 0) {
                     message = `# ${emoji.warning} 无可用命令\n\n您目前没有权限使用任何命令。`;
                 } else {
                     // 首先添加可用命令总数统计
                     const totalCommands = sortedCategories.reduce(
-                        (sum, [_, {commands}]) => sum + commands.length, 0
+                        (sum, [_, { commands }]) => sum + commands.length, 0
                     );
                     message += `您可以使用 ${totalCommands} 个命令，分布在 ${sortedCategories.length} 个插件中。\n\n`;
-                    
+
                     // 遍历所有分类
-                    for (const [name, {plugin, commands}] of sortedCategories) {
+                    for (const [name, { plugin, commands }] of sortedCategories) {
                         // 添加插件标题和描述
                         const pluginEmoji = getPluginEmoji(name);
                         message += `## ${pluginEmoji} ${name}`;
@@ -432,57 +432,57 @@ const plugin: BotPlugin = {
                             message += ` (v${plugin.version})`;
                         }
                         message += `\n`;
-                        
+
                         if (plugin.description) {
                             message += `${plugin.description}\n\n`;
                         } else {
                             message += `\n`;
                         }
-                        
+
                         // 对命令按名称排序
                         const sortedCommands = [...commands].sort((a, b) => a.name.localeCompare(b.name));
-                        
+
                         // 添加命令列表
                         for (const cmd of sortedCommands) {
-                            const aliases = cmd.aliases?.length 
+                            const aliases = cmd.aliases?.length
                                 ? ` (别名: ${cmd.aliases.join(', ')})`
                                 : '';
-                                
+
                             // 添加命令名称和别名
                             message += `### ${emoji.command} /${cmd.name}${aliases}\n`;
-                            
+
                             // 添加命令描述
                             if (cmd.description) {
                                 message += `${cmd.description}\n`;
                             }
-                            
+
                             // 显示附加信息（权限、冷却时间）
                             const cmdInfo = [];
-                            
+
                             // 显示权限要求（如果有）
                             if (cmd.requiredPermission) {
                                 cmdInfo.push(`${emoji.permission} 需要权限: \`${cmd.requiredPermission}\``);
                             }
-                            
+
                             // 显示冷却时间（如果有）
                             if (cmd.cooldown) {
                                 cmdInfo.push(`${emoji.cooldown} 冷却时间: ${cmd.cooldown}秒`);
                             }
-                            
+
                             if (cmdInfo.length > 0) {
                                 message += cmdInfo.join(' | ') + '\n';
                             }
-                            
+
                             message += `\n`;
                         }
                     }
-                    
+
                     // 添加使用说明
                     message += `---\n\n`;
                     message += `**提示：** 使用 \`/<命令名>\` 执行命令，例如 \`/help\`\n`;
                     message += `部分命令可能需要特定权限才能使用。若有疑问请联系管理员。`;
                 }
-                
+
                 await ctx.message.replyText(md(message));
             }
         },
@@ -494,7 +494,7 @@ const plugin: BotPlugin = {
             async handler(ctx: CommandContext) {
                 const subCommand = ctx.args[0]?.toLowerCase() || '';
                 const plugins = ctx.client.features.getPlugins();
-                
+
                 // 处理子命令
                 if (subCommand) {
                     if (subCommand === 'enable' || subCommand === 'disable') {
@@ -503,17 +503,17 @@ const plugin: BotPlugin = {
                             await ctx.message.replyText(`❌ 请指定要${subCommand === 'enable' ? '启用' : '禁用'}的插件名称`);
                             return;
                         }
-                        
+
                         // 不允许禁用系统插件
                         if (subCommand === 'disable' && pluginName === 'system') {
                             await ctx.message.replyText(`⛔ 不能禁用系统插件`);
                             return;
                         }
-                        
-                        const result = subCommand === 'enable' 
+
+                        const result = subCommand === 'enable'
                             ? await ctx.client.features.enablePlugin(pluginName, true)
                             : await ctx.client.features.disablePlugin(pluginName);
-                            
+
                         if (result) {
                             await ctx.message.replyText(`✅ 插件 ${pluginName} 已${subCommand === 'enable' ? '启用' : '禁用'}`);
                         } else {
@@ -547,34 +547,34 @@ const plugin: BotPlugin = {
                         }
                         return;
                     }
-                    
+
                     const pluginName = subCommand;
                     const plugin = ctx.client.features.getPlugin(pluginName);
-                    
+
                     if (!plugin) {
                         await ctx.message.replyText(`❌ Plugin '${pluginName}' not found`);
                         return;
                     }
-                    
+
                     // 显示特定插件的详细信息
                     let message = `📦 **Plugin Details: ${plugin.name}**\n\n`;
                     message += `**Status**: ${formatPluginStatus(plugin.status)}\n`;
                     message += `**Version**: ${plugin.version || 'Not specified'}\n`;
                     message += `**Description**: ${plugin.description || 'No description'}\n\n`;
-                    
+
                     if (plugin.error) {
                         message += `**Error**: ${plugin.error}\n\n`;
                     }
-                    
+
                     if (plugin.dependencies?.length) {
                         message += `**Dependencies**: ${plugin.dependencies.join(', ')}\n\n`;
                     }
-                    
+
                     // 显示命令信息
                     if (plugin.commands?.length) {
                         message += `**Commands (${plugin.commands.length})**:\n`;
                         for (const cmd of plugin.commands) {
-                            const aliases = cmd.aliases?.length 
+                            const aliases = cmd.aliases?.length
                                 ? ` (${cmd.aliases.join(', ')})`
                                 : '';
                             message += `• /${cmd.name}${aliases}\n`;
@@ -587,23 +587,23 @@ const plugin: BotPlugin = {
                         }
                         message += '\n';
                     }
-                    
+
                     // 显示事件处理器信息
                     if (plugin.events?.length) {
                         message += `**Event Handlers (${plugin.events.length})**:\n`;
                         const eventTypes = plugin.events.map(e => e.type);
                         const eventCounts: Record<string, number> = {};
-                        
+
                         for (const type of eventTypes) {
                             eventCounts[type] = (eventCounts[type] || 0) + 1;
                         }
-                        
+
                         for (const [type, count] of Object.entries(eventCounts)) {
                             message += `• ${type}: ${count} handler${count > 1 ? 's' : ''}\n`;
                         }
                         message += '\n';
                     }
-                    
+
                     // 显示权限信息
                     if (plugin.permissions?.length) {
                         message += `**Permissions (${plugin.permissions.length})**:\n`;
@@ -617,21 +617,21 @@ const plugin: BotPlugin = {
                             }
                         }
                     }
-                    
+
                     await ctx.message.replyText(md(message));
                     return;
                 }
-                
+
                 // 显示所有插件的概览信息
                 const activePlugins = plugins.filter(p => p.status === PluginStatus.ACTIVE);
                 const disabledPlugins = plugins.filter(p => p.status === PluginStatus.DISABLED);
                 const errorPlugins = plugins.filter(p => p.status === PluginStatus.ERROR);
-                
+
                 let message = `📦 **Plugins (${plugins.length})**\n\n`;
                 message += `✅ Active: ${activePlugins.length}\n`;
                 message += `⏸️ Disabled: ${disabledPlugins.length}\n`;
                 message += `❌ Error: ${errorPlugins.length}\n\n`;
-                
+
                 // 对插件按名称排序
                 const sortedPlugins = [...plugins].sort((a, b) => a.name.localeCompare(b.name));
 
@@ -644,7 +644,7 @@ const plugin: BotPlugin = {
                     if (plugin.error) {
                         message += `  ⚠️ Error: ${plugin.error}\n`;
                     }
-                    
+
                     // 显示依赖和命令数
                     const details = [];
                     if (plugin.dependencies?.length) {
@@ -659,14 +659,14 @@ const plugin: BotPlugin = {
                     if (plugin.permissions?.length) {
                         details.push(`Permissions: ${plugin.permissions.length}`);
                     }
-                    
+
                     if (details.length > 0) {
                         message += `  [${details.join(' | ')}]\n`;
                     }
-                    
+
                     message += '\n';
                 }
-                
+
                 message += `Use /plugins <name> to view detailed information about a specific plugin.\n`;
                 message += `Other commands: /plugins enable <name>, /plugins disable <name>, /plugins reload [name]`;
 

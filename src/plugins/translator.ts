@@ -43,7 +43,7 @@ const COMMON_SHORT_PHRASES = [
 ];
 
 // 美化的帮助信息
-const HELP_TEXT = 
+const HELP_TEXT =
     '✨ **翻译助手** ✨\n\n' +
     '📝 **使用方式**\n' +
     '/tr [文本] - 翻译指定文本\n' +
@@ -107,18 +107,18 @@ function isNotChinese(text: string): boolean {
         log.debug(`消息太短，不翻译: "${text}"`);
         return false;
     }
-    
+
     // 处理简短语句
     if (text.length <= SHORT_MSG_MAX_LENGTH) {
         // 计算单词数（粗略估计）
         const wordCount = text.trim().split(/\s+/).length;
-        
+
         if (wordCount <= SHORT_MSG_MAX_WORDS) {
             log.debug(`简短语句 (${wordCount}个单词，${text.length}字符)，不翻译: "${text}"`);
             return false;
         }
     }
-    
+
     // 检查是否匹配常见简短外语短语
     for (const pattern of COMMON_SHORT_PHRASES) {
         if (pattern.test(text.trim())) {
@@ -126,7 +126,7 @@ function isNotChinese(text: string): boolean {
             return false;
         }
     }
-    
+
     // 检查是否匹配常见不翻译模式
     for (const pattern of SKIP_TRANSLATION_PATTERNS) {
         if (pattern.test(text.trim())) {
@@ -134,95 +134,95 @@ function isNotChinese(text: string): boolean {
             return false;
         }
     }
-    
+
     // 计算中文比例
     const chineseMatches = text.match(LANGUAGE_RANGES.chinese) || [];
     const chineseRatio = chineseMatches.length / text.length;
-    
+
     // 如果中文比例高于阈值，直接返回false（不需要翻译）
     if (chineseRatio >= CHINESE_THRESHOLD) {
         log.debug(`中文比例 ${(chineseRatio * 100).toFixed(1)}% 超过阈值，不翻译`);
         return false;
     }
-    
+
     // 对于较短的消息，增加更严格的判断
     if (text.length < 30) {
         // 检查是否含有多个标点符号（可能是分隔的多个句子）
         const punctCount = (text.match(COMMON_PATTERNS.punctuation) || []).length;
-        
+
         // 如果只有一个句子，且长度小于30，更倾向于不翻译
         if (punctCount <= 1) {
             log.debug(`短消息(${text.length}字符)只有一个简单句子，不翻译: "${text}"`);
             return false;
         }
     }
-    
+
     // 计算通用字符比例（数字、标点、表情等）
     let commonCharCount = 0;
     const charAnalysis: Record<string, number> = {};
-    
+
     for (const patternKey in COMMON_PATTERNS) {
         const pattern = COMMON_PATTERNS[patternKey as keyof typeof COMMON_PATTERNS];
         const matches = text.match(pattern) || [];
         commonCharCount += matches.length;
         charAnalysis[patternKey] = matches.length;
     }
-    
+
     const commonCharRatio = commonCharCount / text.length;
-    
+
     // 检测纯数字消息（例如：1234, 123.45）
     const digitsMatches = text.match(COMMON_PATTERNS.digits) || [];
     const punctMatches = text.match(COMMON_PATTERNS.punctuation) || [];
     const whitespaceMatches = text.match(COMMON_PATTERNS.whitespace) || [];
     const combinedCount = digitsMatches.length + punctMatches.length + whitespaceMatches.length;
-    
+
     // 如果消息几乎只包含数字、小数点和空格，则不翻译
     if (combinedCount / text.length > DIGITS_ONLY_THRESHOLD) {
         log.debug(`检测到可能是数字格式/代码消息，不翻译: "${text.substring(0, 15)}..."`);
         return false;
     }
-    
+
     // 如果通用字符占比过高，则不需要翻译
     if (commonCharRatio >= MAX_COMMON_CHAR_RATIO) {
         log.debug(`通用字符占比 ${(commonCharRatio * 100).toFixed(1)}% 过高，不翻译`);
         log.debug(`字符分析: ${JSON.stringify(charAnalysis)}`);
         return false;
     }
-    
+
     // 检查其他语言特征
     let hasSignificantLanguage = false;
     let foreignLangRatio = 0;
     let detectedLang = '';
-    
+
     for (const langKey in LANGUAGE_RANGES) {
         if (langKey === 'chinese') continue;
-        
+
         const range = LANGUAGE_RANGES[langKey as keyof typeof LANGUAGE_RANGES];
         const matches = text.match(range) || [];
         const langRatio = matches.length / text.length;
-        
+
         // 保存检测到的最主要外语
         if (langRatio > foreignLangRatio) {
             foreignLangRatio = langRatio;
             detectedLang = langKey;
         }
-        
+
         if (langRatio > OTHER_LANG_THRESHOLD) {
             hasSignificantLanguage = true;
         }
     }
-    
+
     // 对于主要语言占比较低的短文本，增加更严格的翻译判断
     if (hasSignificantLanguage && text.length < 25 && foreignLangRatio < 0.4) {
         log.debug(`短消息(${text.length}字符)外语占比较低(${(foreignLangRatio * 100).toFixed(1)}%)，不翻译`);
         return false;
     }
-    
+
     if (hasSignificantLanguage) {
         log.debug(`检测到${detectedLang}文本，比例${(foreignLangRatio * 100).toFixed(1)}%，需要翻译`);
         return true;
     }
-    
+
     // 检查是否有足够的非通用语言字符（避免纯数字、表情符号等）
     const allLangPatterns = Object.values(LANGUAGE_RANGES)
         .map(r => r.source.replace(/[\/g]/g, ''))
@@ -230,25 +230,25 @@ function isNotChinese(text: string): boolean {
     const combinedRegex = new RegExp(`[${allLangPatterns}]`, 'g');
     const langMatches = text.match(combinedRegex) || [];
     const langRatio = langMatches.length / text.length;
-    
+
     // 设置基础翻译阈值
     let langThreshold = 0.3;
     let commonThreshold = 0.55;
-    
+
     // 根据消息长度动态调整阈值（短消息需要更严格的条件）
     if (text.length < 30) {
         langThreshold = 0.35;  // 更高的语言字符要求
         commonThreshold = 0.5; // 更低的通用字符容忍度
     }
-    
+
     const shouldTranslate = langRatio > langThreshold && commonCharRatio < commonThreshold;
-    
+
     if (shouldTranslate) {
         log.debug(`语言字符比例 ${(langRatio * 100).toFixed(1)}%，通用字符比例 ${(commonCharRatio * 100).toFixed(1)}%，需要翻译`);
     } else {
         log.debug(`不满足翻译条件：语言字符比例 ${(langRatio * 100).toFixed(1)}%，通用字符比例 ${(commonCharRatio * 100).toFixed(1)}%`);
     }
-    
+
     return shouldTranslate;
 }
 
@@ -266,33 +266,33 @@ function ensurePrefix(text: string): string {
 async function translateWithGoogle(text: string, targetLang: string = DEFAULT_LANG): Promise<string> {
     if (!text) return ensurePrefix("无文本");
     if (text.length >= 5000) return ensurePrefix("文本过长，无法翻译");
-    
+
     let retryCount = 0;
-    
+
     while (retryCount < MAX_RETRY_COUNT) {
         try {
             const url = `https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl=${targetLang}&q=${encodeURIComponent(text)}`;
             const response = await fetch(url);
-            
+
             if (!response.ok) {
                 throw new Error(`请求失败: ${response.status}`);
             }
-            
+
             const data = await response.json() as GoogleTranslateResponse;
             if (!data?.[0]?.length) {
                 throw new Error('无效的响应结构');
             }
-            
+
             const translation = data[0]
                 .map(item => item[0])
                 .filter(Boolean)
                 .join('');
-            
+
             return ensurePrefix(translation);
         } catch (error) {
             retryCount++;
             log.warn(`Google翻译尝试${retryCount}/${MAX_RETRY_COUNT}次失败: ${error}`);
-            
+
             if (retryCount < MAX_RETRY_COUNT) {
                 await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
             } else {
@@ -300,7 +300,7 @@ async function translateWithGoogle(text: string, targetLang: string = DEFAULT_LA
             }
         }
     }
-    
+
     return ensurePrefix("翻译服务暂不可用");
 }
 
@@ -309,7 +309,7 @@ async function translateWithGoogle(text: string, targetLang: string = DEFAULT_LA
  */
 async function translateWithAI(text: string, prompt: string = DEFAULT_PROMPT): Promise<string> {
     if (!text) return ensurePrefix("无文本");
-    
+
     try {
         const fastAI = getFastAI();
         const result = await fastAI.get(`${prompt}\n\n${text}`);
@@ -324,7 +324,7 @@ async function translateWithAI(text: string, prompt: string = DEFAULT_PROMPT): P
  * 流式AI翻译
  */
 async function streamTranslateWithAI(
-    ctx: CommandContext | MessageEventContext, 
+    ctx: CommandContext | MessageEventContext,
     text: string
 ): Promise<void> {
     try {
@@ -333,27 +333,27 @@ async function streamTranslateWithAI(
         if (!waitMsg?.id) {
             throw new Error("无法发送等待消息");
         }
-        
+
         let lastContent = "";
         let lastUpdateTime = Date.now();
         let finalContent = "";
-        
+
         const ai = getFastAI();
-        
+
         await ai.stream(
             (content: string, done: boolean) => {
                 const now = Date.now();
-                
+
                 // 格式处理
                 const displayContent = ensurePrefix(content);
                 const messageText = done ? displayContent : `${displayContent}${TRANSLATING_SUFFIX}`;
-                
+
                 // 仅在满足条件时更新消息
                 const shouldUpdate = done || (
-                    displayContent.length - lastContent.length > STREAM_UPDATE_THRESHOLD && 
+                    displayContent.length - lastContent.length > STREAM_UPDATE_THRESHOLD &&
                     now - lastUpdateTime > UPDATE_INTERVAL_MS
                 );
-                
+
                 if (shouldUpdate) {
                     try {
                         finalContent = displayContent;
@@ -362,7 +362,7 @@ async function streamTranslateWithAI(
                             message: waitMsg.id,
                             text: messageText
                         }).catch(e => log.error(`更新翻译消息失败: ${e}`));
-                        
+
                         lastContent = displayContent;
                         lastUpdateTime = now;
                     } catch (e) {
@@ -372,7 +372,7 @@ async function streamTranslateWithAI(
             },
             `${DEFAULT_PROMPT}\n\n${text}`
         );
-        
+
         // 确保最终消息没有"翻译中"后缀
         if (finalContent) {
             ctx.client.editMessage({
@@ -392,7 +392,7 @@ async function streamTranslateWithAI(
  */
 async function simpleTranslateText(ctx: MessageEventContext, text: string): Promise<void> {
     if (!text?.trim()) return;
-    
+
     try {
         // 直接翻译，不显示等待消息
         const translatedText = await translateWithAI(text);
@@ -417,19 +417,19 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
         await ctx.message.replyText('没有需要翻译的文本');
         return;
     }
-    
+
     try {
         // 长文本使用流式输出
         if (text.length > STREAM_MIN_LENGTH) {
             await streamTranslateWithAI(ctx, text);
             return;
         }
-        
+
         // 短文本使用标准翻译
         try {
             const waitMsg = await ctx.message.replyText("正在翻译...");
             const translatedText = await translateWithAI(text);
-            
+
             if (waitMsg?.id) {
                 // 优先尝试更新原消息
                 await ctx.message.client.editMessage({
@@ -461,16 +461,16 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
  */
 async function getTextFromReply(ctx: CommandContext): Promise<string | null> {
     if (!ctx.message.replyToMessage?.id) return null;
-    
+
     try {
         const msgId = ctx.message.replyToMessage.id;
         const replyMsg = await ctx.client.getMessages(ctx.chatId, [msgId]);
-        
+
         if (!replyMsg?.[0]?.text) {
             await ctx.message.replyText('⚠️ 只能翻译文本消息');
             return null;
         }
-        
+
         const text = replyMsg[0].text;
         log.debug(`从回复消息获取文本: ${text.substring(0, 30)}${text.length > 30 ? '...' : ''}`);
         return text;
@@ -489,11 +489,11 @@ async function handleTranslateCommand(ctx: CommandContext): Promise<void> {
         await ctx.message.replyText(md(HELP_TEXT));
         return;
     }
-    
+
     try {
         // 尝试从回复获取文本
         let textToTranslate = await getTextFromReply(ctx);
-        
+
         // 如果没有回复文本，使用命令参数
         if (!textToTranslate) {
             if (!ctx.content) {
@@ -502,7 +502,7 @@ async function handleTranslateCommand(ctx: CommandContext): Promise<void> {
             }
             textToTranslate = ctx.content;
         }
-        
+
         await commandTranslateText(ctx, textToTranslate);
     } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -516,7 +516,7 @@ const plugin: BotPlugin = {
     name: 'translator',
     description: '提供多语言翻译功能',
     version: '1.0.2',
-    
+
     // 自动翻译非中文消息
     events: [
         {
@@ -529,13 +529,13 @@ const plugin: BotPlugin = {
             handler: async (ctx: MessageEventContext) => {
                 const text = ctx.message.text;
                 if (!text) return;
-                
+
                 log.debug(`检测到非中文消息，自动翻译: ${text.substring(0, 20)}...`);
                 await simpleTranslateText(ctx, text);
             }
         }
     ],
-    
+
     // 翻译命令
     commands: [
         {

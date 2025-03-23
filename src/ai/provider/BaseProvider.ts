@@ -51,14 +51,14 @@ export default class BaseProvider {
             slowModeState.slowModeStart = Date.now();
             return true;
         }
-        
+
         const errorMap: Record<number, string> = {
             401: 'Invalid API key or unauthorized access',
             404: 'Model not found or unavailable',
             400: `Bad request: ${error.response?.data?.error?.message || 'Unknown error'}`,
             402: 'Insufficient credits'
         };
-        
+
         if (errorMap[statusCode]) throw new Error(errorMap[statusCode]);
         return attempt < maxRetries - 1;
     }
@@ -72,7 +72,7 @@ export default class BaseProvider {
                 content += parsed.choices[0].delta.content;
                 output(content, false);
             }
-        } catch {}
+        } catch { }
         return content;
     }
 
