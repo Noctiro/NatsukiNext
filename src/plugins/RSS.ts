@@ -747,7 +747,6 @@ class NewsService {
 
             // 发送新闻
             const { text, images } = formattedContent;
-            log.info(`Sending news: ${text}`);
 
             // 如果没有图片，直接发送文本
             if (!images.length) {

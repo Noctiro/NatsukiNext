@@ -3,6 +3,7 @@ import { log } from "../../log";
 export interface Message {
     role: "user" | "assistant" | "system";
     content: string;
+    thinking?: string;
 }
 
 export interface ProviderConfig {
@@ -15,6 +16,8 @@ export interface ProviderConfig {
         top_p: number;
         frequency_penalty: number;
         presence_penalty: number;
+        chain_of_thought?: boolean;
+        thinking_parameter?: string;
     };
 }
 
@@ -24,10 +27,14 @@ export default class BaseProvider {
     protected messages: Message[];
     protected model: string;
     protected apiKey?: string;
+    protected chainOfThought: boolean;
+    protected thinkingParameter: string;
 
-    constructor(messages: Message[] = [], model: string = '') {
+    constructor(messages: Message[] = [], model: string = '', chainOfThought: boolean = false, thinkingParameter: string = 'thinking') {
         this.messages = messages;
         this.model = model;
+        this.chainOfThought = chainOfThought;
+        this.thinkingParameter = thinkingParameter;
     }
 
     static async delayIfSlowMode(): Promise<void> {
@@ -63,17 +70,101 @@ export default class BaseProvider {
         return attempt < maxRetries - 1;
     }
 
-    protected processStreamChunk(chunk: string, content: string, output: (content: string, isFinal: boolean) => void): string {
-        const data = chunk.split("data: ")[1] || '';
-        if (data === "[DONE]") return content;
+    /**
+     * 处理流式输出的数据块
+     * @param event 事件数据
+     * @param content 当前累积的内容
+     * @param thinking 当前累积的思考过程
+     * @param output 输出回调函数
+     * @returns 更新后的内容和思考过程
+     */
+    protected processStreamEvent(
+        event: string, 
+        content: string, 
+        thinking: string | undefined, 
+        output: (content: string, isFinal: boolean, thinking?: string) => void
+    ): { content: string, thinking?: string } {
+        if (!event.trim()) return { content, thinking };
+        
+        const dataPrefix = 'data: ';
+        const dataStart = event.indexOf(dataPrefix);
+        
+        if (dataStart === -1) return { content, thinking };
+        
+        const jsonStr = event.substring(dataStart + dataPrefix.length).trim();
+        if (jsonStr === '[DONE]') return { content, thinking };
+        
         try {
-            const parsed = JSON.parse(data);
-            if (parsed.choices[0].delta?.content) {
-                content += parsed.choices[0].delta.content;
-                output(content, false);
+            const parsed = JSON.parse(jsonStr);
+            
+            // 处理内容更新
+            if (parsed.choices && parsed.choices[0]) {
+                // 处理内容
+                if (parsed.choices[0].delta?.content) {
+                    content += parsed.choices[0].delta.content;
+                }
+                
+                // 处理思考过程
+                if (this.chainOfThought && parsed.choices[0].delta?.[this.thinkingParameter]) {
+                    thinking = (thinking || '') + parsed.choices[0].delta[this.thinkingParameter];
+                }
+                
+                // 输出更新
+                output(content, false, thinking);
             }
-        } catch { }
-        return content;
+        } catch (e) {
+            // 忽略解析错误
+        }
+        
+        return { content, thinking };
+    }
+
+    /**
+     * 基础的流式处理方法，子类可以重写或使用此方法
+     */
+    protected async handleStream(
+        reader: { read(): Promise<{ done: boolean; value?: any }> },
+        output: (content: string, done: boolean, thinking?: string) => void
+    ): Promise<{ content: string, thinking?: string }> {
+        let content = '';
+        let thinking: string | undefined = '';
+        const decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
+        let buffer = '';
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                // 确保value是有效的
+                if (value) {
+                    buffer += decoder.decode(value, { stream: true });
+                    const events = buffer.split("\n\n");
+                    buffer = events.pop() || '';
+
+                    for (const event of events) {
+                        const result = this.processStreamEvent(event, content, thinking, output);
+                        content = result.content;
+                        thinking = result.thinking;
+                    }
+                }
+            }
+
+            // 确保完成最后一部分解码
+            buffer += decoder.decode(undefined, { stream: false });
+            
+            // 处理最后的缓冲区
+            if (buffer.trim()) {
+                const result = this.processStreamEvent(buffer, content, thinking, output);
+                content = result.content;
+                thinking = result.thinking;
+            }
+
+            return { content, thinking };
+        } catch (error) {
+            log.error('Stream handling error:', error);
+            throw error;
+        }
     }
 
     protected validateApiKey(): void {

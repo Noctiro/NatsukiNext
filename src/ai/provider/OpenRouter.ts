@@ -11,11 +11,13 @@ const API_CONFIG: ProviderConfig = {
         'Content-Type': 'application/json'
     },
     params: {
-        temperature: 0.7,
-        max_tokens: 1000,
-        top_p: 0.95,
+        temperature: 1.0,
+        max_tokens: 10000,
+        top_p: 1.0,
         frequency_penalty: 0,
-        presence_penalty: 0
+        presence_penalty: 0,
+        chain_of_thought: true,
+        thinking_parameter: 'reasoning'
     }
 };
 
@@ -23,13 +25,19 @@ interface OpenAIResponse {
     choices: Array<{
         message: {
             content: string;
+            reasoning?: string;
         };
     }>;
 }
 
 export default class OpenRouter extends BaseProvider {
-    constructor(messages: Message[] = [], model: string = API_CONFIG.defaultModel) {
-        super(messages, model);
+    constructor(
+        messages: Message[] = [], 
+        model: string = API_CONFIG.defaultModel, 
+        chainOfThought: boolean = API_CONFIG.params.chain_of_thought as boolean, 
+        thinkingParameter: string = API_CONFIG.params.thinking_parameter as string
+    ) {
+        super(messages, model, chainOfThought, thinkingParameter);
         this.apiKey = process.env.AI_OPENROUTER_API_KEY;
     }
 
@@ -43,17 +51,32 @@ export default class OpenRouter extends BaseProvider {
             ...(streaming ? { 'Accept': 'text/event-stream' } : {})
         };
 
+        // 构建请求体
+        const requestBody: any = {
+            model: this.model,
+            messages: this.messages,
+            stream: streaming,
+            temperature: API_CONFIG.params.temperature,
+            max_tokens: API_CONFIG.params.max_tokens,
+            top_p: API_CONFIG.params.top_p,
+            frequency_penalty: API_CONFIG.params.frequency_penalty,
+            presence_penalty: API_CONFIG.params.presence_penalty
+        };
+        
+        // 添加思考过程配置
+        if (this.chainOfThought) {
+            requestBody.reasoning = {
+                enabled: true,
+                store: true
+            };
+        }
+
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
                 const response = await fetch(`${API_CONFIG.baseURL}/chat/completions`, {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({
-                        ...API_CONFIG.params,
-                        model: this.model,
-                        messages: this.messages,
-                        stream: streaming
-                    }),
+                    body: JSON.stringify(requestBody),
                     signal: AbortSignal.timeout(60000)
                 });
 
@@ -70,38 +93,25 @@ export default class OpenRouter extends BaseProvider {
         throw new Error(`Request failed after ${maxRetries} retries`);
     }
 
-    async stream(output: (content: string, done: boolean) => void, text: string, store = true): Promise<void> {
+    async stream(output: (content: string, done: boolean, thinking?: string) => void, text: string, store = true): Promise<void> {
         this.messages.push({ role: "user", content: text });
         try {
             const response = await this.makeRequest(true);
             const reader = response.body?.getReader();
             if (!reader) throw new Error('No reader available');
 
-            let content = '';
-            const decoder = new TextDecoder();
-            let buffer = '';
+            // 使用基类的流式处理方法
+            const { content, thinking } = await this.handleStream(reader, output);
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const events = buffer.split("\n\n");
-                buffer = events.pop() || '';
-
-                for (const event of events) {
-                    content = this.processStreamChunk(event, content, output);
+            // 最终输出和存储
+            output(content, true, thinking);
+            if (store) {
+                const messageToStore: Message = { role: "assistant", content };
+                if (thinking) {
+                    messageToStore.thinking = thinking;
                 }
+                this.messages.push(messageToStore);
             }
-
-            if (buffer) {
-                for (const event of buffer.split("\n\n")) {
-                    content = this.processStreamChunk(event, content, output);
-                }
-            }
-
-            output(content, true);
-            if (store) this.messages.push({ role: "assistant", content });
         } catch (error: unknown) {
             if (error instanceof Error) {
                 log.error('Stream failed:', error.message);
@@ -115,11 +125,31 @@ export default class OpenRouter extends BaseProvider {
         try {
             const response = await this.makeRequest(false);
             const data = await response.json() as OpenAIResponse;
-            const content = data.choices[0]?.message?.content;
+            
+            let content: string = '';
+            let thinking: string | undefined;
+            
+            // 获取内容
+            content = data.choices[0]?.message?.content || '';
+            
+            // 获取思考过程 - 使用正确的字段名
+            if (this.chainOfThought) {
+                const messageObj = data.choices[0]?.message as Record<string, any>;
+                thinking = messageObj?.[this.thinkingParameter];
+            }
+            
             if (!content) {
                 throw new Error('Invalid response format from API');
             }
-            if (store) this.messages.push({ role: "assistant", content });
+            
+            if (store) {
+                const messageToStore: Message = { role: "assistant", content };
+                if (thinking) {
+                    messageToStore.thinking = thinking;
+                }
+                this.messages.push(messageToStore);
+            }
+            
             return content;
         } catch (error: unknown) {
             if (error instanceof Error) {
@@ -130,4 +160,12 @@ export default class OpenRouter extends BaseProvider {
     }
 }
 
-// (new OpenRouter).stream((content, done) => console.log(content), "早上好");
+// 测试代码：使用思考模式流式输出
+// (new OpenRouter()).stream(
+//     (content, done, thinking) => {
+//         if (content) console.log('内容:', content);
+//         if (thinking) console.log('思考过程:', thinking);
+//         if (done) console.log('输出完成');
+//     }, 
+//     "求解方程 ln(x) = -x 的解，一步一步地思考，详细解释每一步的推导过程"
+// );

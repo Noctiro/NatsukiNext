@@ -32,8 +32,11 @@ log.info(`Login in ${self.username} (${self.id})`, { remote: true });
 
 // Dispatcher.for(telegram).onNewMessage(
 //     async (ctx) => {
-//         const test = "test";
-//         ctx.replyText(md`**${test}**\n\n**English Test**`)
+//         const title = "Test Title";
+//         const content = "This is a test message";
+//         ctx.replyText(md`**${title}**\n\n${content}`);
+
+//         ctx.replyText(md`**English Test** **тест по русскому языку** **中文测试** **日本語のテスト** **한국어 테스트** **Test de français** **Test de español** **Test de português** **Test italiano** **Test Nederlands** **Test العربية** **Test Türkçe** **Test हिंदी** **Test ภาษาไทย** **Test Tiếng Việt**`)
 //     }
 // )
 

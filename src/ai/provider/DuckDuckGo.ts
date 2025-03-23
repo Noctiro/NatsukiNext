@@ -4,7 +4,8 @@ import { log } from '../../log';
 import { slowModeState } from './BaseProvider';
 import { generateRandomUserAgent } from '../../utils/UserAgent';
 
-const DEFAULT_MODEL = 'gpt-4o-mini';
+// const DEFAULT_MODEL = 'gpt-4o-mini';
+const DEFAULT_MODEL = 'o3-mini';
 
 interface DuckResponse {
     action?: string;

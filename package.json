@@ -15,6 +15,7 @@
   "dependencies": {
     "@mtcute/bun": "^0.22.0",
     "@mtcute/dispatcher": "^0.22.2",
-    "@mtcute/markdown-parser": "^0.22.2"
+    "@mtcute/markdown-parser": "^0.22.2",
+    "google-sr": "^5.0.0"
   }
 }
