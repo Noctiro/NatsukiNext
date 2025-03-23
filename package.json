@@ -1,0 +1,20 @@
+{
+  "name": "natsukimiyu",
+  "module": "src/app.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/app.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "@mtcute/bun": "^0.22.0",
+    "@mtcute/dispatcher": "^0.22.2",
+    "@mtcute/markdown-parser": "^0.22.2"
+  }
+}
