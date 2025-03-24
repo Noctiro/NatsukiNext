@@ -68,10 +68,8 @@ async function executeUpdates() {
     // 执行所有待处理的更新
     for (const [key, update] of updatesToProcess.entries()) {
         try {
-            // 检查是否与上次内容相同
-            const lastContent = lastMessageContents.get(key);
-            if (lastContent === update.text) {
-                // 内容相同，跳过更新
+            // 检查内容是否与上次相同，如果相同则跳过
+            if (isContentUnchanged(key, update.text)) {
                 continue;
             }
             
@@ -90,14 +88,18 @@ async function executeUpdates() {
     }
 }
 
+// 检查消息内容是否未变化
+function isContentUnchanged(key: string, newContent: string): boolean {
+    const lastContent = lastMessageContents.get(key);
+    return lastContent === newContent;
+}
+
 // 节流函数，控制消息更新频率
 async function throttledEditMessage(ctx: CommandContext, chatId: string | number, messageId: number, text: string): Promise<void> {
     const key = `${chatId}:${messageId}`;
     
-    // 检查内容是否与上次相同
-    const lastContent = lastMessageContents.get(key);
-    if (lastContent === text) {
-        // 内容完全相同，直接跳过
+    // 检查内容是否与上次相同，如果相同则直接跳过
+    if (isContentUnchanged(key, text)) {
         return;
     }
     
@@ -173,43 +175,107 @@ const HELP = `<b>🤖 AI助手</b><br>
 - 🔒 普通用户每天限制使用${userCount.getDefaultData()}次<br>
 - ⚡ 拥有无限制权限的用户可无限使用`;
 
-// 用于提取搜索关键词的提示词
-const extractPrompt = `作为搜索意图助手，您的任务是为用户问题生成最有效的搜索关键词，以获取最相关的信息。
+// 将提取和优化关键词合并为一个步骤的提示词
+const SEARCH_KEYWORDS_GENERATION_PROMPT = `作为AI搜索助手，您的任务是基于用户问题直接生成最佳搜索关键词，以获取最相关的搜索结果。
 
-指南:
-1. 为每个问题创建3-5个高质量的搜索查询（每行一个）
-2. 查询应包含关键概念、术语、实体，避免一般性词汇
-3. 对于复杂问题，拆分为多个具体的子查询
-4. 针对需要最新信息的问题，添加时间相关词汇
-5. 考虑添加"最佳实践"、"教程"、"官方"等修饰词以获取权威信息
-6. 对于任何问题都应尝试生成搜索关键词，除非是明显的闲聊或问候
+当前时间：${new Date().toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+})}
 
-查询格式规则:
-- 每个查询放在单独一行
-- 优先使用完整短语而非单个词
-- 对于需要比较的问题，生成针对每个选项的查询
+请分析以下用户问题，并直接生成4-5个最优质的搜索查询（每行一个），确保能获取最精准、最新的信息：
 
-输入文本: `;
+"${0}"
 
-// 搜索关键词优化提示词
-const optimizeSearchPrompt = `分析以下提取的搜索关键词，将其优化为更有效的搜索查询，确保能获取最精准、最新的信息：
-
-${0}
-
-优化规则：
-1. 移除模糊或过于笼统的词语，使查询更具体和精确
-2. 添加特定的技术术语、专业词汇或领域标识词
-3. 考虑不同的表达方式和同义词，确保覆盖全面
-4. 对于多语言内容，添加语言指示词（如"中文教程"或"英文文档"）
-5. 按相关性和重要性排序关键词
-6. 合并相似的查询并删除重复内容
-7. 为需要最新信息的查询添加年份（如"2025"、"最新"）
-8. 限制在4个最优质的查询，确保质量优于数量
+优化原则：
+1. 查询应包含关键概念、术语和实体，避免一般性词汇
+2. 对于复杂问题，拆分为多个具体的子查询
+3. 添加特定的技术术语、专业词汇或领域标识词
+4. 考虑不同的表达方式和同义词，确保覆盖全面
+5. 对于多语言内容，添加语言指示词（如"中文教程"或"英文文档"）
+6. 为需要最新信息的查询添加年份（如"${new Date().getFullYear()}"、"最新"）
+7. 添加"最佳实践"、"教程"、"官方"等修饰词以获取权威信息
+8. 限制在4-5个最优质的查询，质量优于数量
 
 输出格式：
 - 每行一个优化后的查询
-- 不要添加任何额外注释或编号
-- 不要使用引号或特殊符号`;
+- 不要添加任何额外注释、编号或引号
+- 仅输出最终优化的查询关键词列表`;
+
+// 合并提取和优化关键词的函数
+async function generateSearchKeywords(aiModel: any, userQuestion: string): Promise<string> {
+    try {
+        // 使用提示词模板生成最终的提示词
+        const searchKeywordsPrompt = SEARCH_KEYWORDS_GENERATION_PROMPT.replace('${0}', userQuestion);
+        
+        // 使用AI直接获取优化后的关键词
+        const generatedKeywords = await aiModel.get(searchKeywordsPrompt, false);
+        
+        if (generatedKeywords && generatedKeywords.trim()) {
+            const optimizedKeywords = generatedKeywords.trim();
+            
+            // 日志记录
+            log.info(`生成搜索关键词: "${optimizedKeywords.replace(/\n/g, '; ')}"`);
+            
+            return optimizedKeywords;
+        } else {
+            log.warn('AI返回的关键词为空，使用备用方案');
+            throw new Error('AI返回的关键词为空');
+        }
+    } catch (err) {
+        log.error(`生成搜索关键词失败: ${err instanceof Error ? err.message : String(err)}`);
+        
+        // 如果失败，回退到基本处理
+        log.warn(`对问题"${userQuestion.substring(0, 50)}${userQuestion.length > 50 ? '...' : ''}"使用备用关键词生成方法`);
+        return generateFallbackKeywords(userQuestion);
+    }
+}
+
+// 备用的关键词生成函数（当AI生成失败时使用）
+function generateFallbackKeywords(userQuestion: string): string {
+    // 简单地将问题分割成多个部分作为关键词
+    const words = userQuestion
+        .replace(/[.,?!;:"']/g, '')
+        .split(/\s+/)
+        .filter(word => word.length > 2)
+        .slice(0, 5);
+    
+    // 如果分词后的关键词不足3个，则使用整个问题作为一个关键词
+    if (words.length < 3) {
+        return userQuestion;
+    }
+    
+    // 将单词组合成2-3个关键词短语
+    const keywordPhrases = [];
+    
+    // 添加前3个词组合
+    if (words.length >= 3) {
+        keywordPhrases.push(words.slice(0, 3).join(' '));
+    }
+    
+    // 添加后3个词组合（如果不同）
+    if (words.length > 3) {
+        const lastThree = words.slice(-3).join(' ');
+        if (lastThree !== keywordPhrases[0]) {
+            keywordPhrases.push(lastThree);
+        }
+    }
+    
+    // 如果基础关键词不足2个，添加中间的词
+    if (keywordPhrases.length < 2 && words.length > 3) {
+        keywordPhrases.push(words.slice(1, 4).join(' '));
+    }
+    
+    // 如果仍然只有一个关键词，尝试添加当前年份以获取更新的信息
+    if (keywordPhrases.length === 1) {
+        keywordPhrases.push(`${keywordPhrases[0]} ${new Date().getFullYear()}`);
+    }
+    
+    // 日志记录生成的备用关键词
+    log.info(`生成备用关键词: "${keywordPhrases.join('; ')}"`);
+    
+    return keywordPhrases.join('\n');
+}
 
 const plugin: BotPlugin = {
     name: 'ai',
@@ -287,10 +353,10 @@ const plugin: BotPlugin = {
                 try {
                     // 提取搜索关键词
                     const fastAI = getFastAI();
-                    const extractKeywords = await fastAI.get(`${extractPrompt}${question}`, false);
+                    const keywords = await generateSearchKeywords(fastAI, question);
                     
                     // 检查是否有关键词且不为空
-                    if (!extractKeywords.trim()) {
+                    if (!keywords.trim()) {
                         // 关键词提取失败，给出错误信息
                         await updateMessageStatus(ctx, waitMsg.id, 'error', "无法识别您的问题，请尝试重新表述或提供更多信息");
                         return;
@@ -309,23 +375,31 @@ const plugin: BotPlugin = {
                     incrementSearchCount(userId);
                     
                     // 进行搜索
-                    const keywords = extractKeywords.trim();
-                    
-                    // 优化搜索关键词
-                    const optimizedKeywords = await optimizeSearchKeywords(fastAI, keywords);
-                    let searchPreview = formatSearchPreview(optimizedKeywords);
+                    const searchPreview = formatSearchPreview(keywords);
                     
                     await updateMessageStatus(ctx, waitMsg.id, 'searching', `${searchPreview} ${slowModeTip}`);
                     
                     // 执行批量搜索
-                    const searchResults = await performBatchSearch(optimizedKeywords);
+                    const searchResults = await performBatchSearch(keywords);
                     
                     // 格式化搜索结果
                     await updateMessageStatus(ctx, waitMsg.id, 'processing', slowModeTip);
                     
                     // 将搜索结果转化为提示词的一部分
                     const searchResultText = formatSearchResults(searchResults);
-                    const prompt = getSearchPrompt(question, searchResultText);
+                    
+                    // 检查搜索结果是否有效
+                    const hasValidResults = searchResultText && 
+                                          searchResultText.trim() !== "未找到相关搜索结果" && 
+                                          searchResultText.trim().length > 10;
+                    
+                    if (!hasValidResults) {
+                        log.warn(`未获取到有效搜索结果，将使用AI自身知识回答问题: "${question}"`);
+                    } else {
+                        log.info(`获取到有效搜索结果，长度: ${searchResultText.length} 字符`);
+                    }
+                    
+                    const prompt = generateComprehensiveAIPrompt(question, searchResultText);
                     
                     // 使用高质量AI回答问题
                     const ai = getHighQualityAI();
@@ -429,6 +503,33 @@ const plugin: BotPlugin = {
 
 // 更新消息状态的辅助函数
 async function updateMessageStatus(ctx: CommandContext, messageId: number, status: keyof typeof STATUS_EMOJIS, additionalText: string = ''): Promise<void> {
+    // 获取格式化后的状态文本
+    const text = formatStatusText(status, additionalText);
+    
+    // 检查状态消息是否变化
+    const key = `${ctx.chatId}:${messageId}`;
+    if (isContentUnchanged(key, text)) {
+        // 内容相同，跳过更新
+        return;
+    }
+    
+    // 状态消息直接更新，不受全局节流限制影响
+    try {
+        await ctx.client.editMessage({
+            chatId: ctx.chatId,
+            message: messageId,
+            text: html(text)
+        });
+        
+        // 更新成功后记录内容
+        lastMessageContents.set(key, text);
+    } catch (e) {
+        log.error(`更新状态消息失败: ${e}`);
+    }
+}
+
+// 格式化状态文本（可以被其他地方重用）
+function formatStatusText(status: keyof typeof STATUS_EMOJIS, additionalText: string = ''): string {
     const emoji = STATUS_EMOJIS[status];
     let text = '';
     
@@ -458,27 +559,7 @@ async function updateMessageStatus(ctx: CommandContext, messageId: number, statu
             text = `${emoji} ${additionalText}`;
     }
     
-    // 检查状态消息是否变化
-    const key = `${ctx.chatId}:${messageId}`;
-    const lastContent = lastMessageContents.get(key);
-    if (lastContent === text) {
-        // 内容相同，跳过更新
-        return;
-    }
-    
-    // 状态消息直接更新，不受全局节流限制影响
-    try {
-        await ctx.client.editMessage({
-            chatId: ctx.chatId,
-            message: messageId,
-            text: html(text)
-        });
-        
-        // 更新成功后记录内容
-        lastMessageContents.set(key, text);
-    } catch (e) {
-        log.error(`更新状态消息失败: ${e}`);
-    }
+    return text;
 }
 
 // 执行搜索的辅助函数
@@ -508,18 +589,45 @@ async function performSearch(keyword: string) {
     };
 }
 
-// 格式化搜索预览
-function formatSearchPreview(keywords: string): string {
+// 格式化搜索关键词预览，用于显示在状态消息中
+function formatSearchPreview(searchKeywords: string): string {
+    // 确保输入数据有效
+    if (!searchKeywords || typeof searchKeywords !== 'string') {
+        return "正在搜索...";
+    }
+    
+    // 分割并过滤关键词行
+    const keywordLines = searchKeywords.split('\n').filter(line => line.trim());
+    
+    // 如果没有有效关键词，返回默认文本
+    if (keywordLines.length === 0) {
+        return "正在搜索...";
+    }
+    
+    // 使用通用函数格式化预览文本
+    return formatPreviewText(keywordLines);
+}
+
+// 通用预览文本格式化函数（可以被其他地方重用）
+function formatPreviewText(keywordLines: string[]): string {
     // 如果有多行关键词，只展示第一行，添加"等X个关键词"的提示
-    const keywordLines = keywords.split('\n').filter(line => line.trim());
     if (keywordLines.length > 1) {
-        const firstKeyword = keywordLines[0] || '';
-        const preview = firstKeyword.length > 25 ? firstKeyword.slice(0, 22) + '...' : firstKeyword;
-        return `${preview} 等${keywordLines.length}个关键词`;
+        const firstKeyword = keywordLines[0] || ''; // 确保有默认值
+        // 如果关键词太长，进行截断并添加省略号
+        const keywordPreview = truncateText(firstKeyword, 25, 22);
+        return `${keywordPreview} 等${keywordLines.length}个关键词`;
     } else {
         // 单行关键词，如果太长就截断
-        return keywords.length > 30 ? keywords.slice(0, 27) + '...' : keywords;
+        const singleKeyword = keywordLines[0] || ''; // 确保有默认值
+        return truncateText(singleKeyword, 30, 27);
     }
+}
+
+// 文本截断辅助函数
+function truncateText(text: string, maxLength: number, truncateAt: number): string {
+    return text.length > maxLength 
+        ? text.slice(0, truncateAt) + '...' 
+        : text;
 }
 
 // Markdown到HTML的转换辅助函数
@@ -776,134 +884,176 @@ function evaluateSearchResults(results: any[]): any[] {
 }
 
 // 格式化搜索结果
-function formatSearchResults(results: any[]): string {
-    if (!results || results.length === 0) {
+function formatSearchResults(searchResultsArray: any[]): string {
+    // 检查是否有搜索结果
+    if (!searchResultsArray || searchResultsArray.length === 0) {
         return "未找到相关搜索结果";
     }
     
-    let formatted = '';
-    const processedLinks = new Set<string>(); // 用于去重，避免重复内容
-    let totalQualityResults = 0;
+    // 验证实际结果内容，筛选出有效的结果
+    const validResultsArray = searchResultsArray.filter(resultItem => 
+        resultItem && resultItem.results && 
+        ((resultItem.results.organic && resultItem.results.organic.length > 0) || 
+         resultItem.results.dictionary || 
+         resultItem.results.translate || 
+         resultItem.results.time || 
+         resultItem.results.currency)
+    );
     
-    // 对每个关键词的搜索结果进行处理
-    for (const item of results) {
-        if (!item.results) continue;
-        
-        const qualityInfo = item.quality ? 
-            `(平均质量: ${item.quality.avgScore.toFixed(1)}/10, 高质量结果: ${item.quality.highQualityCount}/${item.quality.resultCount})` : '';
-            
-        formatted += `关键词: ${item.keyword}${item.fromCache ? ' (⚡已缓存)' : ''} ${qualityInfo}\n`;
+    // 如果没有有效结果，返回提示信息
+    if (validResultsArray.length === 0) {
+        return "未找到具有实质内容的搜索结果";
+    }
+    
+    let formattedOutput = '';
+    const processedLinks = new Set<string>(); // 用于去重，避免重复内容
+    let highQualityResultCount = 0;
+    let resultNumber = 1; // 结果编号
+    
+    // 处理每个搜索关键词的结果
+    for (const resultItem of validResultsArray) {
+        if (!resultItem.results) continue;
         
         // 处理特殊结果类型（字典、翻译、时间等）
-        const specialResults = processSpecialResults(item.results, '');
-        if (specialResults) {
-            formatted += specialResults;
+        const specialResultsText = processSpecialResults(resultItem.results, '');
+        if (specialResultsText) {
+            formattedOutput += specialResultsText + '\n';
         }
         
         // 处理有机搜索结果
-        if (item.results.organic && item.results.organic.length > 0) {
-            // 优先选择更高质量的结果
-            const organicResults = [...item.results.organic]
-                .sort((a, b) => {
-                    const aScore = getResultQualityScore(a);
-                    const bScore = getResultQualityScore(b);
-                    return bScore - aScore;
+        if (resultItem.results.organic && resultItem.results.organic.length > 0) {
+            // 按质量排序搜索结果
+            const sortedResults = [...resultItem.results.organic]
+                .sort((resultA, resultB) => {
+                    const scoreA = getResultQualityScore(resultA);
+                    const scoreB = getResultQualityScore(resultB);
+                    return scoreB - scoreA;
                 });
             
-            // 添加搜索结果摘要
-            formatted += `网络搜索结果:\n`;
+            // 只为第一组搜索结果添加标题
+            if (formattedOutput.indexOf('网络搜索结果') === -1) {
+                formattedOutput += `网络搜索结果:\n`;
+            }
             
-            // 只取高质量且非重复的结果
-            let resultCount = 0;
-            for (const organic of organicResults) {
-                if (resultCount >= 5) break; // 最多显示5个结果
+            // 只取高质量且非重复的结果，最多显示5个
+            let processedResultCount = 0;
+            for (const searchResult of sortedResults) {
+                // 限制每个关键词最多显示5个结果
+                if (processedResultCount >= 5) break;
                 
                 // 检查链接是否已处理过（去重）
-                if (processedLinks.has(organic.link)) continue;
-                processedLinks.add(organic.link);
+                if (!searchResult.link || processedLinks.has(searchResult.link)) continue;
+                processedLinks.add(searchResult.link);
                 
-                // 格式化结果
-                formatted += formatOrganicResult(organic);
-                resultCount++;
+                // 确保必要字段存在
+                if (!searchResult.title && !searchResult.snippet) continue;
+                
+                // 格式化结果并添加序号
+                formattedOutput += `[结果 ${resultNumber}] -----\n`;
+                formattedOutput += formatSearchResultItem(searchResult);
+                processedResultCount++;
+                resultNumber++;
                 
                 // 统计高质量结果
-                const score = getResultQualityScore(organic);
-                if (score > 5) totalQualityResults++;
+                const resultScore = getResultQualityScore(searchResult);
+                if (resultScore > 5) highQualityResultCount++;
             }
         }
-        
-        formatted += '----------\n';
     }
     
-    // 只添加有实际帮助的质量评估信息
-    if (totalQualityResults === 0 && processedLinks.size > 0) {
-        formatted += `\n⚠️ 警告：未找到高质量的搜索结果，信息可能不够准确或不够全面。\n`;
+    // 检查是否有实际的内容
+    if (formattedOutput.trim().length === 0) {
+        return "搜索成功但未返回实质内容";
     }
     
-    return formatted;
+    // 如果没有高质量结果但有一些结果，添加警告信息
+    if (highQualityResultCount === 0 && processedLinks.size > 0) {
+        formattedOutput += `\n⚠️ 注意：搜索结果质量不高，信息可能不够准确或不够全面。\n`;
+    }
+    
+    return formattedOutput;
 }
 
-// 处理特殊结果类型
-function processSpecialResults(results: any, formattedText: string = ''): string {
-    let text = formattedText;
+// 处理特殊结果类型（字典、翻译、时间等）
+function processSpecialResults(results: any, initialText: string = ''): string {
+    if (!results) return initialText;
     
-    // 处理字典结果
+    let processedText = initialText;
+    
+    // 按特殊结果类型处理，将各种特殊结果添加到文本中
+    
+    // 1. 处理字典解释结果
     if (results.dictionary) {
-        text += `📚 字典解释: ${results.dictionary.term} - ${results.dictionary.definition}\n`;
+        const { term, definition } = results.dictionary;
+        processedText += `字典解释: ${term} - ${definition}\n`;
     }
     
-    // 处理翻译结果
+    // 2. 处理翻译结果
     if (results.translate) {
-        text += `🌐 翻译: ${results.translate.source} → ${results.translate.target}\n`;
-        text += `原文: ${results.translate.sourceText}\n`;
-        text += `译文: ${results.translate.targetText}\n`;
+        const { source, target, sourceText, targetText } = results.translate;
+        processedText += `翻译结果: ${source} → ${target}\n`;
+        processedText += `原文: ${sourceText}\n`;
+        processedText += `译文: ${targetText}\n`;
     }
     
-    // 处理时间结果
+    // 3. 处理时间信息结果
     if (results.time) {
-        text += `⏰ 时间信息: ${results.time.display}\n`;
+        processedText += `时间信息: ${results.time.display}\n`;
     }
     
-    // 处理货币结果
+    // 4. 处理货币转换结果
     if (results.currency) {
-        text += `💱 货币转换: ${results.currency.fromAmount} ${results.currency.fromCode} = ${results.currency.toAmount} ${results.currency.toCode}\n`;
+        const { fromAmount, fromCode, toAmount, toCode } = results.currency;
+        processedText += `货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}\n`;
     }
     
-    return text;
+    return processedText;
 }
 
-// 格式化有机搜索结果
-function formatOrganicResult(organic: any): string {
-    let result = '';
-    const qualityScore = getResultQualityScore(organic);
-    const qualityIndicator = qualityScore > 7 ? '⭐' : (qualityScore > 4 ? '✓' : '');
+// 格式化单个搜索结果项
+function formatSearchResultItem(searchResult: any): string {
+    if (!searchResult) return '';
     
-    result += `- ${qualityIndicator} 标题: ${organic.title}\n`;
-    result += `  链接: ${organic.link}\n`;
+    let resultText = '';
     
-    // 改进摘要的处理，确保有用的部分被保留
-    if (organic.snippet) {
+    // 确保有标题
+    if (searchResult.title) {
+        resultText += `标题: ${searchResult.title}\n`;
+    } else {
+        resultText += `标题: (无标题)\n`;
+    }
+    
+    // 确保有链接
+    if (searchResult.link) {
+        resultText += `链接: ${searchResult.link}\n`;
+    }
+    
+    // 处理摘要，确保有用的部分被保留
+    if (searchResult.snippet) {
         // 如果摘要过长，智能截断
-        let snippet = organic.snippet;
+        let snippet = searchResult.snippet;
         if (snippet.length > 200) {
-            // 找到完整句子的结束位置进行截断
+            // 尝试在完整句子结束处截断
             const endPos = snippet.substr(0, 200).lastIndexOf('。');
             if (endPos > 100) {
                 snippet = snippet.substr(0, endPos + 1) + '...';
             } else {
+                // 如果找不到合适的句子结束点，就在固定位置截断
                 snippet = snippet.substr(0, 197) + '...';
             }
         }
-        result += `  摘要: ${snippet}\n`;
+        resultText += `内容摘要: ${snippet}\n`;
+    } else {
+        resultText += `内容摘要: (无摘要)\n`;
     }
     
     // 添加额外信息（如果有）
-    if (organic.sitelinks && organic.sitelinks.length > 0) {
-        result += `  相关链接: ${organic.sitelinks.map((link: any) => link.title).join(', ')}\n`;
+    if (searchResult.sitelinks && searchResult.sitelinks.length > 0) {
+        resultText += `相关链接: ${searchResult.sitelinks.map((link: any) => link.title || "(无标题)").join(', ')}\n`;
     }
     
-    result += '\n';
-    return result;
+    resultText += '\n';
+    return resultText;
 }
 
 // 改进：计算搜索结果质量分数
@@ -997,31 +1147,64 @@ function checkTopDomains(link: string): boolean {
         'zhihu.com', 'csdn.net', 'juejin.cn', 'segmentfault.com',
         'jianshu.com', 'infoq.cn', 'oschina.net', '51cto.com',
         'freecodecamp.org', 'codeproject.com', 'codecademy.com',
+        'nowcoder.com', 'leetcode.com', 'leetcode.cn', 'geeksforgeeks.org',
+        'towardsdatascience.com', 'kaggle.com', 'huggingface.co',
+        
+        // 中国科技媒体和平台
+        'qbitai.com', '36kr.com', 'ifanr.com', 'pingwest.com', 
+        'leiphone.com', 'tmtpost.com', 'geekpark.net', 'iheima.com',
+        'huxiu.com', 'sspai.com', 'ithome.com', 'techcrunchcn.com',
+        'cnbeta.com', 'dgtle.com', 'iyiou.com', 'woshipm.com',
+        'cyzone.cn', 'jiqizhixin.com', 'mittrchina.com', 'sohu.com',
+        'mydrivers.com', 'zol.com.cn', 'lanhuapp.com', 'opp.today',
+        'tuicool.com', 'toutiao.com', 'weixin.qq.com', 'ali213.net',
+        
+        // 国际AI研究和资讯平台
+        'openai.com', 'anthropic.com', 'huggingface.co', 'deepmind.com',
+        'ai21.com', 'stability.ai', 'cohere.ai', 'pytorch.org',
+        'tensorflow.org', 'keras.io', 'nvidia.com/ai', 'distill.pub',
+        'paperswithcode.com', 'ai.googleblog.com', 'research.fb.com',
+        'ai.meta.com', 'ai.facebook.com', 'deeplearning.ai',
+        'fast.ai', 'ai.stanford.edu', 'ai.mit.edu', 'oecd.ai',
+        'futureoflife.org', 'partnershiponai.org', 'ai-ethics.com',
         
         // 大型科技公司
         'microsoft.com', 'apple.com', 'google.com', 'amazon.com',
         'ibm.com', 'oracle.com', 'intel.com', 'nvidia.com',
         'meta.com', 'facebook.com', 'twitter.com', 'linkedin.com',
+        'alibaba.com', 'taobao.com', 'tencent.com', 'baidu.com',
+        'jd.com', 'bytedance.com', 'xiaomi.com', 'huawei.com',
+        'lenovo.com', 'pinduoduo.com', 'meituan.com', 'didi-global.com',
         
         // 技术标准和文档
         'w3.org', 'ietf.org', 'iso.org', 'ieee.org',
         'ecma-international.org', 'whatwg.org', 'khronos.org',
+        'developer.chrome.com', 'reactjs.org', 'vuejs.org',
+        'kubernetes.io', 'docker.com', 'terraform.io', 'redis.io',
         
         // 编程语言官网
         'python.org', 'javascript.info', 'ruby-lang.org', 'php.net',
         'golang.org', 'rust-lang.org', 'dart.dev', 'kotlinlang.org',
         'scala-lang.org', 'cppreference.com', 'isocpp.org',
+        'swift.org', 'typescriptlang.org', 'java.com', 'julialang.org',
+        'clojure.org', 'haskell.org', 'elixir-lang.org', 'crystal-lang.org',
         
         // 框架官网
         'reactjs.org', 'vuejs.org', 'angular.io', 'djangoproject.com',
         'laravel.com', 'rubyonrails.org', 'nodejs.org', 'spring.io',
         'flask.palletsprojects.com', 'svelte.dev', 'nextjs.org',
+        'nestjs.com', 'expressjs.com', 'remix.run', 'fastapi.tiangolo.com',
+        'pytorch.org', 'tensorflow.org', 'keras.io', 'scikit-learn.org',
+        'pandas.pydata.org', 'numpy.org', 'opencv.org', 'electronjs.org',
         
         // 学术和教育网站
         'researchgate.net', 'academia.edu', 'arxiv.org', 'ssrn.com',
         'jstor.org', 'sciencedirect.com', 'ieee.org', 'acm.org',
         'coursera.org', 'edx.org', 'udemy.com', 'khanacademy.org',
         'mit.edu', 'stanford.edu', 'harvard.edu', 'berkeley.edu',
+        'ocw.mit.edu', 'tsinghua.edu.cn', 'pku.edu.cn', 'fudan.edu.cn',
+        'zju.edu.cn', 'sjtu.edu.cn', 'nature.com', 'science.org',
+        'pnas.org', 'cell.com', 'sciencemag.org', 'plos.org',
         
         // 新闻和媒体
         'reuters.com', 'bloomberg.com', 'nytimes.com', 'wsj.com', 
@@ -1029,21 +1212,55 @@ function checkTopDomains(link: string): boolean {
         'theguardian.com', 'time.com', 'ft.com', 'techcrunch.com',
         'wired.com', 'zdnet.com', 'theverge.com', 'engadget.com',
         'sina.com.cn', 'qq.com', 'people.com.cn', 'xinhuanet.com',
+        'caixin.com', 'yicai.com', 'ce.cn', 'bjnews.com.cn',
+        'thepaper.cn', 'guancha.cn', 'ftchinese.com', 'chinadaily.com.cn',
         
         // 百科和参考资料
         'wikipedia.org', 'baike.baidu.com', 'britannica.com',
         'investopedia.com', 'howstuffworks.com', 'webmd.com',
-        'mayoclinic.org', 'nih.gov', 'cdc.gov', 'who.int'
+        'mayoclinic.org', 'nih.gov', 'cdc.gov', 'who.int',
+        'cnki.net', 'wanfangdata.com.cn', 'ncbi.nlm.nih.gov', 'pubmed.gov',
+        'scholarpedia.org', 'wikimedia.org', 'chemicalbook.com', 'chemblink.com'
     ];
     
     return topDomains.some(domain => link.includes(domain));
 }
 
-// 包含搜索结果的提示词
-function getSearchPrompt(question: string, searchResults: string): string {
-    return `问题：${question}
+// 生成发送给高质量AI的完整提示词
+function generateComprehensiveAIPrompt(userQuestion: string, searchResults: string): string {
+    // 获取当前精确时间
+    const currentDateTime = new Date().toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+    
+    // 检查搜索结果是否有效
+    const hasValidResults = searchResults && 
+                           searchResults.trim() !== "未找到相关搜索结果" && 
+                           searchResults.trim().length > 10;
+    
+    // 构建搜索结果部分
+    const searchResultsSection = hasValidResults
+        ? `搜索结果:
+\`\`\`
+${searchResults}
+\`\`\``
+        : `搜索结果:
+\`\`\`
+未能获取到与问题直接相关的搜索结果。请基于您的知识库和训练数据回答问题。
+\`\`\``;
+    
+    // 返回完整提示词
+    return `问题：${userQuestion}
 
-以下是基于互联网搜索整理的相关信息。请根据这些搜索结果和你的知识，提供一个全面、准确且直击问题核心的回答。
+当前时间：${currentDateTime}
+
+以下是基于互联网搜索整理的相关信息和搜索结果。请根据这些实际搜索结果和你的知识，提供一个全面、准确且直击问题核心的回答。
 
 分析指南：
 1. 综合分析所有搜索结果，提取最相关、最可靠的信息
@@ -1080,37 +1297,9 @@ function getSearchPrompt(question: string, searchResults: string): string {
 - 近期发布的信息通常比旧信息更具时效性
 - 多个独立来源一致的信息比单一来源的信息更可靠
 
-搜索结果:
-\`\`\`
-${searchResults}
-\`\`\`
+${searchResultsSection}
 
 若搜索结果不足以全面回答问题，请基于你的知识补充必要信息，但请明确区分哪些是基于搜索结果的信息，哪些是你的知识补充。如果问题涉及最新发展或变化，请说明现有信息可能已过时。`;
-}
-
-// 优化搜索关键词 - 增强版
-async function optimizeSearchKeywords(ai: any, keywords: string): Promise<string> {
-    try {
-        // 使用AI优化关键词
-        const optimized = await ai.get(optimizeSearchPrompt.replace('${0}', keywords), false);
-        
-        if (optimized && optimized.trim()) {
-            const optimizedKeywords = optimized.trim();
-            
-            // 日志记录优化效果
-            log.info(`Keywords optimization: Original: "${keywords.replace(/\n/g, '; ')}" → Optimized: "${optimizedKeywords.replace(/\n/g, '; ')}"`);
-            
-            return optimizedKeywords;
-        }
-    } catch (err) {
-        log.error('Failed to optimize search keywords:', err);
-    }
-    
-    // 如果优化失败，返回原始关键词但进行基本处理
-    return keywords.split('\n')
-        .filter(k => k.trim().length > 0)
-        .map(k => k.trim())
-        .join('\n');
 }
 
 export default plugin; 

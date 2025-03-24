@@ -547,14 +547,6 @@ const plugin: BotPlugin = {
             async handler(ctx: CommandContext) {
                 await handleTranslateCommand(ctx);
             }
-        },
-        {
-            name: 'tr',
-            description: '翻译命令的简写形式',
-            cooldown: 3,
-            async handler(ctx: CommandContext) {
-                await handleTranslateCommand(ctx);
-            }
         }
     ]
 };
