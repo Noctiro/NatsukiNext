@@ -2,7 +2,9 @@ import { getFastAI, getHighQualityAI } from "../ai/AiManager";
 import { log } from "../log";
 import { fetchRSS, type RSSItem, type RSSFeed } from "../utils/RssParse";
 import type { BotPlugin, CommandContext } from '../features';
-import { html, type TelegramClient, type TextWithEntities } from "@mtcute/bun";
+import { html, Message, type TelegramClient, type TextWithEntities } from "@mtcute/bun";
+import { Cron } from "croner";
+import { enableChats } from "../app";
 
 /**
  * RSS 源配置接口
@@ -725,18 +727,19 @@ class NewsService {
 
     /**
      * 获取并发送新闻
-     * @param ctx - 命令上下文
+     * @param client - 客户端
+     * @param chatId - 聊天ID
      */
-    async fetchAndSendNews(ctx: CommandContext): Promise<void> {
-        const waitMsg = await ctx.message.replyText("📰 正在获取新闻...");
+    async fetchAndSendNews(client: TelegramClient, chatId: number, replyMessage: Message | null): Promise<void> {
+        const waitMsg = replyMessage ? client.replyText(replyMessage, "📰 正在获取新闻...") : client.sendText(chatId, "📰 正在获取新闻...");
 
         try {
             // 获取下一个轮转分类的新闻
             const { category, news } = await this.getNextRotationNews();
 
             if (!news) {
-                await ctx.client.editMessage({
-                    message: waitMsg,
+                await client.editMessage({
+                    message: await waitMsg,
                     text: `未找到合适的${category}类新闻`
                 });
                 return;
@@ -750,14 +753,22 @@ class NewsService {
 
             // 如果没有图片，直接发送文本
             if (!images.length) {
-                await ctx.message.replyText(text);
+                await client.editMessage({
+                    message: await waitMsg,
+                    text: text
+                });
                 return;
             }
 
             // 如果只有一张图片，发送带图片的消息
             const firstImage = images[0];
             if (images.length === 1 && firstImage) {
-                await ctx.message.replyMedia(firstImage, { caption: text });
+                if (replyMessage) {
+                    client.replyMedia(replyMessage, firstImage, { caption: text });
+                } else {
+                    client.sendMedia(chatId, firstImage, { caption: text });
+                }
+                await client.deleteMessagesById(chatId, [(await waitMsg).id]);
                 return;
             }
 
@@ -770,19 +781,19 @@ class NewsService {
                     caption: index === 0 ? text : undefined
                 }));
 
-            // 发送媒体组或文本
-            if (mediaGroup.length) {
-                await ctx.message.replyMediaGroup(mediaGroup);
+
+            if (replyMessage) {
+                client.replyMediaGroup(replyMessage, mediaGroup);
             } else {
-                await ctx.message.replyText(text);
+                client.sendMediaGroup(chatId, mediaGroup);
             }
 
             // 删除等待消息
-            await ctx.client.deleteMessagesById(ctx.message.chat.id, [waitMsg.id]);
+            await client.deleteMessagesById(chatId, [(await waitMsg).id]);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            await ctx.client.editMessage({
-                message: waitMsg,
+            await client.editMessage({
+                message: await waitMsg,
                 text: `获取新闻失败: ${errorMessage}`
             });
             log.error('News fetch error:', error);
@@ -1134,6 +1145,7 @@ class NewsService {
 
 // 插件全局实例
 let serviceInstance: NewsService | null = null;
+let cycleSendJob: Cron | null = null;
 
 /**
  * RSS插件定义
@@ -1153,7 +1165,7 @@ const plugin: BotPlugin = {
                     await ctx.message.replyText("RSS服务未初始化");
                     return;
                 }
-                await serviceInstance.fetchAndSendNews(ctx);
+                await serviceInstance.fetchAndSendNews(ctx.client, ctx.chatId, ctx.message);
             }
         },
         {
@@ -1212,6 +1224,12 @@ const plugin: BotPlugin = {
         // 初始化服务
         serviceInstance = new NewsService();
         await serviceInstance.init();
+
+        cycleSendJob = new Cron("0,30 * * * *", () => {
+            for (const chatId of enableChats) {
+                serviceInstance?.fetchAndSendNews(client, chatId, null);
+            }
+        });
     },
 
     async onUnload() {
@@ -1219,6 +1237,11 @@ const plugin: BotPlugin = {
         if (serviceInstance) {
             serviceInstance.dispose();
             serviceInstance = null;
+        }
+
+        if (cycleSendJob) {
+            cycleSendJob.stop();
+            cycleSendJob = null;
         }
     }
 };

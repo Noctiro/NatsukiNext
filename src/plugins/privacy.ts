@@ -1,3 +1,4 @@
+import { html } from "@mtcute/bun";
 import type { BotPlugin, CommandContext, MessageEventContext } from "../features";
 import { log } from "../log";
 import { generateRandomUserAgent } from "../utils/UserAgent";
@@ -215,12 +216,12 @@ const plugin: BotPlugin = {
             aliases: ['antitrack', 'notrack'],
 
             async handler(ctx: CommandContext): Promise<void> {
-                await ctx.message.replyText(`
-                    🔒 **隐私保护插件状态**
-                    
-                    - 版本: 1.3.0
-                    - 支持平台数量: ${Object.keys(shortLinkPatterns).length}
-                    - 活跃状态: ✅ 运行中`);
+                await ctx.message.replyText(html`
+                    🔒 <b>隐私保护插件状态</b><br>
+<br>
+- 版本: 1.3.0<br>
+- 支持平台数量: ${Object.keys(shortLinkPatterns).length}<br>
+- 活跃状态: ✅ 运行中`);
             }
         }
     ],

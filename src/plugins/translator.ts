@@ -523,6 +523,7 @@ const plugin: BotPlugin = {
             type: 'message',
             filter: (ctx) => {
                 if (ctx.type !== 'message') return false;
+                if (ctx.message.text.length > 500) return false;
                 const text = ctx.message.text;
                 return !!text && isNotChinese(text);
             },
