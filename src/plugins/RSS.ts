@@ -2,7 +2,7 @@ import { getFastAI, getHighQualityAI } from "../ai/AiManager";
 import { log } from "../log";
 import { fetchRSS, type RSSItem, type RSSFeed } from "../utils/RssParse";
 import type { BotPlugin, CommandContext } from '../features';
-import { md, type TelegramClient, type TextWithEntities } from "@mtcute/bun";
+import { html, type TelegramClient, type TextWithEntities } from "@mtcute/bun";
 
 /**
  * RSS 源配置接口
@@ -845,7 +845,7 @@ class NewsService {
 
         // 组装最终内容
         return {
-            text: md`**${news.title}**\n\n${contentText}\n\n${aiComment}📎 详情 [${news.sourceName}](${news.link})`,
+            text: html`<b>${news.title}</b><br><br>${contentText}<br><br>${aiComment}📎 详情 <a href="${news.link}">${news.sourceName}</a>`,
             images
         };
     }

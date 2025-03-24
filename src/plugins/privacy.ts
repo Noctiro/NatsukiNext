@@ -8,28 +8,39 @@ import { generateRandomUserAgent } from "../utils/UserAgent";
  */
 const shortLinkPatterns = {
     // 中文平台
-    b23: /https?:\/\/b23\.tv\/\w+/g,                    // 哔哩哔哩
-    xhs: /https?:\/\/xhslink\.com\/[A-Za-z0-9]+/g,       // 小红书
-    weibo: /https?:\/\/t\.cn\/\w+/g,                     // 微博
-    douyin: /https?:\/\/v\.douyin\.com\/\w+/g,           // 抖音
-    kuaishou: /https?:\/\/v\.kuaishou\.com\/\w+/g,       // 快手
-    zhihu: /https?:\/\/link\.zhihu\.com\/\?\w+=\w+/g,    // 知乎
-    jd: /https?:\/\/u\.jd\.com\/\w+/g,                   // 京东
-    tb: /https?:\/\/m\.tb\.cn\/\w+/g,                    // 淘宝
+    b23: /https?:\/\/b23\.tv\/[\w-]+/g,                    // 哔哩哔哩
+    xhs: /https?:\/\/xhslink\.com\/[\w-]+/g,               // 小红书
+    weibo: /https?:\/\/t\.cn\/[\w-]+/g,                    // 微博
+    douyin: /https?:\/\/v\.douyin\.com\/[\w-]+/g,          // 抖音
+    kuaishou: /https?:\/\/v\.kuaishou\.com\/[\w-]+/g,      // 快手
+    zhihu: /https?:\/\/link\.zhihu\.com\/\?[\w&=]+/g,      // 知乎
+    jd: /https?:\/\/u\.jd\.com\/[\w-]+/g,                  // 京东
+    tb: /https?:\/\/m\.tb\.cn\/[\w-]+/g,                   // 淘宝
 
     // 国际平台
-    youtu: /https?:\/\/youtu\.be\/[A-Za-z0-9_-]+/g,      // YouTube短链
-    twitter: /https?:\/\/(t\.co|x\.com)\/[A-Za-z0-9_-]+/g, // Twitter/X
-    ig: /https?:\/\/instagram\.com\/p\/[A-Za-z0-9_-]+/g,  // Instagram
-    bit: /https?:\/\/bit\.ly\/[A-Za-z0-9_-]+/g,          // Bitly
-    tinyurl: /https?:\/\/tinyurl\.com\/[A-Za-z0-9_-]+/g, // TinyURL
-    goo: /https?:\/\/goo\.gl\/[A-Za-z0-9_-]+/g,          // Google短链
-    amzn: /https?:\/\/amzn\.(to|com)\/[A-Za-z0-9_-]+/g,  // Amazon
-    link: /https?:\/\/link\.in\/[A-Za-z0-9_-]+/g,        // LinkedIn分享链接
-    tiktok: /https?:\/\/vm\.tiktok\.com\/[A-Za-z0-9_-]+/g, // TikTok
-    fb: /https?:\/\/(fb\.me|on\.fb\.me)\/[A-Za-z0-9_-]+/g, // Facebook
-    spotify: /https?:\/\/open\.spotify\.com\/[A-Za-z0-9_-]+/g  // Spotify
+    youtu: /https?:\/\/youtu\.be\/[\w-]+/g,                // YouTube短链
+    twitter: /https?:\/\/(t\.co|x\.com)\/[\w-]+/g,         // Twitter/X
+    ig: /https?:\/\/instagram\.com\/p\/[\w-]+/g,           // Instagram
+    bit: /https?:\/\/bit\.ly\/[\w-]+/g,                    // Bitly
+    tinyurl: /https?:\/\/tinyurl\.com\/[\w-]+/g,           // TinyURL
+    goo: /https?:\/\/goo\.gl\/[\w-]+/g,                    // Google短链
+    amzn: /https?:\/\/amzn\.(to|com)\/[\w-]+/g,            // Amazon
+    link: /https?:\/\/link\.in\/[\w-]+/g,                  // LinkedIn分享链接
+    tiktok: /https?:\/\/vm\.tiktok\.com\/[\w-]+/g,         // TikTok
+    fb: /https?:\/\/(fb\.me|on\.fb\.me)\/[\w-]+/g,         // Facebook
+    spotify: /https?:\/\/open\.spotify\.com\/[\w-]+/g       // Spotify
 };
+
+// 合并所有正则表达式以进行单次扫描 - Bun 的正则引擎很高效
+const combinedLinkPattern = new RegExp(
+    Object.values(shortLinkPatterns)
+        .map(pattern => pattern.source.replace(/^\/|\/g$/g, ''))
+        .join('|'),
+    'g'
+);
+
+// 预编译正则表达式转义函数所需的正则
+const regexEscapePattern = /[.*+?^${}()|[\]\\]/g;
 
 /**
  * URL处理结果
@@ -37,11 +48,6 @@ const shortLinkPatterns = {
 interface UrlProcessingResult {
     original: string;
     resolved: string;
-}
-
-// 简单转义MD文本中的特殊字符
-function escapeMarkdownV2(text: string): string {
-    return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
 }
 
 /**
@@ -95,7 +101,11 @@ async function resolveUrl(shortUrl: string): Promise<string> {
         // 清理URL并返回结果
         return cleanUrl(finalUrl);
     } catch (error) {
-        log.error(`解析URL失败 ${shortUrl}: ${error}`);
+        if (error instanceof DOMException && error.name === 'AbortError') {
+            log.warn(`解析URL超时 ${shortUrl}`);
+        } else {
+            log.error(`解析URL失败 ${shortUrl}: ${error}`);
+        }
         return shortUrl; // 解析失败时返回原始URL
     }
 }
@@ -109,59 +119,83 @@ async function processLinksInMessage(messageText: string): Promise<{
     text: string,
     foundLinks: boolean
 }> {
+    // 为当前消息创建临时缓存
+    const localCache = new Map<string, string>();
+
     let text = messageText;
-    let foundLinks = false;
-    const replacements: UrlProcessingResult[] = [];
+    const uniqueLinks = new Set<string>();
 
-    // 检查所有平台的短链接
-    for (const [platform, pattern] of Object.entries(shortLinkPatterns)) {
-        const matches = [...text.matchAll(pattern)];
-        if (matches.length > 0) {
-            foundLinks = true;
+    // 使用合并的正则表达式进行单次扫描，找出所有可能的链接
+    const matches = text.match(combinedLinkPattern);
+    if (!matches || matches.length === 0) {
+        return { text, foundLinks: false };
+    }
 
-            // 收集所有链接以进行批量处理
-            for (const linkMatch of matches) {
-                const link = linkMatch[0];
-                try {
-                    replacements.push({
-                        original: link,
-                        resolved: await resolveUrl(link)
-                    });
-                } catch (error) {
-                    log.error(`处理链接失败 ${link}: ${error}`);
-                    replacements.push({
-                        original: link,
-                        resolved: link
-                    });
+    // 收集所有唯一链接
+    matches.forEach(link => uniqueLinks.add(link));
+
+    // 转换为数组以便处理
+    const links = Array.from(uniqueLinks);
+
+    // 使用 Promise.allSettled 以确保即使部分链接解析失败，其他链接仍能处理
+    const resolveResults = await Promise.allSettled(
+        links.map(async (link) => {
+            try {
+                // 检查本地缓存
+                if (localCache.has(link)) {
+                    return { original: link, resolved: localCache.get(link)! };
                 }
+
+                // 解析链接
+                const resolved = await resolveUrl(link);
+
+                // 添加到本地缓存
+                localCache.set(link, resolved);
+
+                return { original: link, resolved };
+            } catch (error) {
+                log.error(`处理链接失败 ${link}: ${error}`);
+                return { original: link, resolved: link };
             }
+        })
+    );
+
+    // 提取成功的结果
+    const replacements = resolveResults
+        .filter((result): result is PromiseFulfilledResult<UrlProcessingResult> =>
+            result.status === 'fulfilled')
+        .map(result => result.value);
+
+    // 对替换项进行排序（长的先替换，避免子字符串问题）
+    replacements.sort((a, b) => b.original.length - a.original.length);
+
+    // 应用所有替换
+    for (const { original, resolved } of replacements) {
+        // 只有当解析的URL和原始URL不同时才替换
+        if (original !== resolved) {
+            // 使用正则表达式全局替换所有匹配实例
+            const regex = new RegExp(original.replace(regexEscapePattern, '\\$&'), 'g');
+            text = text.replace(regex, resolved);
         }
     }
 
-    // 如果找到链接，则替换所有链接
-    if (foundLinks && replacements.length > 0) {
-        // 对替换项进行排序（长的先替换，避免子字符串问题）
-        replacements.sort((a, b) => b.original.length - a.original.length);
-
-        // 应用所有替换
-        for (const { original, resolved } of replacements) {
-            // 只有当解析的URL和原始URL不同时才替换
-            if (original !== resolved) {
-                text = text.replace(original, ` ${resolved} `);
-            }
-        }
-    }
-
-    return { text: text.trim(), foundLinks };
+    return { text: text.trim(), foundLinks: true };
 }
 
 /**
  * 隐私插件主体
+ * 
+ * 优化说明：
+ * 1. 使用本地缓存避免单次消息中重复解析相同链接
+ * 2. 合并正则表达式，使用单次扫描而非多次迭代
+ * 3. 使用 Promise.allSettled 进行并行链接处理，提高性能
+ * 4. 添加更好的错误处理和超时管理
+ * 5. 优化正则表达式，提高匹配准确性
  */
 const plugin: BotPlugin = {
     name: 'privacy',
     description: '防跟踪链接处理插件',
-    version: '1.2.0',
+    version: '1.3.0',
 
     // 插件加载时执行
     async onLoad(client) {
@@ -181,52 +215,12 @@ const plugin: BotPlugin = {
             aliases: ['antitrack', 'notrack'],
 
             async handler(ctx: CommandContext): Promise<void> {
-                // 获取子命令
-                const subCommand = ctx.args[0]?.toLowerCase();
-
-                if (!subCommand || subCommand === 'help') {
-                    await ctx.message.replyText(`
-🔒 **隐私保护插件**
-
-此插件会自动检测常见平台的短链接，解析为完整URL并移除所有URL参数。
-
-支持的平台：
-- 哔哩哔哩 (b23.tv)
-- 小红书 (xhslink.com)
-- 微博 (t.cn)
-- 抖音 (v.douyin.com)
-- 快手 (v.kuaishou.com)
-- 知乎 (link.zhihu.com)
-- 京东 (u.jd.com)
-- 淘宝 (m.tb.cn)
-- YouTube (youtu.be)
-- Twitter/X (t.co, x.com)
-- Instagram (instagram.com)
-- TikTok (vm.tiktok.com)
-- Facebook (fb.me)
-- 等20多个平台
-
-**命令：**
-/privacy status - 查看插件状态
-                    `);
-                    return;
-                }
-
-                switch (subCommand) {
-                    case 'status':
-                        // 显示插件状态
-                        await ctx.message.replyText(`
-🔒 **隐私保护插件状态**
-
-- 版本: 1.2.0
-- 支持平台数量: ${Object.keys(shortLinkPatterns).length}
-- 活跃状态: ✅ 运行中
-                        `);
-                        break;
-
-                    default:
-                        await ctx.message.replyText(`❌ 未知的子命令: ${subCommand}\n使用 /privacy help 查看帮助`);
-                }
+                await ctx.message.replyText(`
+                    🔒 **隐私保护插件状态**
+                    
+                    - 版本: 1.3.0
+                    - 支持平台数量: ${Object.keys(shortLinkPatterns).length}
+                    - 活跃状态: ✅ 运行中`);
             }
         }
     ],

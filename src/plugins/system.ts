@@ -1,7 +1,7 @@
 import type { BotPlugin, CommandContext, PluginCommand } from '../features';
 import { PluginStatus } from '../features';
 import { log } from '../log';
-import type { TelegramClient } from '@mtcute/bun';
+import { html } from '@mtcute/bun';
 import { md } from '@mtcute/markdown-parser';
 import os from 'os';
 import fs from 'fs/promises';
@@ -250,6 +250,30 @@ const plugin: BotPlugin = {
 
     commands: [
         {
+            name: 'start',
+            description: '开始使用机器人',
+            aliases: ['开始'],
+            async handler(ctx: CommandContext) {
+                const me = await ctx.client.getMe();
+                const plugins = ctx.client.features.getPlugins();
+                const activePlugins = plugins.filter(p => p.status === 'active');
+
+                // 计算所有可用命令数量
+                const totalCommands = activePlugins.reduce((sum, plugin) =>
+                    sum + (plugin.commands?.length || 0), 0);
+
+                ctx.message.replyText(html`
+嗨嗨~ (｡>﹏<｡)ﾉﾞ✨ 我是全新的第三代 <a href="tg://user?id=${me.id}">${me.displayName}</a>！<br>
+<br>
+🤖 你的多功能小助手，目前已加载 ${activePlugins.length} 个插件，共有 ${totalCommands} 个指令！<br>
+🎈 只要轻轻敲下指令，我就会立刻蹦出来帮忙！<br>
+🌸 不知道从哪里开始？输入 /help 了解我的全部功能！<br>
+<br>
+开始探索吧！(｡･ω･｡)ﾉ♡
+`);
+            },
+        },
+        {
             name: 'system',
             description: '查看系统信息',
             aliases: ['sys', '系统'],
@@ -344,8 +368,6 @@ const plugin: BotPlugin = {
             aliases: ['h', '帮助'],
             async handler(ctx: CommandContext) {
                 const plugins = ctx.client.features.getPlugins();
-                // 获取发送命令的用户ID
-                const userId = ctx.message.sender.id;
 
                 // 分类存储命令
                 const categories = new Map<string, {
@@ -407,7 +429,7 @@ const plugin: BotPlugin = {
                 };
 
                 // 生成美化的帮助信息
-                let message = `# ${emoji.star} 命令帮助中心 ${emoji.star}\n\n`;
+                let message = `${emoji.star} 命令帮助中心 ${emoji.star}<br><br>`;
 
                 // 对插件按名称排序
                 const sortedCategories = Array.from(categories.entries())
@@ -415,28 +437,28 @@ const plugin: BotPlugin = {
 
                 // 如果没有可用命令
                 if (sortedCategories.length === 0) {
-                    message = `# ${emoji.warning} 无可用命令\n\n您目前没有权限使用任何命令。`;
+                    message = `${emoji.warning} 无可用命令<br><br>您目前没有权限使用任何命令。`;
                 } else {
                     // 首先添加可用命令总数统计
                     const totalCommands = sortedCategories.reduce(
                         (sum, [_, { commands }]) => sum + commands.length, 0
                     );
-                    message += `您可以使用 ${totalCommands} 个命令，分布在 ${sortedCategories.length} 个插件中。\n\n`;
+                    message += `您可以使用 ${totalCommands} 个命令，分布在 ${sortedCategories.length} 个插件中。<br><br><blockquote collapsible>`;
 
                     // 遍历所有分类
                     for (const [name, { plugin, commands }] of sortedCategories) {
                         // 添加插件标题和描述
                         const pluginEmoji = getPluginEmoji(name);
-                        message += `## ${pluginEmoji} ${name}`;
+                        message += `${pluginEmoji} <b>${name}</b>`;
                         if (plugin.version) {
                             message += ` (v${plugin.version})`;
                         }
-                        message += `\n`;
+                        message += `<br>`;
 
                         if (plugin.description) {
-                            message += `${plugin.description}\n\n`;
+                            message += `${plugin.description}<br><br>`;
                         } else {
-                            message += `\n`;
+                            message += `<br>`;
                         }
 
                         // 对命令按名称排序
@@ -449,11 +471,11 @@ const plugin: BotPlugin = {
                                 : '';
 
                             // 添加命令名称和别名
-                            message += `### ${emoji.command} /${cmd.name}${aliases}\n`;
+                            message += `${emoji.command} <b>/${cmd.name}</b>${aliases}<br>`;
 
                             // 添加命令描述
                             if (cmd.description) {
-                                message += `${cmd.description}\n`;
+                                message += `  ${cmd.description.replace(/\n/g, "<br>")}<br>`;
                             }
 
                             // 显示附加信息（权限、冷却时间）
@@ -461,7 +483,7 @@ const plugin: BotPlugin = {
 
                             // 显示权限要求（如果有）
                             if (cmd.requiredPermission) {
-                                cmdInfo.push(`${emoji.permission} 需要权限: \`${cmd.requiredPermission}\``);
+                                cmdInfo.push(`${emoji.permission} 需要权限: ${cmd.requiredPermission}`);
                             }
 
                             // 显示冷却时间（如果有）
@@ -470,20 +492,18 @@ const plugin: BotPlugin = {
                             }
 
                             if (cmdInfo.length > 0) {
-                                message += cmdInfo.join(' | ') + '\n';
+                                message += `  ${cmdInfo.join(' | ')}<br>`;
                             }
 
-                            message += `\n`;
+                            message += `<br>`;
                         }
                     }
 
-                    // 添加使用说明
-                    message += `---\n\n`;
-                    message += `**提示：** 使用 \`/<命令名>\` 执行命令，例如 \`/help\`\n`;
-                    message += `部分命令可能需要特定权限才能使用。若有疑问请联系管理员。`;
+                    message += `</blockquote>`;
+                    console.log(message);
                 }
 
-                await ctx.message.replyText(md(message));
+                await ctx.message.replyText(html(message));
             }
         },
         {
