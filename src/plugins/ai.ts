@@ -135,7 +135,7 @@ ${0}
 4. 对于多语言内容，添加语言指示词（如"中文教程"或"英文文档"）
 5. 按相关性和重要性排序关键词
 6. 合并相似的查询并删除重复内容
-7. 为需要最新信息的查询添加年份（如"2023"、"最新"）
+7. 为需要最新信息的查询添加年份（如"2025"、"最新"）
 8. 限制在4个最优质的查询，确保质量优于数量
 
 输出格式：
@@ -407,6 +407,11 @@ function formatSearchPreview(keywords: string): string {
 
 // Markdown到HTML的转换辅助函数
 function markdownToHtml(text: string): string {
+    // 检查文本是否已经包含HTML标签，如果包含则不进行转换
+    if (text.includes('<b>') || text.includes('<i>') || text.includes('<a href=')) {
+        return text;
+    }
+
     // 替换Markdown标记为HTML标记
     let htmlText = text
         // 替换标题
@@ -454,6 +459,8 @@ function markdownToHtml(text: string): string {
         .replace(/&lt;\/a&gt;/g, '</a>')
         .replace(/&lt;hr&gt;/g, '<hr>')
         .replace(/&lt;br&gt;/g, '<br>')
+        .replace(/&lt;blockquote collapsible&gt;/g, '<blockquote collapsible>')
+        .replace(/&lt;\/blockquote&gt;/g, '</blockquote>')
         
         // 替换换行符 (保留段落分隔)
         .replace(/\n\n/g, '<br><br>')
@@ -464,30 +471,37 @@ function markdownToHtml(text: string): string {
 
 // 格式化AI响应，优化思考过程显示，并转换为HTML格式
 function formatAIResponse(content: string, thinking?: string): string {
-    let displayText = content;
+    let displayText = "";
     
-    // 添加思考过程（如果有）
+    // 添加思考过程（如果有），并放在最前面
     if (thinking && thinking.trim()) {
         // 清理思考过程，移除过于冗长的部分
         const cleanedThinking = cleanThinkingProcess(thinking);
         if (cleanedThinking.trim()) {
-            // 为思考过程添加更清晰的结构 - 使用HTML格式
-            displayText += `\n\n<br><br><hr><br>\n💭 <b>思考过程:</b><br>${cleanedThinking}`;
+            // 为思考过程添加更清晰的结构 - 使用可折叠的blockquote
+            displayText += `<blockquote collapsible>\n<b>💭 思考过程</b><br><br>${cleanedThinking}\n</blockquote><br><br>`;
         }
     }
     
-    // 将Markdown格式转换为HTML格式
-    return markdownToHtml(displayText);
+    // 添加正文内容
+    displayText += markdownToHtml(content);
+    
+    return displayText;
 }
 
 // 清理思考过程，移除过于冗长或重复的内容
 function cleanThinkingProcess(thinking: string): string {
+    // 预处理，替换markdown格式为HTML
+    let processedThinking = thinking
+        .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+        .replace(/\*(.+?)\*/g, '<i>$1</i>');
+        
     // 按段落分割
-    const paragraphs = thinking.split('\n\n').filter(p => p.trim().length > 0);
+    const paragraphs = processedThinking.split('\n\n').filter(p => p.trim().length > 0);
     
-    // 如果段落太少，直接返回原始内容
+    // 如果段落太少，直接返回处理后的内容
     if (paragraphs.length <= 5) {
-        return thinking;
+        return processedThinking;
     }
     
     // 对于较长的思考过程，进行智能筛选
@@ -523,7 +537,7 @@ function cleanThinkingProcess(thinking: string): string {
     const uniqueParagraphs = [...new Set(keyParagraphs)];
     
     // 在段落之间添加突出的分隔符，使思考过程更加清晰
-    return uniqueParagraphs.join('\n\n-------------\n\n');
+    return uniqueParagraphs.join('<br><br><i>• • •</i><br><br>');
 }
 
 // 执行批量搜索
@@ -920,6 +934,7 @@ function getSearchPrompt(question: string, searchResults: string): string {
 3. 特别注意信息的时效性，优先使用最新的信息，并在回答中标明时间范围
 4. 如果搜索结果中包含矛盾的信息，请指出这些矛盾并分析可能的原因
 5. 确保内容的权威性，对官方来源的信息给予更高权重
+6. 在思考过程中，请使用明确的标记表示你的分析步骤
 
 回答格式要求（使用HTML标签）：
 1. 给予明确、有条理的回答，重点突出，避免冗余
@@ -928,6 +943,13 @@ function getSearchPrompt(question: string, searchResults: string): string {
 4. 适当添加表情符号，使回答更加生动
 5. 使用<a href="链接">链接文本</a>格式添加链接
 6. 列表项使用普通文本格式，前面添加"•"或"◦"符号
+7. 可以使用<blockquote>标签创建引用块，对引用内容进行突出
+
+思考过程格式：
+1. 在思考过程中也使用HTML标签进行格式化
+2. 使用明确的步骤表示你的分析过程
+3. 对关键词和重要结论使用<b>标签突出显示
+4. 指出信息来源，以便在思考过程中清晰显示信息的可靠性
 
 注意：
 - 不要使用Markdown格式（如**加粗**、*斜体*等），使用HTML标签替代
