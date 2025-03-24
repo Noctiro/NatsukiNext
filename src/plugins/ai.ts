@@ -1,4 +1,4 @@
-import { md, html } from '@mtcute/bun';
+import { html } from '@mtcute/bun';
 import { getHighQualityAI, getFastAI } from '../ai/AiManager';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext } from '../features';
 import { log } from '../log';
@@ -43,6 +43,74 @@ const searchLimits = {
     lastReset: Date.now()        // 上次重置计数的时间
 };
 
+// 添加全局消息更新节流机制
+const MESSAGE_UPDATE_INTERVAL = 5000; // 消息更新间隔，单位毫秒
+let lastGlobalUpdateTime = 0; // 全局最后一次更新时间
+let pendingUpdates = new Map<string, { ctx: CommandContext, chatId: string | number, messageId: number, text: string }>(); // 待处理的更新
+let lastMessageContents = new Map<string, string>(); // 记录每个消息的最后内容
+
+// 执行待处理的消息更新
+async function executeUpdates() {
+    const now = Date.now();
+    
+    // 如果距离上次更新时间小于设定间隔，则跳过执行
+    if (now - lastGlobalUpdateTime < MESSAGE_UPDATE_INTERVAL) {
+        return;
+    }
+    
+    // 更新全局最后更新时间
+    lastGlobalUpdateTime = now;
+    
+    // 取出所有待处理的更新
+    const updatesToProcess = new Map(pendingUpdates);
+    pendingUpdates.clear();
+    
+    // 执行所有待处理的更新
+    for (const [key, update] of updatesToProcess.entries()) {
+        try {
+            // 检查是否与上次内容相同
+            const lastContent = lastMessageContents.get(key);
+            if (lastContent === update.text) {
+                // 内容相同，跳过更新
+                continue;
+            }
+            
+            // 更新消息
+            await update.ctx.client.editMessage({
+                chatId: update.chatId,
+                message: update.messageId,
+                text: html(update.text)
+            });
+            
+            // 记录更新后的内容
+            lastMessageContents.set(key, update.text);
+        } catch (e) {
+            log.error(`更新消息失败: ${e}`);
+        }
+    }
+}
+
+// 节流函数，控制消息更新频率
+async function throttledEditMessage(ctx: CommandContext, chatId: string | number, messageId: number, text: string): Promise<void> {
+    const key = `${chatId}:${messageId}`;
+    
+    // 检查内容是否与上次相同
+    const lastContent = lastMessageContents.get(key);
+    if (lastContent === text) {
+        // 内容完全相同，直接跳过
+        return;
+    }
+    
+    // 记录待处理的更新
+    pendingUpdates.set(key, { ctx, chatId, messageId, text });
+    
+    // 执行更新（如果符合时间间隔要求）
+    await executeUpdates();
+}
+
+// 设置定时器，确保消息定期更新
+setInterval(executeUpdates, MESSAGE_UPDATE_INTERVAL);
+
 // 重置搜索限制（每24小时）
 function checkAndResetSearchLimits() {
     const now = Date.now();
@@ -86,23 +154,23 @@ function incrementSearchCount(userId: number) {
 }
 
 // 帮助信息
-const HELP = `<b>🤖 AI助手</b>
-
-<b>使用方法:</b>
-1. 直接使用 /ai 问题内容
-2. 回复一条消息并使用 /ai 可以让AI分析该消息
-
-<b>示例:</b>
-/ai 简要介绍一下人工智能的发展历程
-/ai 能帮我解释一下这段代码吗？(作为回复消息)
-
-<b>功能特点:</b>
-- 🔍 智能联网搜索，获取最新信息和多方观点
-- 🔄 自动优化搜索关键词，提高搜索质量
-- 🌟 智能分析和排序搜索结果，优先展示高质量信息
-- 💡 结合搜索结果与AI知识库，提供全面分析
-- 💭 显示AI思考过程，便于理解推理方式
-- 🔒 普通用户每天限制使用${userCount.getDefaultData()}次
+const HELP = `<b>🤖 AI助手</b><br>
+<br>
+<b>使用方法:</b><br>
+1. 直接使用 /ai 问题内容<br>
+2. 回复一条消息并使用 /ai 可以让AI分析该消息<br>
+<br>
+<b>示例:</b><br>
+/ai 简要介绍一下人工智能的发展历程<br>
+/ai 能帮我解释一下这段代码吗？(作为回复消息)<br>
+<br>
+<b>功能特点:</b><br>
+- 🔍 智能联网搜索，获取最新信息和多方观点<br>
+- 🔄 自动优化搜索关键词，提高搜索质量<br>
+- 🌟 智能分析和排序搜索结果，优先展示高质量信息<br>
+- 💡 结合搜索结果与AI知识库，提供全面分析<br>
+- 💭 显示AI思考过程，便于理解推理方式<br>
+- 🔒 普通用户每天限制使用${userCount.getDefaultData()}次<br>
 - ⚡ 拥有无限制权限的用户可无限使用`;
 
 // 用于提取搜索关键词的提示词
@@ -205,7 +273,7 @@ const plugin: BotPlugin = {
                 
                 // 如果没有内容，显示帮助信息
                 if (!question || question.trim().length === 0) {
-                    await ctx.message.replyText(html`${HELP}`);
+                    await ctx.message.replyText(html(HELP));
                     return;
                 }
                 
@@ -261,20 +329,53 @@ const plugin: BotPlugin = {
                     
                     // 使用高质量AI回答问题
                     const ai = getHighQualityAI();
-                    await ai.stream(
-                        (content, done, thinking) => {
-                            // 格式化内容，添加思考过程
-                            let displayText = formatAIResponse(content, thinking);
-                            
-                            ctx.client.editMessage({
-                                chatId: ctx.chatId,
-                                message: waitMsg.id,
-                                text: html`${displayText}`
-                            }).catch(e => log.error(`更新消息失败: ${e}`));
-                        },
-                        prompt,
-                        true
-                    );
+                    
+                    // 初始化变量跟踪最新内容
+                    let latestContent = '';
+                    let latestThinking = '';
+                    
+                    try {
+                        await ai.stream(
+                            (content, done, thinking) => {
+                                // 更新最新内容
+                                latestContent = content;
+                                if (thinking) latestThinking = thinking;
+                                
+                                // 如果流结束，进行最终更新不受节流限制
+                                if (done) {
+                                    // 最终更新直接发送，不使用节流机制
+                                    const finalDisplayText = formatAIResponse(content, thinking);
+                                    const key = `${ctx.chatId}:${waitMsg.id}`;
+                                    
+                                    // 检查内容是否与上次相同
+                                    const lastContent = lastMessageContents.get(key);
+                                    if (lastContent === finalDisplayText) {
+                                        // 内容相同，跳过更新
+                                        log.debug(`跳过最终更新，内容未变化`);
+                                        return;
+                                    }
+                                    
+                                    // 更新最终消息
+                                    ctx.client.editMessage({
+                                        chatId: ctx.chatId,
+                                        message: waitMsg.id,
+                                        text: html(finalDisplayText)
+                                    }).then(() => {
+                                        // 更新成功后记录内容
+                                        lastMessageContents.set(key, finalDisplayText);
+                                    }).catch(e => log.error(`最终更新消息失败: ${e}`));
+                                } else {
+                                    // 使用节流机制更新中间消息
+                                    const displayText = formatAIResponse(content, thinking);
+                                    throttledEditMessage(ctx, ctx.chatId, waitMsg.id, displayText);
+                                }
+                            },
+                            prompt,
+                            true
+                        );
+                    } catch (error) {
+                        throw error; // 重新抛出错误以便外层 catch 捕获
+                    }
                 } catch (error) {
                     // 改进错误处理以提供更友好的错误信息
                     log.error('AI processing error:', error);
@@ -357,11 +458,27 @@ async function updateMessageStatus(ctx: CommandContext, messageId: number, statu
             text = `${emoji} ${additionalText}`;
     }
     
-    await ctx.client.editMessage({
-        chatId: ctx.chatId,
-        message: messageId,
-        text: html`${text}`
-    }).catch(e => log.error(`更新状态消息失败: ${e}`));
+    // 检查状态消息是否变化
+    const key = `${ctx.chatId}:${messageId}`;
+    const lastContent = lastMessageContents.get(key);
+    if (lastContent === text) {
+        // 内容相同，跳过更新
+        return;
+    }
+    
+    // 状态消息直接更新，不受全局节流限制影响
+    try {
+        await ctx.client.editMessage({
+            chatId: ctx.chatId,
+            message: messageId,
+            text: html(text)
+        });
+        
+        // 更新成功后记录内容
+        lastMessageContents.set(key, text);
+    } catch (e) {
+        log.error(`更新状态消息失败: ${e}`);
+    }
 }
 
 // 执行搜索的辅助函数
