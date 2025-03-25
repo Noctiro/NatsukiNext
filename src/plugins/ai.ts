@@ -1333,54 +1333,59 @@ function generateComprehensiveAIPrompt(userQuestion: string, searchResults: stri
     const safeSearchResults = typeof searchResults === 'string' ? searchResults : '';
     const safeUserQuestion = typeof userQuestion === 'string' ? userQuestion : '请回答用户问题';
     
-    // 放宽搜索结果有效性检查条件
-    const hasValidResults = safeSearchResults && 
-                          safeSearchResults.length > 10 && // 降低最小长度要求
-                          (
-                             safeSearchResults.includes("搜索结果") || 
-                             safeSearchResults.includes("网络搜索结果") ||
-                             safeSearchResults.includes("相关的搜索结果") ||
-                             safeSearchResults.includes("[结果") ||
-                             safeSearchResults.includes("字典解释") ||
-                             safeSearchResults.includes("翻译结果") ||
-                             safeSearchResults.includes("时间信息") ||
-                             safeSearchResults.includes("货币转换")
-                          );
-    
-    log.info(`向AI传递搜索结果: 有效=${hasValidResults}, 长度=${safeSearchResults.length}`);
+    // 判断是否有任何形式的搜索结果，放宽条件以接受更多类型的结果
+    const hasAnyResults = safeSearchResults && 
+                       safeSearchResults.length > 5 && 
+                       safeSearchResults !== "未找到相关搜索结果" &&
+                       safeSearchResults !== "未能获取到相关搜索结果，但AI将尝试使用自身知识回答问题";
     
     // 构建搜索结果部分
     let searchResultsSection;
-    if (hasValidResults) {
-        if (safeSearchResults.includes("可能相关的搜索结果")) {
-            searchResultsSection = `搜索结果（可能不够相关，请谨慎使用）:
+    
+    if (hasAnyResults) {
+        // 判断结果类型，为特殊结果提供特定提示
+        if (safeSearchResults.includes("字典解释") || 
+            safeSearchResults.includes("翻译结果") || 
+            safeSearchResults.includes("时间信息") || 
+            safeSearchResults.includes("货币转换")) {
+            
+            searchResultsSection = `搜索结果(包含特殊信息):
 \`\`\`
 ${safeSearchResults}
 \`\`\`
 
-这些结果可能与用户问题相关性不高。请分析这些结果，提取有用信息，但如果发现信息不相关或不准确，请优先使用您的知识回答问题。`;
-        } else {
+这些特殊信息可能与用户的问题相关，请结合这些信息和您的知识回答问题。`;
+        }
+        // 对于可能相关性不高或质量不高的结果，给予AI恰当指导
+        else if (safeSearchResults.includes("可能相关的搜索结果") || 
+                safeSearchResults.includes("可能不够相关") || 
+                safeSearchResults.includes("质量不高") ||
+                safeSearchResults.includes("仅供参考")) {
+            
+            searchResultsSection = `搜索结果(可能相关性不高，但仍有参考价值):
+\`\`\`
+${safeSearchResults}
+\`\`\`
+
+这些结果可能与用户问题相关性不高或质量不够理想。请仔细分析这些结果，提取有用的信息，并结合您的知识提供全面的回答。对于明显不相关的内容，可以忽略不计。`;
+        }
+        // 正常高质量结果
+        else {
             searchResultsSection = `搜索结果:
 \`\`\`
 ${safeSearchResults}
-\`\`\``;
+\`\`\`
+
+请基于这些搜索结果和您的知识，为用户提供全面、准确的回答。`;
         }
     } else {
-        // 即使搜索结果被判定为无效，也传递原始内容给AI模型评估
-        if (safeSearchResults && safeSearchResults.trim()) {
-            searchResultsSection = `搜索结果(可能不完整或相关性较低):
-\`\`\`
-${safeSearchResults}
-\`\`\`
-
-这些搜索结果可能不够完整，请酌情使用并结合您的知识回答问题。`;
-        } else {
-            searchResultsSection = `搜索结果:
+        searchResultsSection = `搜索结果:
 \`\`\`
 未能获取到与问题直接相关的搜索结果。请基于您的知识库和训练数据回答问题。
 \`\`\``;
-        }
     }
+    
+    log.info(`AI提示词生成：搜索结果长度${safeSearchResults.length}字符，有效=${hasAnyResults}`);
     
     // 返回完整提示词
     return `问题：${safeUserQuestion}
