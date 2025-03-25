@@ -398,6 +398,7 @@ const plugin: BotPlugin = {
 
                 // 预定义常用的表情符号
                 const emoji = {
+                    // 分类图标
                     system: '⚙️',
                     tools: '🔧',
                     info: 'ℹ️',
@@ -406,13 +407,19 @@ const plugin: BotPlugin = {
                     admin: '👑',
                     search: '🔍',
                     translate: '🌐',
-                    default: '📦',
-                    cooldown: '⏱️',
+                    folder: '📂',
+                    // 状态图标
+                    success: '✅',
+                    warning: '⚠️',
+                    error: '❌',
+                    // 常用图标
+                    command: '🔸',
                     permission: '🔒',
-                    command: '🔹',
-                    category: '📁',
-                    star: '⭐',
-                    warning: '⚠️'
+                    cooldown: '⏱️',
+                    star: '✨',
+                    dot: '•',
+                    info_circle: 'ℹ️',
+                    help: '❓'
                 };
 
                 // 获取插件的表情符号
@@ -425,11 +432,11 @@ const plugin: BotPlugin = {
                     if (lowerName.includes('admin')) return emoji.admin;
                     if (lowerName.includes('search')) return emoji.search;
                     if (lowerName.includes('translator') || lowerName.includes('translate')) return emoji.translate;
-                    return emoji.default;
+                    return emoji.folder;
                 };
 
                 // 生成美化的帮助信息
-                let message = `${emoji.star} 命令帮助中心 ${emoji.star}<br><br>`;
+                let message = `${emoji.star} <b>命令帮助中心</b> ${emoji.star}<br><br>`;
 
                 // 对插件按名称排序
                 const sortedCategories = Array.from(categories.entries())
@@ -437,45 +444,62 @@ const plugin: BotPlugin = {
 
                 // 如果没有可用命令
                 if (sortedCategories.length === 0) {
-                    message = `${emoji.warning} 无可用命令<br><br>您目前没有权限使用任何命令。`;
+                    message = `${emoji.warning} <b>无可用命令</b><br><br>您目前没有权限使用任何命令。`;
                 } else {
                     // 首先添加可用命令总数统计
                     const totalCommands = sortedCategories.reduce(
                         (sum, [_, { commands }]) => sum + commands.length, 0
                     );
-                    message += `您可以使用 ${totalCommands} 个命令，分布在 ${sortedCategories.length} 个插件中。<br><br><blockquote collapsible>`;
+                    message += `${emoji.success} 您可以使用 <b>${totalCommands}</b> 个命令，分布在 <b>${sortedCategories.length}</b> 个插件中。<br><br><blockquote collapsible>`;
 
+                    const categoryCount = sortedCategories.length;
+                    
                     // 遍历所有分类
-                    for (const [name, { plugin, commands }] of sortedCategories) {
+                    sortedCategories.forEach(([name, { plugin, commands }], categoryIndex) => {
+                        const isLastCategory = categoryIndex === categoryCount - 1;
+                        
                         // 添加插件标题和描述
                         const pluginEmoji = getPluginEmoji(name);
-                        message += `${pluginEmoji} <b>${name}</b>`;
+                        const categoryPrefix = '├──';
+                        message += `${categoryPrefix} ${pluginEmoji} <b>${name}</b>`;
                         if (plugin.version) {
-                            message += ` (v${plugin.version})`;
+                            message += ` <i>(v${plugin.version})</i>`;
                         }
                         message += `<br>`;
 
+                        // 插件内容缩进前缀 - 为最后一个插件使用空格，否则使用垂直线
+                        const pluginPrefix = '│　';
+
                         if (plugin.description) {
-                            message += `${plugin.description}<br><br>`;
-                        } else {
-                            message += `<br>`;
+                            message += `${pluginPrefix}${emoji.info_circle} ${plugin.description}<br>`;
                         }
 
                         // 对命令按名称排序
                         const sortedCommands = [...commands].sort((a, b) => a.name.localeCompare(b.name));
+                        
+                        // 添加命令和插件描述之间的间隔
+                        if (sortedCommands.length > 0) {
+                            message += `${pluginPrefix}<br>`;
+                        }
 
                         // 添加命令列表
-                        for (const cmd of sortedCommands) {
+                        sortedCommands.forEach((cmd, cmdIndex) => {
+                            const isLastCmd = cmdIndex === sortedCommands.length - 1;
+                            const cmdPrefix = pluginPrefix + (isLastCmd ? '└──' : '├──');
+                            
                             const aliases = cmd.aliases?.length
-                                ? ` (别名: ${cmd.aliases.join(', ')})`
+                                ? ` <i>(别名: ${cmd.aliases.join(', ')})</i>`
                                 : '';
 
                             // 添加命令名称和别名
-                            message += `${emoji.command} <b>/${cmd.name}</b>${aliases}<br>`;
+                            message += `${cmdPrefix} ${emoji.command} <b>/${cmd.name}</b>${aliases}<br>`;
+
+                            // 命令内容的前缀
+                            const contentPrefix = pluginPrefix + (isLastCmd ? '　　' : '│　');
 
                             // 添加命令描述
                             if (cmd.description) {
-                                message += `  ${cmd.description.replace(/\n/g, "<br>")}<br>`;
+                                message += `${contentPrefix}${emoji.dot} ${cmd.description.replace(/\n/g, `<br>${contentPrefix}${emoji.dot} `)}<br>`;
                             }
 
                             // 显示附加信息（权限、冷却时间）
@@ -483,24 +507,34 @@ const plugin: BotPlugin = {
 
                             // 显示权限要求（如果有）
                             if (cmd.requiredPermission) {
-                                cmdInfo.push(`${emoji.permission} 需要权限: ${cmd.requiredPermission}`);
+                                cmdInfo.push(`${emoji.permission} 需要权限: <i>${cmd.requiredPermission}</i>`);
                             }
 
                             // 显示冷却时间（如果有）
                             if (cmd.cooldown) {
-                                cmdInfo.push(`${emoji.cooldown} 冷却时间: ${cmd.cooldown}秒`);
+                                cmdInfo.push(`${emoji.cooldown} 冷却时间: <i>${cmd.cooldown}秒</i>`);
                             }
 
                             if (cmdInfo.length > 0) {
-                                message += `  ${cmdInfo.join(' | ')}<br>`;
+                                message += `${contentPrefix}${cmdInfo.join(' | ')}<br>`;
                             }
 
-                            message += `<br>`;
-                        }
-                    }
+                            // 添加命令之间的间隔（保持树形结构）
+                            if (!isLastCmd) {
+                                message += `${pluginPrefix}│<br>`;
+                            }
+                        });
 
+                        // 添加插件间的空行，注意最后一个插件不需要垂直连接线
+                        if (!isLastCategory) {
+                            message += `│<br>`;
+                        }
+                    });
+
+                    // 清理消息末尾的多余空行
+                    message = message.replace(/(<br>\s*)+$/g, '');
+                    
                     message += `</blockquote>`;
-                    console.log(message);
                 }
 
                 await ctx.message.replyText(html(message));
@@ -577,32 +611,32 @@ const plugin: BotPlugin = {
                     }
 
                     // 显示特定插件的详细信息
-                    let message = `📦 **Plugin Details: ${plugin.name}**\n\n`;
-                    message += `**Status**: ${formatPluginStatus(plugin.status)}\n`;
-                    message += `**Version**: ${plugin.version || 'Not specified'}\n`;
-                    message += `**Description**: ${plugin.description || 'No description'}\n\n`;
+                    let message = `📂 **插件详情: ${plugin.name}**\n\n`;
+                    message += `**状态**: ${formatPluginStatus(plugin.status)}\n`;
+                    message += `**版本**: ${plugin.version || '未指定'}\n`;
+                    message += `**描述**: ${plugin.description || '无描述'}\n\n`;
 
                     if (plugin.error) {
-                        message += `**Error**: ${plugin.error}\n\n`;
+                        message += `**错误**: ${plugin.error}\n\n`;
                     }
 
                     if (plugin.dependencies?.length) {
-                        message += `**Dependencies**: ${plugin.dependencies.join(', ')}\n\n`;
+                        message += `**依赖项**: ${plugin.dependencies.join(', ')}\n\n`;
                     }
 
                     // 显示命令信息
                     if (plugin.commands?.length) {
-                        message += `**Commands (${plugin.commands.length})**:\n`;
+                        message += `**命令 (${plugin.commands.length})**:\n`;
                         for (const cmd of plugin.commands) {
                             const aliases = cmd.aliases?.length
-                                ? ` (${cmd.aliases.join(', ')})`
+                                ? ` (别名: ${cmd.aliases.join(', ')})`
                                 : '';
                             message += `• /${cmd.name}${aliases}\n`;
                             if (cmd.description) {
                                 message += `  ${cmd.description}\n`;
                             }
                             if (cmd.requiredPermission) {
-                                message += `  Required permission: ${cmd.requiredPermission}\n`;
+                                message += `  所需权限: ${cmd.requiredPermission}\n`;
                             }
                         }
                         message += '\n';
@@ -610,7 +644,7 @@ const plugin: BotPlugin = {
 
                     // 显示事件处理器信息
                     if (plugin.events?.length) {
-                        message += `**Event Handlers (${plugin.events.length})**:\n`;
+                        message += `**事件处理器 (${plugin.events.length})**:\n`;
                         const eventTypes = plugin.events.map(e => e.type);
                         const eventCounts: Record<string, number> = {};
 
@@ -619,21 +653,21 @@ const plugin: BotPlugin = {
                         }
 
                         for (const [type, count] of Object.entries(eventCounts)) {
-                            message += `• ${type}: ${count} handler${count > 1 ? 's' : ''}\n`;
+                            message += `• ${type}: ${count} 个处理器\n`;
                         }
                         message += '\n';
                     }
 
                     // 显示权限信息
                     if (plugin.permissions?.length) {
-                        message += `**Permissions (${plugin.permissions.length})**:\n`;
+                        message += `**权限 (${plugin.permissions.length})**:\n`;
                         for (const perm of plugin.permissions) {
                             message += `• ${perm.name}: ${perm.description}\n`;
                             if (perm.parent) {
-                                message += `  Parent: ${perm.parent}\n`;
+                                message += `  父权限: ${perm.parent}\n`;
                             }
                             if (perm.isSystem) {
-                                message += `  System permission\n`;
+                                message += `  系统权限\n`;
                             }
                         }
                     }
@@ -647,10 +681,10 @@ const plugin: BotPlugin = {
                 const disabledPlugins = plugins.filter(p => p.status === PluginStatus.DISABLED);
                 const errorPlugins = plugins.filter(p => p.status === PluginStatus.ERROR);
 
-                let message = `📦 **Plugins (${plugins.length})**\n\n`;
-                message += `✅ Active: ${activePlugins.length}\n`;
-                message += `⏸️ Disabled: ${disabledPlugins.length}\n`;
-                message += `❌ Error: ${errorPlugins.length}\n\n`;
+                let message = `📂 **插件列表 (${plugins.length})**\n\n`;
+                message += `✅ 已启用: ${activePlugins.length}\n`;
+                message += `⏸️ 已禁用: ${disabledPlugins.length}\n`;
+                message += `❌ 错误: ${errorPlugins.length}\n\n`;
 
                 // 对插件按名称排序
                 const sortedPlugins = [...plugins].sort((a, b) => a.name.localeCompare(b.name));
@@ -662,22 +696,22 @@ const plugin: BotPlugin = {
                         message += `  ${plugin.description}\n`;
                     }
                     if (plugin.error) {
-                        message += `  ⚠️ Error: ${plugin.error}\n`;
+                        message += `  ⚠️ 错误: ${plugin.error}\n`;
                     }
 
                     // 显示依赖和命令数
                     const details = [];
                     if (plugin.dependencies?.length) {
-                        details.push(`Dependencies: ${plugin.dependencies.length}`);
+                        details.push(`依赖项: ${plugin.dependencies.length}`);
                     }
                     if (plugin.commands?.length) {
-                        details.push(`Commands: ${plugin.commands.length}`);
+                        details.push(`命令: ${plugin.commands.length}`);
                     }
                     if (plugin.events?.length) {
-                        details.push(`Event handlers: ${plugin.events.length}`);
+                        details.push(`事件处理器: ${plugin.events.length}`);
                     }
                     if (plugin.permissions?.length) {
-                        details.push(`Permissions: ${plugin.permissions.length}`);
+                        details.push(`权限: ${plugin.permissions.length}`);
                     }
 
                     if (details.length > 0) {
@@ -687,8 +721,8 @@ const plugin: BotPlugin = {
                     message += '\n';
                 }
 
-                message += `Use /plugins <name> to view detailed information about a specific plugin.\n`;
-                message += `Other commands: /plugins enable <name>, /plugins disable <name>, /plugins reload [name]`;
+                message += `使用 /plugins <名称> 查看特定插件的详细信息。\n`;
+                message += `其他命令: /plugins enable <名称> 启用插件, /plugins disable <名称> 禁用插件, /plugins reload [名称] 重载插件`;
 
                 await ctx.message.replyText(md(message));
             }

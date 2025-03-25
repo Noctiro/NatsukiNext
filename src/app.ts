@@ -32,7 +32,7 @@ log.info(`Login in ${self.username} (${self.id})`, { remote: true });
 
 // Dispatcher.for(telegram).onNewMessage(
 //     async (ctx) => {
-//         ctx.replyText(html`<b>Test</b>`)
+//         ctx.replyText(html`<blockquote collapsible><br></blockquote>`)
 //     }
 // )
 

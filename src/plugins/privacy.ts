@@ -4,39 +4,208 @@ import { log } from "../log";
 import { generateRandomUserAgent } from "../utils/UserAgent";
 
 /**
- * 增强的短链接正则表达式
- * 匹配常见的中文和国际平台短链接
+ * 特殊平台URL处理规则
+ * 针对不同平台的特殊处理逻辑
  */
-const shortLinkPatterns = {
-    // 中文平台
-    b23: /https?:\/\/b23\.tv\/[\w-]+/g,                    // 哔哩哔哩
-    xhs: /https?:\/\/xhslink\.com\/[\w-]+/g,               // 小红书
-    weibo: /https?:\/\/t\.cn\/[\w-]+/g,                    // 微博
-    douyin: /https?:\/\/v\.douyin\.com\/[\w-]+/g,          // 抖音
-    kuaishou: /https?:\/\/v\.kuaishou\.com\/[\w-]+/g,      // 快手
-    zhihu: /https?:\/\/link\.zhihu\.com\/\?[\w&=]+/g,      // 知乎
-    jd: /https?:\/\/u\.jd\.com\/[\w-]+/g,                  // 京东
-    tb: /https?:\/\/m\.tb\.cn\/[\w-]+/g,                   // 淘宝
+interface SpecialUrlRule {
+    name: string;            // 平台名称
+    pattern: RegExp;         // 匹配模式
+    description: string;     // 规则描述
+    needsSpecialHandling: boolean; // 是否需要特殊处理（不能简单移除参数）
+    transform: (url: string, match: RegExpMatchArray | null) => string; // 转换函数
+}
 
-    // 国际平台
-    youtu: /https?:\/\/youtu\.be\/[\w-]+/g,                // YouTube短链
-    twitter: /https?:\/\/(t\.co|x\.com)\/[\w-]+/g,         // Twitter/X
-    ig: /https?:\/\/instagram\.com\/p\/[\w-]+/g,           // Instagram
-    bit: /https?:\/\/bit\.ly\/[\w-]+/g,                    // Bitly
-    tinyurl: /https?:\/\/tinyurl\.com\/[\w-]+/g,           // TinyURL
-    goo: /https?:\/\/goo\.gl\/[\w-]+/g,                    // Google短链
-    amzn: /https?:\/\/amzn\.(to|com)\/[\w-]+/g,            // Amazon
-    link: /https?:\/\/link\.in\/[\w-]+/g,                  // LinkedIn分享链接
-    tiktok: /https?:\/\/vm\.tiktok\.com\/[\w-]+/g,         // TikTok
-    fb: /https?:\/\/(fb\.me|on\.fb\.me)\/[\w-]+/g,         // Facebook
-    spotify: /https?:\/\/open\.spotify\.com\/[\w-]+/g       // Spotify
-};
+/**
+ * 平台处理规则
+ * 按平台类型分组，支持特殊处理和通用处理
+ */
+const platformRules: SpecialUrlRule[] = [
+    // YouTube 系列 - 需要特殊处理，因为参数中包含视频ID
+    {
+        name: "YouTube短链接",
+        pattern: /https?:\/\/youtu\.be\/([\w-]+)(?:\?.*)?/,
+        description: "将YouTube短链接转换为标准格式",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                return `https://www.youtube.com/watch?v=${match[1]}`;
+            }
+            return url;
+        }
+    },
+    {
+        name: "YouTube标准链接",
+        pattern: /https?:\/\/(?:www\.)?youtube\.com\/watch\?v=([\w-]+)(?:&.*)?/,
+        description: "保留YouTube视频ID，移除跟踪参数",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                return `https://www.youtube.com/watch?v=${match[1]}`;
+            }
+            return url;
+        }
+    },
+    {
+        name: "YouTube Shorts",
+        pattern: /https?:\/\/(?:www\.)?youtube\.com\/shorts\/([\w-]+)(?:\?.*)?/,
+        description: "将YouTube Shorts转换为标准视频格式",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                return `https://www.youtube.com/watch?v=${match[1]}`;
+            }
+            return url;
+        }
+    },
+    
+    // Twitter/X - 需要适当保留参数
+    {
+        name: "Twitter/X",
+        pattern: /https?:\/\/(?:www\.)?(?:twitter|x)\.com\/(\w+)\/status\/(\d+)(?:\?.*)?/,
+        description: "保留推文ID，移除跟踪参数",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1] && match[2]) {
+                return `https://twitter.com/${match[1]}/status/${match[2]}`;
+            }
+            return url;
+        }
+    },
+    
+    // Instagram - 简化链接形式
+    {
+        name: "Instagram",
+        pattern: /https?:\/\/(?:www\.)?instagram\.com\/(?:p|reel)\/([\w-]+)(?:\?.*)?/,
+        description: "统一Instagram内容格式，移除跟踪参数",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                return `https://www.instagram.com/p/${match[1]}`;
+            }
+            return url;
+        }
+    },
+    
+    // Facebook - 提取视频ID
+    {
+        name: "Facebook视频",
+        pattern: /https?:\/\/(?:www\.)?facebook\.com\/(?:watch\/\?v=|[\w.]+\/videos\/)(\d+)(?:\?.*)?/,
+        description: "统一Facebook视频格式，移除跟踪参数",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                return `https://www.facebook.com/watch/?v=${match[1]}`;
+            }
+            return url;
+        }
+    },
+    
+    // 通用短链接平台 - 这些平台不需要特殊处理，只需解析为原始URL后清理参数
+    {
+        name: "哔哩哔哩短链接",
+        pattern: /https?:\/\/b23\.tv\/[\w-]+/g,
+        description: "解析哔哩哔哩短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url // 使用通用处理逻辑
+    },
+    {
+        name: "小红书",
+        pattern: /https?:\/\/xhslink\.com\/[\w-]+/g,
+        description: "解析小红书链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "微博",
+        pattern: /https?:\/\/t\.cn\/[\w-]+/g,
+        description: "解析微博短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "抖音",
+        pattern: /https?:\/\/v\.douyin\.com\/[\w-]+/g,
+        description: "解析抖音短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "快手",
+        pattern: /https?:\/\/v\.kuaishou\.com\/[\w-]+/g,
+        description: "解析快手短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "知乎",
+        pattern: /https?:\/\/link\.zhihu\.com\/\?[\w&=]+/g,
+        description: "解析知乎链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "京东",
+        pattern: /https?:\/\/u\.jd\.com\/[\w-]+/g,
+        description: "解析京东短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "淘宝",
+        pattern: /https?:\/\/m\.tb\.cn\/[\w-]+/g,
+        description: "解析淘宝短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "亚马逊",
+        pattern: /https?:\/\/amzn\.to\/[\w-]+/g,
+        description: "解析亚马逊短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "Bitly",
+        pattern: /https?:\/\/bit\.ly\/[\w-]+/g,
+        description: "解析Bitly短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "TinyURL",
+        pattern: /https?:\/\/tinyurl\.com\/[\w-]+/g,
+        description: "解析TinyURL短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "Twitter短链接",
+        pattern: /https?:\/\/t\.co\/[\w-]+/g,
+        description: "解析Twitter短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "Google短链接",
+        pattern: /https?:\/\/goo\.gl\/[\w-]+/g,
+        description: "解析Google短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "Facebook短链接",
+        pattern: /https?:\/\/fb\.me\/[\w-]+/g,
+        description: "解析Facebook短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    }
+];
 
-// 合并所有正则表达式以进行单次扫描 - Bun 的正则引擎很高效
-const combinedLinkPattern = new RegExp(
-    Object.values(shortLinkPatterns)
-        .map(pattern => pattern.source.replace(/^\/|\/g$/g, ''))
-        .join('|'),
+// 构建用于识别所有支持平台链接的正则表达式
+const allUrlPatternsRegex = new RegExp(
+    platformRules.map(rule => 
+        rule.pattern.source.replace(/^\/|\/g$/g, '')
+    ).join('|'), 
     'g'
 );
 
@@ -49,31 +218,79 @@ const regexEscapePattern = /[.*+?^${}()|[\]\\]/g;
 interface UrlProcessingResult {
     original: string;
     resolved: string;
+    platformName?: string; // 可选，标识处理的平台
+}
+
+/**
+ * 应用特殊平台规则
+ * @param url 原始URL
+ * @returns 处理后的URL和平台名称
+ */
+function applySpecialRules(url: string): { url: string, platformName?: string } {
+    for (const rule of platformRules) {
+        // 对于全局正则模式，需要重置lastIndex
+        if (rule.pattern.global) {
+            rule.pattern.lastIndex = 0;
+        }
+        
+        const match = url.match(rule.pattern);
+        if (match) {
+            if (rule.needsSpecialHandling) {
+                return { 
+                    url: rule.transform(url, match),
+                    platformName: rule.name 
+                };
+            } else {
+                // 对于不需要特殊处理的平台，记录平台名但不修改URL
+                return { 
+                    url, 
+                    platformName: rule.name 
+                };
+            }
+        }
+    }
+    return { url };
 }
 
 /**
  * 清理URL函数 - 移除所有参数，提供最大隐私保护
  * @param url 原始URL
- * @returns 清理后的URL
+ * @returns 清理后的URL和平台信息
  */
-function cleanUrl(url: string): string {
+function cleanUrl(url: string): { url: string, platformName?: string } {
     try {
+        // 先应用特殊规则
+        const { url: specialProcessed, platformName } = applySpecialRules(url);
+        
+        // 如果是需要特殊处理的平台且已处理，则直接返回
+        const matchedRule = platformRules.find(rule => rule.name === platformName);
+        if (matchedRule?.needsSpecialHandling && specialProcessed !== url) {
+            return { url: specialProcessed, platformName };
+        }
+        
+        // 通用处理：移除URL参数
         const parsedUrl = new URL(url);
-
-        // 直接返回不带任何参数的URL
-        return `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
+        const cleanedUrl = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
+        
+        return { url: cleanedUrl, platformName };
     } catch (error) {
         log.error(`清理URL出错: ${error}`);
-        return url; // 出错时返回原始URL
+        return { url }; // 出错时返回原始URL
     }
 }
 
 /**
  * 解析短链接为原始URL
  * @param shortUrl 短链接
- * @returns 解析后的URL
+ * @returns 解析后的URL和平台信息
  */
-async function resolveUrl(shortUrl: string): Promise<string> {
+async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName?: string }> {
+    // 先检查是否为需要特殊处理的平台链接
+    const { url: specialHandled, platformName: specialPlatform } = applySpecialRules(shortUrl);
+    if (specialHandled !== shortUrl) {
+        return { url: specialHandled, platformName: specialPlatform };
+    }
+
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
@@ -98,8 +315,8 @@ async function resolveUrl(shortUrl: string): Promise<string> {
 
         // 获取最终URL
         const finalUrl = response.url || shortUrl;
-
-        // 清理URL并返回结果
+        
+        // 清理URL
         return cleanUrl(finalUrl);
     } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {
@@ -107,7 +324,14 @@ async function resolveUrl(shortUrl: string): Promise<string> {
         } else {
             log.error(`解析URL失败 ${shortUrl}: ${error}`);
         }
-        return shortUrl; // 解析失败时返回原始URL
+        
+        // 解析失败时，尝试应用特殊规则
+        const { url, platformName } = applySpecialRules(shortUrl);
+        if (url !== shortUrl) {
+            return { url, platformName };
+        }
+        
+        return { url: shortUrl }; // 所有处理都失败时返回原始URL
     }
 }
 
@@ -118,22 +342,35 @@ async function resolveUrl(shortUrl: string): Promise<string> {
  */
 async function processLinksInMessage(messageText: string): Promise<{
     text: string,
-    foundLinks: boolean
+    foundLinks: boolean,
+    usedSpecialRules: boolean
 }> {
     // 为当前消息创建临时缓存
-    const localCache = new Map<string, string>();
+    const localCache = new Map<string, { url: string, platformName?: string }>();
+    let usedSpecialRules = false;
 
     let text = messageText;
     const uniqueLinks = new Set<string>();
 
-    // 使用合并的正则表达式进行单次扫描，找出所有可能的链接
-    const matches = text.match(combinedLinkPattern);
-    if (!matches || matches.length === 0) {
-        return { text, foundLinks: false };
+    // 处理带@符号的特殊格式链接 (例如: @https://youtu.be/phZPdNfIzsQ?si=oV6Gr0JdmbnSEzrC)
+    const atSignLinkPattern = /@(https?:\/\/\S+)/g;
+    let atSignMatch;
+    while ((atSignMatch = atSignLinkPattern.exec(text)) !== null) {
+        if (atSignMatch && atSignMatch[1]) {
+            uniqueLinks.add(atSignMatch[1]);
+        }
     }
 
-    // 收集所有唯一链接
-    matches.forEach(link => uniqueLinks.add(link));
+    // 使用合并的正则表达式进行单次扫描，找出所有可能的链接
+    const matches = text.match(allUrlPatternsRegex);
+    if (matches && matches.length > 0) {
+        matches.forEach(link => uniqueLinks.add(link));
+    }
+
+    // 如果没有找到任何链接，直接返回原始文本
+    if (uniqueLinks.size === 0) {
+        return { text, foundLinks: false, usedSpecialRules };
+    }
 
     // 转换为数组以便处理
     const links = Array.from(uniqueLinks);
@@ -144,16 +381,25 @@ async function processLinksInMessage(messageText: string): Promise<{
             try {
                 // 检查本地缓存
                 if (localCache.has(link)) {
-                    return { original: link, resolved: localCache.get(link)! };
+                    const cached = localCache.get(link)!;
+                    return { 
+                        original: link, 
+                        resolved: cached.url,
+                        platformName: cached.platformName
+                    };
                 }
 
                 // 解析链接
-                const resolved = await resolveUrl(link);
+                const { url: resolved, platformName } = await resolveUrl(link);
 
                 // 添加到本地缓存
-                localCache.set(link, resolved);
+                localCache.set(link, { url: resolved, platformName });
 
-                return { original: link, resolved };
+                return { 
+                    original: link, 
+                    resolved,
+                    platformName
+                };
             } catch (error) {
                 log.error(`处理链接失败 ${link}: ${error}`);
                 return { original: link, resolved: link };
@@ -167,6 +413,13 @@ async function processLinksInMessage(messageText: string): Promise<{
             result.status === 'fulfilled')
         .map(result => result.value);
 
+    // 检查是否使用了特殊规则
+    usedSpecialRules = replacements.some(item => {
+        if (!item.platformName) return false;
+        const rule = platformRules.find(r => r.name === item.platformName);
+        return rule?.needsSpecialHandling === true;
+    });
+
     // 对替换项进行排序（长的先替换，避免子字符串问题）
     replacements.sort((a, b) => b.original.length - a.original.length);
 
@@ -174,33 +427,36 @@ async function processLinksInMessage(messageText: string): Promise<{
     for (const { original, resolved } of replacements) {
         // 只有当解析的URL和原始URL不同时才替换
         if (original !== resolved) {
+            // 处理带@符号的格式
+            const atFormatRegex = new RegExp(`@${original.replace(regexEscapePattern, '\\$&')}`, 'g');
+            if (text.match(atFormatRegex)) {
+                text = text.replace(atFormatRegex, resolved);
+            }
+
             // 使用正则表达式全局替换所有匹配实例
             const regex = new RegExp(original.replace(regexEscapePattern, '\\$&'), 'g');
             text = text.replace(regex, resolved);
         }
     }
 
-    return { text: text.trim(), foundLinks: true };
+    return { 
+        text: text.trim(), 
+        foundLinks: true,
+        usedSpecialRules
+    };
 }
 
 /**
  * 隐私插件主体
- * 
- * 优化说明：
- * 1. 使用本地缓存避免单次消息中重复解析相同链接
- * 2. 合并正则表达式，使用单次扫描而非多次迭代
- * 3. 使用 Promise.allSettled 进行并行链接处理，提高性能
- * 4. 添加更好的错误处理和超时管理
- * 5. 优化正则表达式，提高匹配准确性
  */
 const plugin: BotPlugin = {
     name: 'privacy',
     description: '防跟踪链接处理插件',
-    version: '1.3.0',
+    version: '2.0.0',
 
     // 插件加载时执行
     async onLoad(client) {
-        log.info('隐私保护插件已加载，开始监听跟踪链接');
+        log.info(`隐私保护插件已加载，支持 ${platformRules.length} 个平台`);
     },
 
     // 插件卸载时执行
@@ -216,12 +472,18 @@ const plugin: BotPlugin = {
             aliases: ['antitrack', 'notrack'],
 
             async handler(ctx: CommandContext): Promise<void> {
+                // 获取需要特殊处理的平台数量
+                const specialPlatforms = platformRules.filter(rule => rule.needsSpecialHandling);
+                
                 await ctx.message.replyText(html`
                     🔒 <b>隐私保护插件状态</b><br>
 <br>
-- 版本: 1.3.0<br>
-- 支持平台数量: ${Object.keys(shortLinkPatterns).length}<br>
-- 活跃状态: ✅ 运行中`);
+- 版本: 2.0.0<br>
+- 总支持平台: ${platformRules.length}<br>
+- 特殊规则平台: ${specialPlatforms.length}<br>
+- 活跃状态: ✅ 运行中
+<br>
+<b>特殊处理平台:</b> ${specialPlatforms.map(p => p.name).join(', ')}`);
             }
         }
     ],
@@ -246,13 +508,20 @@ const plugin: BotPlugin = {
 
                 try {
                     // 处理消息中的所有链接
-                    const { text: processedText, foundLinks } = await processLinksInMessage(messageText);
+                    const { text: processedText, foundLinks, usedSpecialRules } = 
+                        await processLinksInMessage(messageText);
 
                     // 如果找到并解析了链接，则删除原消息并发送新消息
                     if (foundLinks && processedText !== messageText) {
                         // 格式化新消息
                         const senderName = ctx.message.sender.displayName || '用户';
-                        const content = `${senderName} 分享内容（已移除全部跟踪参数）:\n${processedText}`;
+                        
+                        // 添加提示消息
+                        const tipMessage = usedSpecialRules
+                            ? '（已应用特殊规则转换和移除跟踪参数）' 
+                            : '（已移除全部跟踪参数）';
+                            
+                        const content = `${senderName} 分享内容${tipMessage}:\n${processedText}`;
 
                         // 发送新消息（如果存在回复消息则保持回复关系）
                         if (ctx.message.replyToMessage?.id) {
