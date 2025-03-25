@@ -17,10 +17,68 @@ const RETRY_DELAY_MS = 1000;           // 重试延迟(ms)
 // 新增通用字符占比阈值
 const MAX_COMMON_CHAR_RATIO = 0.6;     // 通用字符最大比例阈值
 const DIGITS_ONLY_THRESHOLD = 0.85;    // 纯数字消息阈值
+// 网页链接相关阈值
+const URL_COUNT_THRESHOLD = 3;         // URL数量阈值
+const URL_DENSITY_THRESHOLD = 0.2;     // URL密度阈值（URL字符占总字符的比例）
 
 // 简短语句的阈值定义
 const SHORT_MSG_MAX_LENGTH = 15;       // 简短消息的最大长度
 const SHORT_MSG_MAX_WORDS = 3;         // 简短消息的最大单词数
+
+// URL检测模式 - 移除全局标志
+const URL_PATTERNS = [
+    /https?:\/\/[^\s]+/i,                      // 标准HTTP/HTTPS链接
+    /www\.[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+[^\s]*/i, // www开头链接
+    /[a-zA-Z0-9-]+\.(com|org|net|io|gov|edu|info|me|app|dev|co|ai)[^\s\.,:]*/i, // 常见顶级域名
+    /t\.me\/[a-zA-Z0-9_]+/i,                   // Telegram链接
+    /github\.com\/[^\s]+/i,                    // GitHub链接
+    /youtube\.com\/[^\s]+|youtu\.be\/[^\s]+/i  // YouTube链接
+];
+
+// 格式化链接指示词
+const URL_INDICATOR_WORDS = [
+    /链接[：:]/i, /地址[：:]/i, /网址[：:]/i, /网站[：:]/i,
+    /link[s]?:/i, /url[s]?:/i, /website[s]?:/i, /site[s]?:/i,
+    /查看[：:]/i, /详情[：:]/i, /more:/i, /details:/i
+];
+
+// 检测段落是否包含链接指示词
+function hasUrlIndicators(text: string): boolean {
+    return URL_INDICATOR_WORDS.some(pattern => pattern.test(text));
+}
+
+/**
+ * 检测文本中的URL特征
+ */
+function detectUrlFeatures(text: string): { urlCount: number; urlDensity: number } {
+    // 合并所有URL模式为一个大正则表达式，用"|"分隔
+    const combinedUrlPattern = new RegExp(
+        "https?:\\/\\/[^\\s]+|" +                // HTTP/HTTPS链接
+        "www\\.[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+[^\\s]*|" + // www开头链接
+        "[a-zA-Z0-9-]+\\.(com|org|net|io|gov|edu|info|me|app|dev|co|ai)[^\\s\\.,:]*|" + // 常见顶级域名
+        "t\\.me\\/[a-zA-Z0-9_]+|" +             // Telegram链接
+        "github\\.com\\/[^\\s]+|" +             // GitHub链接
+        "youtube\\.com\\/[^\\s]+|youtu\\.be\\/[^\\s]+" // YouTube链接
+    , "gi");
+    
+    // 获取所有匹配
+    const matches = text.match(combinedUrlPattern) || [];
+    
+    // 去重
+    const uniqueUrls = [...new Set(matches)];
+    const urlCount = uniqueUrls.length;
+    
+    // 计算URL字符总数
+    let urlCharCount = 0;
+    for (const url of uniqueUrls) {
+        urlCharCount += url.length;
+    }
+    
+    // 计算URL密度
+    const urlDensity = urlCharCount / text.length;
+    
+    return { urlCount, urlDensity };
+}
 
 // 常见不需要翻译的短语或模式
 const SKIP_TRANSLATION_PATTERNS = [
@@ -133,6 +191,27 @@ function isNotChinese(text: string): boolean {
             log.debug(`消息匹配不翻译模式，跳过翻译: "${text.substring(0, 15)}..."`);
             return false;
         }
+    }
+
+    // 检测URL内容
+    const { urlCount, urlDensity } = detectUrlFeatures(text);
+    
+    // 如果是包含链接指示词的内容或URL密度高的内容，跳过翻译
+    if ((urlCount > 0 && hasUrlIndicators(text)) || 
+        (urlCount >= URL_COUNT_THRESHOLD) || 
+        (urlDensity > URL_DENSITY_THRESHOLD)) {
+        
+        log.debug(`URL分析: 数量=${urlCount}, 密度=${(urlDensity * 100).toFixed(1)}%`);
+        
+        if (hasUrlIndicators(text)) {
+            log.debug(`检测到链接指示词且含有URL，不翻译`);
+        } else if (urlCount >= URL_COUNT_THRESHOLD) {
+            log.debug(`URL数量(${urlCount})超过阈值(${URL_COUNT_THRESHOLD})，不翻译`);
+        } else {
+            log.debug(`URL密度(${(urlDensity * 100).toFixed(1)}%)超过阈值(${(URL_DENSITY_THRESHOLD * 100).toFixed(1)}%)，不翻译`);
+        }
+        
+        return false;
     }
 
     // 计算中文比例
@@ -250,6 +329,84 @@ function isNotChinese(text: string): boolean {
     }
 
     return shouldTranslate;
+}
+
+/**
+ * 获取更准确的文本比较（去除标点、数字和常见字符）
+ */
+function getNormalizedText(text: string): string {
+    return text
+        .replace(/[\s.,!?;:'"()\[\]{}]/g, "")  // 去除标点和空格
+        .replace(/\d+/g, "")                   // 去除数字
+        .replace(/[+\-*/%=<>]/g, "")           // 去除数学符号
+        .replace(/@#$%^&*_~`|\\]/g, "")        // 去除特殊符号
+        .toLowerCase();                         // 转为小写
+}
+
+/**
+ * 检查翻译结果是否与原文基本一致
+ */
+function isTranslationSimilarToOriginal(original: string, translation: string): boolean {
+    if (!original || !translation) return false;
+    
+    // 提取纯翻译内容(去掉"翻译: "前缀)
+    const pureTranslation = translation.replace(/^翻译:\s*/, "").trim();
+    const originalText = original.trim();
+    
+    // 使用更准确的文本比较（去除标点、数字和常见字符）
+    const normalizedOriginal = getNormalizedText(originalText);
+    const normalizedTranslation = getNormalizedText(pureTranslation);
+    
+    // 短文本完全匹配
+    if (normalizedOriginal === normalizedTranslation) {
+        return true;
+    }
+    
+    // 计算文本相似度 (基于包含关系和长度比例)
+    if (normalizedOriginal.length > 0 && normalizedTranslation.length > 0) {
+        // 检查包含关系
+        const containsRelation = normalizedOriginal.includes(normalizedTranslation) || normalizedTranslation.includes(normalizedOriginal);
+        
+        if (containsRelation) {
+            // 计算长度比例，防止一个短词包含在长句中被误判为相似
+            const lengthRatio = Math.min(normalizedOriginal.length, normalizedTranslation.length) / 
+                                Math.max(normalizedOriginal.length, normalizedTranslation.length);
+            
+            // 如果长度比例大于0.7，认为足够相似
+            if (lengthRatio > 0.7) {
+                return true;
+            }
+            
+            // 处理短文本特例 (允许更宽松的包含关系)
+            if (normalizedOriginal.length < 20 && normalizedTranslation.length < 20 && lengthRatio > 0.5) {
+                return true;
+            }
+        }
+        
+        // 检测是否只有少量字母的区别（主要针对拉丁字母文本）
+        if (normalizedOriginal.length > 5 && normalizedTranslation.length > 5) {
+            // 提取拉丁字母
+            const originalLetters = (normalizedOriginal.match(/[a-z]/g) || []).join("");
+            const translationLetters = (normalizedTranslation.match(/[a-z]/g) || []).join("");
+            
+            if (originalLetters.length > 0 && translationLetters.length > 0) {
+                // 如果字母部分非常相似，也认为是相似的
+                if (originalLetters === translationLetters) {
+                    return true;
+                }
+                
+                // 计算字母部分的相似度
+                const lettersSimilarity = Math.min(originalLetters.length, translationLetters.length) / 
+                                          Math.max(originalLetters.length, translationLetters.length);
+                
+                if (lettersSimilarity > 0.9) {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    return false;
 }
 
 /**
@@ -373,6 +530,20 @@ async function streamTranslateWithAI(
             `${DEFAULT_PROMPT}\n\n${text}`
         );
 
+        // 检查翻译结果是否与原文一致
+        if (finalContent && isTranslationSimilarToOriginal(text, finalContent)) {
+            log.debug(`流式翻译结果与原文基本一致，更新为提示信息`);
+            
+            // 更新最终消息为提示信息
+            ctx.client.editMessage({
+                chatId: ctx.chatId,
+                message: waitMsg.id,
+                text: "翻译结果与原文基本一致，无需翻译"
+            }).catch(e => log.error(`更新最终翻译消息失败: ${e}`));
+            
+            return;
+        }
+
         // 确保最终消息没有"翻译中"后缀
         if (finalContent) {
             ctx.client.editMessage({
@@ -396,11 +567,25 @@ async function simpleTranslateText(ctx: MessageEventContext, text: string): Prom
     try {
         // 直接翻译，不显示等待消息
         const translatedText = await translateWithAI(text);
+        
+        // 检查翻译结果是否与原文一致
+        if (isTranslationSimilarToOriginal(text, translatedText)) {
+            log.debug(`翻译结果与原文基本一致，不发送翻译: "${translatedText.substring(0, 30)}..."`);
+            return;
+        }
+        
         await ctx.message.replyText(translatedText);
     } catch (error) {
         log.warn(`AI翻译失败，切换到Google翻译: ${error}`);
         try {
             const translatedText = await translateWithGoogle(text);
+            
+            // 同样检查Google翻译结果是否与原文一致
+            if (isTranslationSimilarToOriginal(text, translatedText)) {
+                log.debug(`Google翻译结果与原文基本一致，不发送翻译: "${translatedText.substring(0, 30)}..."`);
+                return;
+            }
+            
             await ctx.message.replyText(translatedText);
         } catch (e) {
             log.error(`所有翻译方式均失败: ${e}`);
@@ -429,6 +614,22 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
         try {
             const waitMsg = await ctx.message.replyText("正在翻译...");
             const translatedText = await translateWithAI(text);
+            
+            // 检查翻译结果是否与原文一致
+            if (isTranslationSimilarToOriginal(text, translatedText)) {
+                log.debug(`翻译命令结果与原文基本一致，返回提示信息`);
+                
+                if (waitMsg?.id) {
+                    await ctx.message.client.editMessage({
+                        chatId: ctx.chatId,
+                        message: waitMsg.id,
+                        text: "翻译结果与原文基本一致，无需翻译"
+                    }).catch(e => log.error(`更新翻译消息失败: ${e}`));
+                } else {
+                    await ctx.message.replyText("翻译结果与原文基本一致，无需翻译");
+                }
+                return;
+            }
 
             if (waitMsg?.id) {
                 // 优先尝试更新原消息
@@ -447,6 +648,14 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
         } catch (aiError) {
             log.warn(`AI翻译失败，切换到Google翻译: ${aiError}`);
             const translatedText = await translateWithGoogle(text);
+            
+            // 检查Google翻译结果是否与原文一致
+            if (isTranslationSimilarToOriginal(text, translatedText)) {
+                log.debug(`Google翻译命令结果与原文基本一致，返回提示信息`);
+                await ctx.message.replyText("翻译结果与原文基本一致，无需翻译");
+                return;
+            }
+            
             await ctx.message.replyText(translatedText);
         }
     } catch (error) {
