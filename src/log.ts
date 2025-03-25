@@ -20,6 +20,7 @@ export interface LogConfig {
     showTrace: boolean;
     useColors: boolean;
     timeFormat: string;
+    remoteThrottleInterval?: number;
     telegram?: {
         client: TelegramClient;
         managerId?: number;
@@ -42,13 +43,17 @@ class Logger {
         showTimestamp: true,
         showTrace: false,
         useColors: true,
-        timeFormat: "YYYY-MM-DD HH:mm:ss"
+        timeFormat: "YYYY-MM-DD HH:mm:ss",
+        remoteThrottleInterval: 2000
     };
 
     private lastMessage: { messageId?: number; text: string } | null = null;
     private hostname = Bun.env.HOSTNAME || "unknown";
     private lastTimestamp = 0;
     private cachedTimestamp = "";
+    private lastRemoteSendTime = 0;
+    private pendingRemoteMessage: string | null = null;
+    private pendingRemoteTimer: ReturnType<typeof setTimeout> | null = null;
 
     private levelColors = {
         [LogLevel.DEBUG]: Colors.FgCyan,
@@ -70,6 +75,29 @@ class Logger {
 
     private async sendToTelegram(text: string) {
         if (!this.config.telegram?.client || !this.config.telegram.managerId) return;
+
+        const now = Date.now();
+        const throttleInterval = this.config.remoteThrottleInterval || 2000;
+        
+        if (now - this.lastRemoteSendTime < throttleInterval) {
+            this.pendingRemoteMessage = text;
+            
+            if (!this.pendingRemoteTimer) {
+                const remainingTime = throttleInterval - (now - this.lastRemoteSendTime);
+                this.pendingRemoteTimer = setTimeout(() => {
+                    if (this.pendingRemoteMessage) {
+                        const messageToSend = this.pendingRemoteMessage;
+                        this.pendingRemoteMessage = null;
+                        this.pendingRemoteTimer = null;
+                        this.sendToTelegram(messageToSend);
+                    }
+                }, remainingTime);
+            }
+            return;
+        }
+        
+        this.lastRemoteSendTime = now;
+        this.pendingRemoteMessage = null;
 
         try {
             if (this.lastMessage && text === this.lastMessage.text && this.lastMessage.messageId) {

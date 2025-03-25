@@ -4,7 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run src/app.ts"
+    "start": "bun run src/app.ts",
+    "debug": "DEBUG=true bun run src/app.ts",
+    "debug:win": "set DEBUG=true && bun run src/app.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

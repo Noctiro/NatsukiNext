@@ -384,7 +384,7 @@ class AiNewsSelector extends NewsSelector {
 
         for (const item of news) {
             const key = item.title.toLowerCase();
-            if (!uniqueNews.has(key) && !this.cache.wasSent(item.title)) {
+            if (!uniqueNews.has(key) && !this.cache.wasSent(key)) {
                 uniqueNews.set(key, item);
             }
         }
@@ -540,7 +540,7 @@ class AlgorithmNewsSelector extends NewsSelector {
     private selectBestNews(news: NewsItem[]): NewsItem | null {
         // 过滤掉已发送的新闻，并按分数降序排序
         return news
-            .filter(item => !this.cache.wasSent(item.title))
+            .filter(item => !this.cache.wasSent(item.title.toLowerCase()))
             .sort((a, b) => (b.score || 0) - (a.score || 0))[0] || null;
     }
 
@@ -1024,8 +1024,8 @@ class NewsService {
      * @param news - 需要更新追踪信息的新闻项
      */
     private async updateNewsTracking(news: NewsItem): Promise<void> {
-        // 使用hash函数处理标题以生成唯一ID
-        const newsId = await Bun.password.hash(news.title);
+        // 使用标题的小写形式作为唯一ID，确保和wasSent方法使用相同的键
+        const newsId = news.title.toLowerCase();
 
         // 标记新闻为已发送
         this.cache.markSent(newsId);
