@@ -29,15 +29,14 @@ import { Cron } from 'croner';
 
 // 状态消息图标
 const STATUS_EMOJIS = {
-    thinking: '🧠',
     analyzing: '🔍',
-    searching: '🔎',
+    searching: '🌐',
+    thinking: '🧠',
     processing: '⚙️',
     error: '❌',
     done: '✅',
     warning: '⚠️',
-    cached: '⚡',
-    limited: '🔒'
+    cached: '⚡'
 };
 
 /**
@@ -45,14 +44,8 @@ const STATUS_EMOJIS = {
  */
 class UserManager {
     private userCount: DynamicMap;
-    private searchLimits = {
-        maxQueriesPerUser: 15,
-        maxQueriesTotal: 80,
-        currentTotal: 0,
-        userSearchCounts: new Map<number, number>()
-    };
 
-    constructor(defaultUserLimit: number = 5) {
+    constructor(defaultUserLimit: number = 8) {
         this.userCount = new DynamicMap(defaultUserLimit);
     }
 
@@ -97,7 +90,7 @@ class UserManager {
         if (count < 1) {
             return { 
                 canUse: false, 
-                message: `${STATUS_EMOJIS.warning} <b>AI使用次数已耗尽</b><br><br>您今日的AI助手使用次数已用完。<br><br>💡 <b>小贴士</b>：<br>• 每天凌晨0:00自动获得5次免费使用机会<br>• 在群聊中发送消息（5字以上）可获得额外次数<br>• 消息越长可获得的次数越多（最多+0.95次/条）<br>• 多多参与群聊互动吧！` 
+                message: `${STATUS_EMOJIS.warning} <b>AI使用次数已耗尽</b><br><br>💡: 在群里保持活跃，每次有效消息能增加AI使用次数` 
             };
         }
         
@@ -125,33 +118,6 @@ class UserManager {
         
         // 设置新值，限制最大值为默认次数的两倍
         this.userCount.set(userId, Math.min(this.userCount.getDefaultData() * 2, numericCount + increment));
-    }
-
-    checkSearchLimit(userId: number): { canSearch: boolean, reason?: string } {
-        // 检查全局限制
-        if (this.searchLimits.currentTotal >= this.searchLimits.maxQueriesTotal) {
-            return { 
-                canSearch: false, 
-                reason: `⚠️ 已达今日全局搜索次数限制(${this.searchLimits.maxQueriesTotal}次)，机器人正在保护搜索服务不被过度使用。请在24小时后再试` 
-            };
-        }
-        
-        // 检查用户限制
-        const userCount = this.searchLimits.userSearchCounts.get(userId) || 0;
-        if (userCount >= this.searchLimits.maxQueriesPerUser) {
-            return { 
-                canSearch: false, 
-                reason: `⚠️ 您今日的搜索次数(${userCount}/${this.searchLimits.maxQueriesPerUser}次)已达上限。每位用户每24小时可进行${this.searchLimits.maxQueriesPerUser}次搜索` 
-            };
-        }
-        
-        return { canSearch: true };
-    }
-
-    incrementSearchCount(userId: number): void {
-        this.searchLimits.currentTotal++;
-        const userCount = this.searchLimits.userSearchCounts.get(userId) || 0;
-        this.searchLimits.userSearchCounts.set(userId, userCount + 1);
     }
 
     /**
@@ -1793,7 +1759,7 @@ class AIPlugin {
         if (!hasUnlimitedAccess) {
             const limitCheck = await this.userManager.checkUserLimit(ctx);
             if (!limitCheck.canUse) {
-                await ctx.message.replyText(limitCheck.message || '使用次数已耗尽');
+                await ctx.message.replyText(html(limitCheck.message!!) || '使用次数已耗尽');
                 return;
             }
         }
@@ -1847,18 +1813,6 @@ class AIPlugin {
             // 记录关键词数量
             const keywordCount = keywords.split('\n').filter(k => k.trim()).length;
             log.info(`已提取${keywordCount}个搜索关键词，将进行精准搜索`);
-            
-            // 需要搜索，先检查搜索限制
-            const { canSearch, reason } = this.userManager.checkSearchLimit(userId);
-            
-            if (!canSearch) {
-                // 搜索受限，通知用户
-                await this.messageManager.updateMessageStatus(ctx, waitMsg.id, 'limited', `${reason}。请稍后再试。`);
-                return;
-            }
-            
-            // 增加搜索计数
-            this.userManager.incrementSearchCount(userId);
             
             // 进行搜索
             const searchPreview = KeywordGenerator.formatSearchPreview(keywords);
@@ -2036,6 +1990,7 @@ const plugin: BotPlugin = {
         {
             name: 'ai.unlimited',
             description: '无限制使用AI助手的权限',
+            parent: 'admin',
             isSystem: false,
             allowedUsers: []
         }
