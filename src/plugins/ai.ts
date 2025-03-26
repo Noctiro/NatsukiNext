@@ -207,22 +207,41 @@ class MessageManager {
         // 获取格式化后的状态文本
         const text = this.formatStatusText(status, additionalText);
         
+        // 清理可能存在的占位符
+        const cleanText = this.cleanPlaceholders(text);
+        
         // 检查状态消息是否变化
         const key = `${ctx.chatId}:${messageId}`;
-        if (this.isContentUnchanged(key, text)) return;
+        if (this.isContentUnchanged(key, cleanText)) return;
         
         try {
             await ctx.client.editMessage({
                 chatId: ctx.chatId,
                 message: messageId,
-                text: html(text)
+                text: html(cleanText)
             });
             
             // 更新成功后记录内容
-            this.lastMessageContents.set(key, text);
+            this.lastMessageContents.set(key, cleanText);
         } catch (e) {
             log.error(`更新状态消息失败: ${e}`);
         }
+    }
+    
+    /**
+     * 清理文本中的HTML占位符
+     */
+    private cleanPlaceholders(text: string): string {
+        if (!text) return '';
+        
+        return text
+            .replace(/HTML_PLACEHOLDER_\d+/g, '')
+            .replace(/HTML_TAG_\d+/g, '')
+            .replace(/__HTML_TAG_\d+__/g, '')
+            .replace(/HTML_PLACEHOLDER/g, '')
+            .replace(/HTML_TAG/g, '')
+            .replace(/__HTML_TAG__/g, '')
+            .replace(/HTML[_-][A-Za-z]+[_-]?\d*/g, '');
     }
 
     formatStatusText(status: keyof typeof STATUS_EMOJIS, additionalText: string = ''): string {
@@ -2106,10 +2125,12 @@ class AIPlugin {
                             try {
                                 // 最终更新直接发送，不使用节流机制
                                 const finalDisplayText = ResponseFormatter.formatAIResponse(safeContent, safeThinking || '');
+                                // 清理最终输出中的占位符
+                                const cleanFinalText = this.cleanOutputText(finalDisplayText);
                                 const key = `${ctx.chatId}:${waitMsg.id}`;
                                 
                                 // 检查内容是否与上次相同
-                                if (this.messageManager['isContentUnchanged'](key, finalDisplayText)) {
+                                if (this.messageManager['isContentUnchanged'](key, cleanFinalText)) {
                                     // 内容相同，跳过更新
                                     log.debug(`跳过最终更新，内容未变化`);
                                     return;
@@ -2119,10 +2140,10 @@ class AIPlugin {
                                 ctx.client.editMessage({
                                     chatId: ctx.chatId,
                                     message: waitMsg.id,
-                                    text: html(finalDisplayText)
+                                    text: html(cleanFinalText)
                                 }).then(() => {
                                     // 更新成功后记录内容
-                                    this.messageManager['lastMessageContents'].set(key, finalDisplayText);
+                                    this.messageManager['lastMessageContents'].set(key, cleanFinalText);
                                 }).catch(e => log.error(`最终更新消息失败: ${e}`));
                             } catch (e) {
                                 log.error(`创建最终消息时出错: ${e}`);
@@ -2131,7 +2152,9 @@ class AIPlugin {
                             try {
                                 // 使用节流机制更新中间消息
                                 const displayText = ResponseFormatter.formatAIResponse(safeContent, safeThinking || '');
-                                this.messageManager.throttledEditMessage(ctx, ctx.chatId, waitMsg.id, displayText);
+                                // 清理任何可能的占位符标记
+                                const cleanText = this.cleanOutputText(displayText);
+                                this.messageManager.throttledEditMessage(ctx, ctx.chatId, waitMsg.id, cleanText);
                             } catch (e) {
                                 log.error(`创建中间消息时出错: ${e}`);
                             }
@@ -2184,6 +2207,28 @@ class AIPlugin {
         // 获取消息长度并传递给incrementUsage方法
         const messageLength = ctx.message.text?.trim().length || 0;
         this.userManager.incrementUsage(userId, messageLength);
+    }
+
+    /**
+     * 彻底清理输出文本中的所有占位符
+     */
+    private cleanOutputText(text: string): string {
+        if (!text) return '';
+        
+        // 先进行正则匹配，移除常见占位符格式
+        let cleanedText = text
+            .replace(/HTML_PLACEHOLDER_\d+/g, '')
+            .replace(/HTML_TAG_\d+/g, '')
+            .replace(/__HTML_TAG_\d+__/g, '')
+            .replace(/HTML_PLACEHOLDER/g, '')
+            .replace(/HTML_TAG/g, '')
+            .replace(/__HTML_TAG__/g, '');
+        
+        // 检查是否还有其他格式的占位符
+        const placeholderRegex = /HTML[_-][A-Za-z]+[_-]?\d*/g;
+        cleanedText = cleanedText.replace(placeholderRegex, '');
+        
+        return cleanedText;
     }
 }
 
