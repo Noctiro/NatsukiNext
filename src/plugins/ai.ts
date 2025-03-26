@@ -8,11 +8,11 @@ import {
     TranslateResult,
     DictionaryResult,
     TimeResult,
-    CurrencyResult,
-    type SearchResultNode
-} from 'google-sr';
+    CurrencyResult} from 'google-sr';
 import { slowModeState } from '../ai/provider/BaseProvider';
 import DynamicMap from '../utils/DynamicMap';
+import * as HtmlHelper from '../utils/HtmlHelper';
+import { ALLOWED_TAGS } from '../utils/HtmlHelper';
 import { Cron } from 'croner';
 
 /**
@@ -768,11 +768,8 @@ class ResponseFormatter {
         if (!text) return '';
         
         try {
-            // 允许的HTML标签列表（根据 @mtcute/html-parser 文档）
-            const allowedTags = ['b', 'i', 'u', 's', 'code', 'a', 'pre', 'br', 'blockquote'];
-            
             // 先替换掉所有HTML标签占位符
-            let cleanedText = text.replace(/HTML[_-][A-Za-z]+[_-]?\d*/g, '');
+            let cleanedText = HtmlHelper.cleanPlaceholders(text);
             
             // 标记现有的标签，以便后面恢复合法标签
             const existingTags: string[] = [];
@@ -828,19 +825,14 @@ class ResponseFormatter {
             // 恢复合法的HTML标签，过滤掉不允许的标签
             for (let i = 0; i < existingTags.length; i++) {
                 const tagContent = existingTags[i] || '';
-                const tagMatch = tagContent.match(/<\/?([a-z]+).*?>/i);
-                if (tagMatch && tagMatch[1] && allowedTags.includes(tagMatch[1].toLowerCase())) {
-                    cleanedText = cleanedText.replace(`__TAG_${i}__`, tagContent);
-                } else {
-                    cleanedText = cleanedText.replace(`__TAG_${i}__`, '');
-                }
+                cleanedText = cleanedText.replace(`__TAG_${i}__`, tagContent);
             }
             
-            // 确保所有标签都正确闭合
-            return this.ensureProperHtml(cleanedText);
+            // 使用 HtmlHelper 过滤标签并确保所有标签都正确闭合
+            return HtmlHelper.filterAllowedTags(cleanedText);
         } catch (e) {
             log.error(`Markdown转HTML出错: ${e}`);
-            return text.replace(/HTML[_-][A-Za-z]+[_-]?\d*/g, '');
+            return HtmlHelper.cleanPlaceholders(text);
         }
     }
     
@@ -849,64 +841,8 @@ class ResponseFormatter {
      * 可用于清理任何HTML文本中的问题和占位符
      */
     static ensureProperHtml(html: string): string {
-        if (!html) return '';
-        
-        // 移除任何可能的HTML占位符
-        let cleanedHtml = html.replace(/HTML[_-][A-Za-z]+[_-]?\d*/g, '');
-        cleanedHtml = cleanedHtml.replace(/__TAG_\d+__/g, '');
-        
-        // 简化版标签检查与修复
-        const simpleTags = ['b', 'i', 'u', 's', 'code'];
-        const complexTags = ['a', 'pre'];
-        
-        // 修复简单标签
-        for (const tag of simpleTags) {
-            const openCount = (cleanedHtml.match(new RegExp(`<${tag}[^>]*>`, 'g')) || []).length;
-            const closeCount = (cleanedHtml.match(new RegExp(`</${tag}>`, 'g')) || []).length;
-            
-            // 添加缺失的闭合标签
-            if (openCount > closeCount) {
-                for (let i = 0; i < openCount - closeCount; i++) {
-                    cleanedHtml += `</${tag}>`;
-                }
-            }
-            // 移除多余的闭合标签
-            else if (closeCount > openCount) {
-                let excessCloseCount = closeCount - openCount;
-                
-                // 简化处理：从字符串末尾开始删除多余的闭合标签
-                while (excessCloseCount > 0) {
-                    const lastTag = `</${tag}>`;
-                    const lastPos = cleanedHtml.lastIndexOf(lastTag);
-                    if (lastPos !== -1) {
-                        cleanedHtml = cleanedHtml.substring(0, lastPos) + 
-                                  cleanedHtml.substring(lastPos + lastTag.length);
-                        excessCloseCount--;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-        
-        // 修复复杂标签（包括有属性的标签）
-        for (const tag of complexTags) {
-            // 支持带属性的标签，如 <blockquote collapsible>
-            const openPattern = new RegExp(`<${tag}(\\s+[^>]*)*>`, 'g');
-            const openTags = cleanedHtml.match(openPattern) || [];
-            const closeTags = cleanedHtml.match(new RegExp(`</${tag}>`, 'g')) || [];
-            
-            if (openTags.length > closeTags.length) {
-                for (let i = 0; i < openTags.length - closeTags.length; i++) {
-                    cleanedHtml += `</${tag}>`;
-                }
-            }
-        }
-        
-        // 确保换行标签格式正确
-        cleanedHtml = cleanedHtml.replace(/<br>/g, '<br>');
-        
-        return cleanedHtml;
+        // 使用 HtmlHelper 工具类处理 HTML
+        return HtmlHelper.ensureProperHtml(html);
     }
 
     /**
@@ -1987,23 +1923,27 @@ const HELP = `<b>🤖 AI助手</b><br>
  * AI插件类 - 主要插件类，整合所有功能
  */
 class AIPlugin {
-    protected userManager: UserManager;
-    private messageManager: MessageManager;
+    private userManager: UserManager;
     private searchService: SearchService;
-
+    private keywordGenerator: KeywordGenerator;
+    private responseFormatter: ResponseFormatter;
+    private messageManager: MessageManager;
+    
     constructor() {
-        this.userManager = new UserManager(8); // 默认每个用户每天8次使用机会
-        this.messageManager = new MessageManager();
+        this.userManager = new UserManager();
         this.searchService = new SearchService();
+        this.keywordGenerator = new KeywordGenerator();
+        this.responseFormatter = new ResponseFormatter();
+        this.messageManager = new MessageManager();
     }
-
+    
     /**
      * 检查并重置用户AI使用次数的公共方法
      */
     checkAndResetUserLimits(): void {
         this.userManager.checkAndResetDailyLimits();
     }
-
+    
     /**
      * 处理查询剩余次数命令
      */
@@ -2181,8 +2121,8 @@ class AIPlugin {
                             try {
                                 // 最终更新直接发送，不使用节流机制
                                 const finalDisplayText = ResponseFormatter.formatAIResponse(safeContent, safeThinking || '');
-                                // 清理最终输出中的占位符
-                                const cleanFinalText = this.cleanOutputText(finalDisplayText);
+                                // 使用新方法清理最终输出中的HTML
+                                const cleanFinalText = this.processHtmlContent(finalDisplayText);
                                 const key = `${ctx.chatId}:${waitMsg.id}`;
                                 
                                 // 检查内容是否与上次相同
@@ -2208,8 +2148,8 @@ class AIPlugin {
                             try {
                                 // 使用节流机制更新中间消息
                                 const displayText = ResponseFormatter.formatAIResponse(safeContent, safeThinking || '');
-                                // 清理任何可能的占位符标记
-                                const cleanText = this.cleanOutputText(displayText);
+                                // 使用新方法清理中间输出的HTML
+                                const cleanText = this.processHtmlContent(displayText);
                                 this.messageManager.throttledEditMessage(ctx, ctx.chatId, waitMsg.id, cleanText);
                             } catch (e) {
                                 log.error(`创建中间消息时出错: ${e}`);
@@ -2266,13 +2206,36 @@ class AIPlugin {
     }
 
     /**
+     * 处理HTML内容，确保符合 @mtcute/html-parser 标准
+     * @param content HTML内容
+     * @param allowBlockquote 是否允许blockquote标签
+     * @returns 处理后的HTML
+     */
+    private processHtmlContent(content: string, allowBlockquote: boolean = true): string {
+        if (!content) return '';
+        
+        // 创建允许的标签列表
+        const allowedTags = [...ALLOWED_TAGS];
+        if (!allowBlockquote) {
+            // 如果不允许blockquote标签，从列表中移除
+            const index = allowedTags.indexOf('blockquote');
+            if (index > -1) {
+                allowedTags.splice(index, 1);
+            }
+        }
+        
+        // 清理并过滤HTML内容
+        return HtmlHelper.filterAllowedTags(content, allowedTags);
+    }
+    
+    /**
      * 彻底清理输出文本中的所有占位符
      */
     private cleanOutputText(text: string): string {
         if (!text) return '';
         
-        // 使用 ResponseFormatter 的标准处理函数确保HTML合法性
-        return ResponseFormatter.ensureProperHtml(text);
+        // 使用 HtmlHelper 工具类清理 HTML
+        return HtmlHelper.cleanPlaceholders(text);
     }
 }
 

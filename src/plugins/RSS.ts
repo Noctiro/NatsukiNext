@@ -5,6 +5,7 @@ import type { BotPlugin, CommandContext } from '../features';
 import { html, Message, type TelegramClient, type TextWithEntities } from "@mtcute/bun";
 import { Cron } from "croner";
 import { enableChats } from "../app";
+import { ensureProperHtml, filterAllowedTags, ALLOWED_TAGS } from "../utils/HtmlHelper";
 
 /**
  * RSS 源配置接口
@@ -103,17 +104,47 @@ const NEWS_CONFIG = {
 /**
  * AI摘要提示词
  */
-const AI_SUMMARY_PROMPT = `你是一名专业的新闻编辑，擅长提炼新闻的核心要点，并用简洁、有力、流畅的语言进行表达。请从以下长篇新闻中提取关键信息，优化表述，使其更易读、更有逻辑性，并确保信息准确无误。
+const AI_SUMMARY_PROMPT = `你是一名专业新闻编辑，擅长提炼新闻核心要点，并以简洁、精准、生动的语言表达。请对以下新闻进行总结，确保信息准确，逻辑清晰，易读易懂。
 
-要求：
-1. 核心要点提炼：概括新闻的主要事实，包括时间、地点、事件、涉及人物和重要背景信息。
-2. 逻辑清晰：按照"背景—事件—影响"的结构整理内容，使读者易于理解。
-3. 语言优化：用简洁、精准、生动的语言表达，去掉冗余信息，避免重复和模糊表述。
-4. 客观中立：保持新闻客观性，不加入主观评论或夸张修辞。
-5. 适当压缩：根据原文长度，将信息精炼至合理篇幅，确保涵盖关键信息的同时不影响可读性。尽量在${NEWS_CONFIG.LONG_NEWS_THRESHOLD}字以内。
-6. 内容安全: 不要提供任何解释或要求以外的内容。
-7. 错误回馈: 如果无法提炼出关键信息或内容不适合总结，则直接返回 [CANCEL]。
-` as const;
+### 要求：
+1. **关键信息提炼**：概括核心事实，包括**时间、地点、事件、人物、背景**等，确保完整、准确。
+2. **逻辑结构清晰**：
+   - **时间顺序**：按时间线组织信息，适用于事件发展类新闻。
+   - **逻辑层次**：
+     - **背景** → **事件** → **影响**
+     - **原因** → **现状** → **未来**
+     - **主要信息** → **补充细节**
+   - **条理分明，层次合理**，避免混乱堆砌信息。
+3. **语言优化**：
+   - **简明有力**：去除冗余、重复、模糊表达。
+   - **客观中立**：不加入主观评论、夸张修辞或引导性表述。
+4. **合理压缩**：
+   - 在保证关键信息完整的前提下，优化篇幅，尽量不超过 **${NEWS_CONFIG.LONG_NEWS_THRESHOLD}** 字。
+   - 长新闻可拆分为**简要摘要 + 详细补充**（使用可折叠引用）。
+5. **内容安全**：
+   - 严格基于原文，不提供额外解释或无关信息。
+   - 如无法提炼有效内容，直接返回 **[CANCEL]**。
+
+### 输出格式（仅支持以下HTML标签）：
+- **文本格式**：
+  - **<b>加粗</b>**：强调关键信息
+  - **<i>斜体</i>**：术语、引用
+  - **<u>下划线</u>**：特别提醒
+  - **<s>删除线</s>**：更正、废弃信息
+  - **<spoiler>隐藏内容</spoiler>**（可折叠查看）
+- **代码与链接**：
+  - **<code>内联代码</code>**：技术/命令
+  - **<a href="URL">超链接</a>**：新闻来源
+  - **<pre language="语言">多行代码</pre>**（如 TypeScript、Python）
+- **布局**：
+  - **<br>**：换行（仅限此方式）
+  - **<blockquote>引用</blockquote>**：重要段落
+  - **<blockquote collapsible>折叠引用</blockquote>**：次要信息
+- **格式规则**：
+  - **禁止在 <blockquote> 和 <blockquote collapsible> 之前使用 <br>**（若有，需删除）
+  - **禁止使用其他HTML标签**
+
+请严格遵守上述要求，确保输出内容准确、清晰、规范。`
 
 /**
  * AI评论提示词
@@ -932,7 +963,12 @@ class NewsService {
                 `${AI_SUMMARY_PROMPT}\n标题: ${news.title}\n内容: ${news.content || news.description}`,
                 false
             );
-            return comment && comment !== '[CANCEL]' ? comment.trim() : '';
+            
+            if (!comment || comment === '[CANCEL]') return '';
+            
+            // 使用HtmlHelper过滤和修复HTML标签
+            const filteredHtml = filterAllowedTags(comment.trim(), ALLOWED_TAGS);
+            return ensureProperHtml(filteredHtml);
         } catch (error) {
             log.error(`AI summary generation failed: ${error}`);
             return '';
@@ -950,7 +986,14 @@ class NewsService {
                 `${AI_COMMENT_PROMPT}\n标题: ${news.title}\n内容: ${news.content || news.description}`,
                 false
             );
-            return comment && comment !== '[CANCEL]' && comment.length <= 150 ? `🤖 ${comment.trim()}\n` : '';
+            
+            if (!comment || comment === '[CANCEL]' || comment.length > 150) return '';
+            
+            // 使用HtmlHelper过滤和修复HTML标签
+            const filteredHtml = filterAllowedTags(comment.trim(), ALLOWED_TAGS);
+            const cleanHtml = ensureProperHtml(filteredHtml);
+            
+            return cleanHtml ? `🤖 ${cleanHtml}\n` : '';
         } catch (error) {
             log.error(`AI comment generation failed: ${error}`);
             return '';
