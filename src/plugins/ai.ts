@@ -762,81 +762,151 @@ class SearchService {
  */
 class ResponseFormatter {
     /**
-     * 将Markdown格式转换为HTML格式
+     * 将Markdown格式转换为HTML格式，并确保只使用允许的HTML标签
      */
     static markdownToHtml(text: string): string {
         if (!text) return '';
         
         try {
-            // 使用数组存储html标签，避免正则替换问题
-            const htmlTags: string[] = [];
+            // 允许的HTML标签列表（根据 @mtcute/html-parser 文档）
+            const allowedTags = ['b', 'i', 'u', 's', 'code', 'a', 'pre', 'br', 'blockquote'];
             
-            // 替换所有HTML标签为安全的占位符
-            let processedText = text.replace(/<[^>]+>/g, (match) => {
-                const placeholder = `__HTML_TAG_${htmlTags.length}__`;
-                htmlTags.push(match);
-                return placeholder;
+            // 先替换掉所有HTML标签占位符
+            let cleanedText = text.replace(/HTML[_-][A-Za-z]+[_-]?\d*/g, '');
+            
+            // 标记现有的标签，以便后面恢复合法标签
+            const existingTags: string[] = [];
+            cleanedText = cleanedText.replace(/<[^>]+>/g, (match) => {
+                existingTags.push(match);
+                return `__TAG_${existingTags.length - 1}__`;
             });
             
-            // 定义Markdown到HTML的转换规则
+            // 应用Markdown转换规则，符合 @mtcute/html-parser 支持的实体
             const markdownRules = [
-                // 标题
+                // 标题（转为粗体）
                 { pattern: /^# (.+)$/gm, replacement: '<b>$1</b>' },
                 { pattern: /^## (.+)$/gm, replacement: '<b>$1</b>' },
                 { pattern: /^### (.+)$/gm, replacement: '<b>$1</b>' },
                 
-                // 格式化
-                { pattern: /\*\*(.+?)\*\*/g, replacement: '<b>$1</b>' },
-                { pattern: /\*(.+?)\*/g, replacement: '<i>$1</i>' },
-                { pattern: /__(.+?)__/g, replacement: '<u>$1</u>' },
-                { pattern: /~~(.+?)~~/g, replacement: '<s>$1</s>' },
-                { pattern: /`(.+?)`/g, replacement: '<code>$1</code>' },
+                // 基本格式
+                { pattern: /\*\*(.+?)\*\*/g, replacement: '<b>$1</b>' },         // 粗体
+                { pattern: /\*(.+?)\*/g, replacement: '<i>$1</i>' },             // 斜体
+                { pattern: /__(.+?)__/g, replacement: '<u>$1</u>' },             // 下划线
+                { pattern: /~~(.+?)~~/g, replacement: '<s>$1</s>' },             // 删除线
+                { pattern: /`([^`]+)`/g, replacement: '<code>$1</code>' },       // 行内代码
                 
-                // 链接和列表
+                // 链接
                 { pattern: /\[(.+?)\]\((.+?)\)/g, replacement: '<a href="$2">$1</a>' },
+                
+                // 列表（转为普通文本，带有项目符号）
                 { pattern: /^- (.+)$/gm, replacement: '• $1' },
                 { pattern: /^\d+\. (.+)$/gm, replacement: '• $1' },
                 
-                // 其他格式
-                { pattern: /^---+$/gm, replacement: '<hr>' },
-                { pattern: /^> (.+)$/gm, replacement: '❝ <i>$1</i>' }
+                // 分隔线和引用
+                { pattern: /^---+$/gm, replacement: '<br>' },                    // 分隔线转为换行
+                { pattern: /^> (.+)$/gm, replacement: '❝ <i>$1</i>' }            // 引用转为斜体带引号
             ];
             
-            // 应用Markdown规则
+            // 处理代码块（使用 <pre> 标签）
+            cleanedText = cleanedText.replace(/```(\w*)\n([\s\S]*?)```/g, (_, language, code) => {
+                if (language) {
+                    return `<pre language="${language}">${code}</pre>`;
+                }
+                return `<pre>${code}</pre>`;
+            });
+            
+            // 应用转换规则
             for (const rule of markdownRules) {
-                processedText = processedText.replace(rule.pattern, rule.replacement);
+                cleanedText = cleanedText.replace(rule.pattern, rule.replacement);
             }
             
-            // 处理换行 - 确保在转换标签前处理
-            processedText = processedText
-                .replace(/\n\n+/g, '\n\n')  // 合并多个连续换行
-                .replace(/\n\n/g, '<br><br>')  // 段落换行
-                .replace(/\n/g, '<br>');  // 单行换行
-                
-            // 恢复HTML标签 - 使用字符串替换，避免RegExp问题
-            for (let i = 0; i < htmlTags.length; i++) {
-                const placeholder = `__HTML_TAG_${i}__`;
-                // 使用简单的字符串替换，而不是RegExp
-                while (processedText.includes(placeholder)) {
-                    processedText = processedText.split(placeholder).join(htmlTags[i]);
+            // 处理换行，符合 @mtcute/html-parser 的标准
+            cleanedText = cleanedText
+                .replace(/\n\n+/g, '<br><br>')  // 多个连续换行转为两个 <br>
+                .replace(/\n/g, '<br>');        // 单个换行转为 <br>
+            
+            // 恢复合法的HTML标签，过滤掉不允许的标签
+            for (let i = 0; i < existingTags.length; i++) {
+                const tagContent = existingTags[i] || '';
+                const tagMatch = tagContent.match(/<\/?([a-z]+).*?>/i);
+                if (tagMatch && tagMatch[1] && allowedTags.includes(tagMatch[1].toLowerCase())) {
+                    cleanedText = cleanedText.replace(`__TAG_${i}__`, tagContent);
+                } else {
+                    cleanedText = cleanedText.replace(`__TAG_${i}__`, '');
                 }
             }
             
-            // 检查替换后的文本是否还包含占位符
-            if (processedText.includes('HTML_PLACEHOLDER') || processedText.includes('__HTML_TAG_')) {
-                log.warn('HTML占位符替换不完全，输出可能包含占位符');
-                // 强制清理任何残留的占位符
-                processedText = processedText
-                    .replace(/HTML_PLACEHOLDER_\d+/g, '')
-                    .replace(/__HTML_TAG_\d+__/g, '');
-            }
-            
-            return processedText;
+            // 确保所有标签都正确闭合
+            return this.ensureProperHtml(cleanedText);
         } catch (e) {
             log.error(`Markdown转HTML出错: ${e}`);
-            // 出错时返回去除了可能的占位符的原文本
-            return text.replace(/HTML_PLACEHOLDER_\d+/g, '').replace(/__HTML_TAG_\d+__/g, '');
+            return text.replace(/HTML[_-][A-Za-z]+[_-]?\d*/g, '');
         }
+    }
+    
+    /**
+     * 确保HTML标签正确闭合，并移除任何残留的占位符
+     * 可用于清理任何HTML文本中的问题和占位符
+     */
+    static ensureProperHtml(html: string): string {
+        if (!html) return '';
+        
+        // 移除任何可能的HTML占位符
+        let cleanedHtml = html.replace(/HTML[_-][A-Za-z]+[_-]?\d*/g, '');
+        cleanedHtml = cleanedHtml.replace(/__TAG_\d+__/g, '');
+        
+        // 简化版标签检查与修复
+        const simpleTags = ['b', 'i', 'u', 's', 'code'];
+        const complexTags = ['a', 'pre'];
+        
+        // 修复简单标签
+        for (const tag of simpleTags) {
+            const openCount = (cleanedHtml.match(new RegExp(`<${tag}[^>]*>`, 'g')) || []).length;
+            const closeCount = (cleanedHtml.match(new RegExp(`</${tag}>`, 'g')) || []).length;
+            
+            // 添加缺失的闭合标签
+            if (openCount > closeCount) {
+                for (let i = 0; i < openCount - closeCount; i++) {
+                    cleanedHtml += `</${tag}>`;
+                }
+            }
+            // 移除多余的闭合标签
+            else if (closeCount > openCount) {
+                let excessCloseCount = closeCount - openCount;
+                
+                // 简化处理：从字符串末尾开始删除多余的闭合标签
+                while (excessCloseCount > 0) {
+                    const lastTag = `</${tag}>`;
+                    const lastPos = cleanedHtml.lastIndexOf(lastTag);
+                    if (lastPos !== -1) {
+                        cleanedHtml = cleanedHtml.substring(0, lastPos) + 
+                                  cleanedHtml.substring(lastPos + lastTag.length);
+                        excessCloseCount--;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // 修复复杂标签（包括有属性的标签）
+        for (const tag of complexTags) {
+            // 支持带属性的标签，如 <blockquote collapsible>
+            const openPattern = new RegExp(`<${tag}(\\s+[^>]*)*>`, 'g');
+            const openTags = cleanedHtml.match(openPattern) || [];
+            const closeTags = cleanedHtml.match(new RegExp(`</${tag}>`, 'g')) || [];
+            
+            if (openTags.length > closeTags.length) {
+                for (let i = 0; i < openTags.length - closeTags.length; i++) {
+                    cleanedHtml += `</${tag}>`;
+                }
+            }
+        }
+        
+        // 确保换行标签格式正确
+        cleanedHtml = cleanedHtml.replace(/<br>/g, '<br>');
+        
+        return cleanedHtml;
     }
 
     /**
@@ -861,7 +931,7 @@ class ResponseFormatter {
                     // 3. 处理单行换行
                     formattedThinking = formattedThinking.replace(/\n/g, '<br>');
                     
-                    displayText += `<blockquote collapsible><b>💭 思考过程</b><br><br>${formattedThinking}</blockquote><br><br>`;
+                    displayText += `<blockquote><b>💭 思考过程:</b><br><br>${formattedThinking}</blockquote><br><br>`;
                 }
             } catch (e) {
                 log.error(`处理思考过程时出错: ${e}`);
@@ -878,14 +948,14 @@ class ResponseFormatter {
                 // 如果没有思考过程，可能是正在启动或遇到了问题
                 displayText += `${STATUS_EMOJIS.warning} AI尚未生成内容，可能正在初始化或遇到了问题。如果长时间无响应，可以尝试重新提问。`;
             }
-            return this.sanitizeOutput(displayText);
+            return this.ensureProperHtml(displayText);
         }
         
         // 处理内容过短的情况（可能是生成中）
         if (content.trim().length < 20 && !content.includes('。') && !content.includes('.')) {
             displayText += this.markdownToHtml(content);
             displayText += `<br><br>${STATUS_EMOJIS.processing} AI正在继续生成内容...`;
-            return this.sanitizeOutput(displayText);
+            return this.ensureProperHtml(displayText);
         }
         
         // 添加正文内容
@@ -893,7 +963,7 @@ class ResponseFormatter {
             const formatContent = this.markdownToHtml(content);
             
             // 根据内容长度决定显示格式
-            if (formatContent.length > 500) {
+            if (formatContent.length > 500 && !formatContent.includes('blockquote>')) {
                 displayText += `✏️ 回答内容(共${formatContent.length}字，已自动收缩):<br><blockquote collapsible>${formatContent}</blockquote>`;
             } else {
                 displayText += `✏️ 回答内容(共${formatContent.length}字):<br>${formatContent}`;
@@ -903,23 +973,9 @@ class ResponseFormatter {
             displayText += content; // 回退到原始内容
         }
         
-        return this.sanitizeOutput(displayText);
+        return this.ensureProperHtml(displayText);
     }
     
-    /**
-     * 清理输出中可能存在的占位符
-     */
-    private static sanitizeOutput(text: string): string {
-        if (!text) return '';
-        
-        // 清理各种可能的HTML占位符格式
-        return text
-            .replace(/HTML_PLACEHOLDER_\d+/g, '')  // 移除旧格式占位符
-            .replace(/__HTML_TAG_\d+__/g, '')      // 移除新格式占位符
-            .replace(/HTML_PLACEHOLDER/g, '')      // 移除不带数字的占位符
-            .replace(/__HTML_TAG__/g, '');         // 移除不带数字的新格式占位符
-    }
-
     /**
      * 清理思考过程
      */
@@ -2215,20 +2271,8 @@ class AIPlugin {
     private cleanOutputText(text: string): string {
         if (!text) return '';
         
-        // 先进行正则匹配，移除常见占位符格式
-        let cleanedText = text
-            .replace(/HTML_PLACEHOLDER_\d+/g, '')
-            .replace(/HTML_TAG_\d+/g, '')
-            .replace(/__HTML_TAG_\d+__/g, '')
-            .replace(/HTML_PLACEHOLDER/g, '')
-            .replace(/HTML_TAG/g, '')
-            .replace(/__HTML_TAG__/g, '');
-        
-        // 检查是否还有其他格式的占位符
-        const placeholderRegex = /HTML[_-][A-Za-z]+[_-]?\d*/g;
-        cleanedText = cleanedText.replace(placeholderRegex, '');
-        
-        return cleanedText;
+        // 使用 ResponseFormatter 的标准处理函数确保HTML合法性
+        return ResponseFormatter.ensureProperHtml(text);
     }
 }
 
