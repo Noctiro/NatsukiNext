@@ -819,7 +819,14 @@ class ResponseFormatter {
             try {
                 const cleanedThinking = this.cleanThinkingProcess(thinking);
                 if (cleanedThinking && cleanedThinking.trim()) {
-                    displayText += `<blockquote collapsible>\n<b>💭 思考过程</b><br><br>${cleanedThinking}\n</blockquote><br><br>`;
+                    // 将纯文本思考过程中的换行符和分隔符转换为HTML标签
+                    const formattedThinking = cleanedThinking
+                        // 将分隔线转换为美观的HTML分隔符（使用Telegram支持的标签）
+                        .replace(/\n\n---------------\n\n/g, '<br><br><i>• • • • •</i><br><br>')
+                        .replace(/\n\n/g, '<br><br>')  // 段落换行
+                        .replace(/\n/g, '<br>');       // 普通换行
+                    
+                    displayText += `<blockquote collapsible>\n<b>💭 思考过程</b><br><br>${formattedThinking}\n</blockquote><br><br>`;
                 }
             } catch (e) {
                 log.error(`处理思考过程时出错: ${e}`);
@@ -850,9 +857,9 @@ class ResponseFormatter {
         try {
             const formatContent = this.markdownToHtml(content);
             if (formatContent.length > 500) {
-                displayText += `<blockquote collapsible>${formatContent}</blockquote>`;
+                displayText += `✏️ 回答内容(共${formatContent.length}字，已自动收缩):<blockquote collapsible>${formatContent}</blockquote>`;
             } else {
-                displayText += formatContent;
+                displayText += `✏️ 回答内容(共${formatContent.length}字):${formatContent}`;
             }
         } catch (e) {
             log.error(`转换Markdown内容时出错: ${e}`);
@@ -869,10 +876,13 @@ class ResponseFormatter {
         if (!thinking || typeof thinking !== 'string') return "";
         
         try {
-            // 预处理，替换markdown格式为HTML
+            // 预处理，先清除所有HTML标签
             let processedThinking = thinking
-                .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-                .replace(/\*(.+?)\*/g, '<i>$1</i>');
+                // 移除所有HTML标签
+                .replace(/<[^>]*>/g, '')
+                // 替换markdown格式为纯文本
+                .replace(/\*\*(.+?)\*\*/g, '$1')
+                .replace(/\*(.+?)\*/g, '$1');
                 
             // 按段落分割
             const paragraphs = processedThinking.split('\n\n').filter(p => p.trim().length > 0);
@@ -915,8 +925,8 @@ class ResponseFormatter {
                 return paragraphs.indexOf(a) - paragraphs.indexOf(b);
             });
             
-            // 添加段落分隔符
-            return sortedParagraphs.join('<br><br><i>• • •</i><br><br>');
+            // 添加段落分隔符（使用易于转换为HTML的纯文本分隔符）
+            return sortedParagraphs.join('\n\n---------------\n\n');
         } catch (e) {
             log.error(`清理思考过程时出错: ${e}`);
             return ""; // 出错时返回空字符串

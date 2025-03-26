@@ -81,7 +81,10 @@ export default class OpenRouter extends BaseProvider {
                 });
 
                 if (!response.ok) {
-                    throw { response: { status: response.status, data: await response.json() } };
+                    // 获取详细错误信息
+                    const errorData = await response.json().catch(() => ({ message: 'Failed to parse error response' }));
+                    log.error(`API错误 (${response.status}):`, JSON.stringify(errorData));
+                    throw { response: { status: response.status, data: errorData } };
                 }
 
                 return response;
@@ -115,6 +118,8 @@ export default class OpenRouter extends BaseProvider {
         } catch (error: unknown) {
             if (error instanceof Error) {
                 log.error('Stream failed:', error.message);
+            } else {
+                log.error('Stream failed with unknown error:', error);
             }
             throw error;
         }
@@ -128,6 +133,12 @@ export default class OpenRouter extends BaseProvider {
             
             let content: string = '';
             let thinking: string | undefined;
+            
+            // 添加对API响应的有效性检查
+            if (!data || !data.choices || !Array.isArray(data.choices) || data.choices.length === 0) {
+                log.error('Invalid API response:', JSON.stringify(data));
+                throw new Error('API返回的响应格式不正确或为空');
+            }
             
             // 获取内容
             content = data.choices[0]?.message?.content || '';
@@ -154,6 +165,8 @@ export default class OpenRouter extends BaseProvider {
         } catch (error: unknown) {
             if (error instanceof Error) {
                 log.error('Request failed:', error.message);
+            } else {
+                log.error('Request failed with unknown error:', error);
             }
             throw error;
         }

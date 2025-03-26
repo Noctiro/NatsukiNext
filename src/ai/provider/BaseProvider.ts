@@ -97,8 +97,8 @@ export default class BaseProvider {
         try {
             const parsed = JSON.parse(jsonStr);
             
-            // 处理内容更新
-            if (parsed.choices && parsed.choices[0]) {
+            // 确保parsed.choices存在且不为空
+            if (parsed && parsed.choices && Array.isArray(parsed.choices) && parsed.choices.length > 0) {
                 // 处理内容
                 if (parsed.choices[0].delta?.content) {
                     content += parsed.choices[0].delta.content;
@@ -114,6 +114,7 @@ export default class BaseProvider {
             }
         } catch (e) {
             // 忽略解析错误
+            log.debug('Stream event parsing error:', e);
         }
         
         return { content, thinking };
