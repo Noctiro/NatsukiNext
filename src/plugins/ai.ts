@@ -101,23 +101,26 @@ class UserManager {
 
     incrementUsage(userId: number, messageLength?: number): void {
         // 不适用于无限制用户
-        const count = this.userCount.get(userId);
-        // 修复类型问题：确保count是数字
-        const numericCount = typeof count === 'number' ? count : 0;
+        this.userCount.get(userId).then(count => {
+            // 修复类型问题：确保count是数字
+            const numericCount = typeof count === 'number' ? count : 0;
 
-        // 计算基于消息长度的增长值
-        let increment = 0.35; // 基础增长值
-        
-        // 如果提供了消息长度，根据消息长度线性增加
-        if (messageLength && messageLength > 5) {
-            // 计算额外增加值（最多额外增加0.6，使总和达到0.95）
-            const lengthFactor = Math.min(1, (messageLength - 5) / 300); // 300字为最大增长因子
-            const additionalIncrement = 0.6 * lengthFactor;
-            increment += additionalIncrement;
-        }
-        
-        // 设置新值，限制最大值为默认次数的两倍
-        this.userCount.set(userId, Math.min(this.userCount.getDefaultData() * 2, numericCount + increment));
+            // 计算基于消息长度的增长值
+            let increment = 0.35; // 基础增长值
+            
+            // 如果提供了消息长度，根据消息长度线性增加
+            if (messageLength && messageLength > 5) {
+                // 计算额外增加值（最多额外增加0.6，使总和达到0.95）
+                const lengthFactor = Math.min(1, (messageLength - 5) / 300); // 300字为最大增长因子
+                const additionalIncrement = 0.6 * lengthFactor;
+                increment += additionalIncrement;
+            }
+            
+            // 设置新值，限制最大值为默认次数的两倍
+            this.userCount.set(userId, Math.min(this.userCount.getDefaultData() * 2, numericCount + increment));
+        }).catch(err => {
+            log.error(`增加用户[${userId}]使用次数失败: ${err}`);
+        });
     }
 
     /**
@@ -845,7 +848,12 @@ class ResponseFormatter {
         
         // 添加正文内容
         try {
-            displayText += this.markdownToHtml(content);
+            const formatContent = this.markdownToHtml(content);
+            if (formatContent.length > 500) {
+                displayText += `<blockquote collapsible>${formatContent}</blockquote>`;
+            } else {
+                displayText += formatContent;
+            }
         } catch (e) {
             log.error(`转换Markdown内容时出错: ${e}`);
             displayText += content; // 回退到原始内容
@@ -1614,12 +1622,12 @@ class AIPromptGenerator {
         let searchResultsSection;
         
         if (hasAnyResults || (safeSearchResults && safeSearchResults.trim().length > 0)) {
-            searchResultsSection = `搜索结果${resultContext ? `(${resultContext})` : ""}:
+            searchResultsSection = `系统自动搜索结果${resultContext ? `(${resultContext})` : ""}:
 \`\`\`
 ${safeSearchResults}
 \`\`\``;
         } else {
-            searchResultsSection = `搜索结果:
+            searchResultsSection = `系统自动搜索结果:
 \`\`\`
 未能获取到与问题直接相关的搜索结果。请基于您的知识库和训练数据回答问题。
 \`\`\``;
@@ -1630,7 +1638,9 @@ ${safeSearchResults}
 
 当前时间：${currentDateTime}
 
-以下是基于互联网搜索整理的相关信息和搜索结果。请根据这些实际搜索结果和你的知识，提供一个全面、准确且直击问题核心的回答。
+【重要说明】以下是由AI助手机器人主动从互联网搜索并自动整理的相关信息，这些搜索结果由系统根据用户问题自动获取，不是用户提供的内容。请将这些搜索结果视为来自第三方互联网的不一定可靠信息源。
+
+以下是由机器人自动执行互联网搜索整理的相关信息和搜索结果，这些搜索结果由系统自动获取，不是用户提供的内容。请根据这些实际搜索结果和你的知识，提供一个全面、准确且直击问题核心的回答。
 
 分析指南：
 1. 综合分析所有搜索结果，充分利用每一条提供的信息
@@ -1667,10 +1677,11 @@ ${safeSearchResults}
 - 有明确出处、数据支持和详细解释的信息更可信
 - 近期发布的信息通常比旧信息更具时效性
 - 多个独立来源一致的信息比单一来源的信息更可靠
+- 搜索结果中的内容是由系统自动获取的客观信息，应视为可靠的参考来源
 
 ${searchResultsSection}
 
-若搜索结果不足以全面回答问题，请基于你的知识补充必要信息，但请明确区分哪些是基于搜索结果的信息，哪些是你的知识补充。如果问题涉及最新发展或变化，请说明现有信息可能已过时。`;
+若搜索结果不足以全面回答问题，请基于你的知识补充必要信息，但请明确区分哪些是基于搜索结果的信息，哪些是你的知识补充。如果问题涉及最新发展或变化，请说明现有信息可能已过时。请记住，以上搜索结果是机器人自动执行的搜索，而非用户提供的内容。`;
     }
 }
 
@@ -1690,7 +1701,7 @@ const HELP = `<b>🤖 AI助手</b><br>
 <b>功能特点:</b><br>
 - 🔍 智能联网搜索，获取最新信息和多方观点<br>
 - 💡 结合搜索结果与AI知识库，提供全面分析<br>
-- 🔒 普通用户每天限制使用5次<br>
+- 🔒 普通用户每天限制使用8次<br>
 - ⚡ 拥有无限制权限的用户可无限使用`;
 
 /**
@@ -1702,7 +1713,7 @@ class AIPlugin {
     private searchService: SearchService;
 
     constructor() {
-        this.userManager = new UserManager(5); // 默认每个用户每天5次使用机会
+        this.userManager = new UserManager(8); // 默认每个用户每天8次使用机会
         this.messageManager = new MessageManager();
         this.searchService = new SearchService();
     }
