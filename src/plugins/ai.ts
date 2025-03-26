@@ -743,15 +743,22 @@ class SearchService {
  */
 class ResponseFormatter {
     /**
-     * Markdown到HTML的转换
+     * 将Markdown格式转换为HTML格式
      */
     static markdownToHtml(text: string): string {
         if (!text) return '';
         
-        // 如果已经包含HTML标签，不需要转换
-        if (text.includes('<b>') || text.includes('<i>') || text.includes('<a href=')) {
-            return text;
-        }
+        // 首先保存已有的HTML标签，避免被转换过程影响
+        const htmlPlaceholders: {[key: string]: string} = {};
+        let placeholderIndex = 0;
+        
+        // 临时替换已有的HTML标签
+        let processedText = text.replace(/<[^>]+>/g, (match) => {
+            const placeholder = `__HTML_PLACEHOLDER_${placeholderIndex}__`;
+            htmlPlaceholders[placeholder] = match;
+            placeholderIndex++;
+            return placeholder;
+        });
     
         // 定义Markdown到HTML的转换规则
         const markdownRules = [
@@ -770,7 +777,7 @@ class ResponseFormatter {
             // 链接和列表
             { pattern: /\[(.+?)\]\((.+?)\)/g, replacement: '<a href="$2">$1</a>' },
             { pattern: /^- (.+)$/gm, replacement: '• $1' },
-            { pattern: /^\d+\. (.+)$/gm, replacement: '$1' },
+            { pattern: /^\d+\. (.+)$/gm, replacement: '• $1' },
             
             // 其他格式
             { pattern: /^---+$/gm, replacement: '<hr>' },
@@ -778,34 +785,26 @@ class ResponseFormatter {
         ];
         
         // 应用Markdown规则
-        let html = text;
         for (const rule of markdownRules) {
-            html = html.replace(rule.pattern, rule.replacement);
+            processedText = processedText.replace(rule.pattern, rule.replacement);
         }
         
-        // 特殊字符处理
-        html = html
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
+        // 处理换行 - 确保在转换标签前处理
+        processedText = processedText
+            .replace(/\n\n+/g, '\n\n')  // 合并多个连续换行
+            .replace(/\n\n/g, '<br><br>')  // 段落换行
+            .replace(/\n/g, '<br>');  // 单行换行
         
-        // HTML标签恢复
-        const tagPairs = [
-            ['b', 'b'], ['i', 'i'], ['u', 'u'], ['s', 's'], ['code', 'code'], 
-            ['a href=', 'a'], ['hr', 'hr'], ['br', 'br'],
-            ['blockquote collapsible', 'blockquote']
-        ];
+        // 恢复HTML标签占位符
+        Object.keys(htmlPlaceholders).forEach(placeholder => {
+            const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(escapedPlaceholder, 'g');
+            if (htmlPlaceholders[placeholder]) {
+                processedText = processedText.replace(regex, htmlPlaceholders[placeholder]);
+            }
+        });
         
-        for (const [openTag, closeTag] of tagPairs) {
-            html = html
-                .replace(new RegExp(`&lt;${openTag}&gt;`, 'g'), `<${openTag}>`)
-                .replace(new RegExp(`&lt;\\/${closeTag}&gt;`, 'g'), `</${closeTag}>`);
-        }
-        
-        // 处理换行
-        return html
-            .replace(/\n\n/g, '<br><br>')
-            .replace(/\n/g, '<br>');
+        return processedText;
     }
 
     /**
@@ -820,11 +819,15 @@ class ResponseFormatter {
                 const cleanedThinking = this.cleanThinkingProcess(thinking);
                 if (cleanedThinking && cleanedThinking.trim()) {
                     // 将纯文本思考过程中的换行符和分隔符转换为HTML标签
-                    const formattedThinking = cleanedThinking
-                        // 将分隔线转换为美观的HTML分隔符（使用Telegram支持的标签）
-                        .replace(/\n\n---------------\n\n/g, '<br><br><i>• • • • •</i><br><br>')
-                        .replace(/\n\n/g, '<br><br>')  // 段落换行
-                        .replace(/\n/g, '<br>');       // 普通换行
+                    let formattedThinking = cleanedThinking;
+                    
+                    // 按照指定顺序处理各种分隔符和换行
+                    // 1. 先处理分隔线
+                    formattedThinking = formattedThinking.replace(/\n\n---------------\n\n/g, '<br><br><i>• • • • •</i><br><br>');
+                    // 2. 处理段落换行
+                    formattedThinking = formattedThinking.replace(/\n\n/g, '<br><br>');
+                    // 3. 处理单行换行
+                    formattedThinking = formattedThinking.replace(/\n/g, '<br>');
                     
                     displayText += `<blockquote collapsible>\n<b>💭 思考过程</b><br><br>${formattedThinking}\n</blockquote><br><br>`;
                 }
@@ -856,10 +859,12 @@ class ResponseFormatter {
         // 添加正文内容
         try {
             const formatContent = this.markdownToHtml(content);
+            
+            // 根据内容长度决定显示格式
             if (formatContent.length > 500) {
-                displayText += `✏️ 回答内容(共${formatContent.length}字，已自动收缩):<blockquote collapsible>${formatContent}</blockquote>`;
+                displayText += `✏️ 回答内容(共${formatContent.length}字，已自动收缩):<br><blockquote collapsible>${formatContent}</blockquote>`;
             } else {
-                displayText += `✏️ 回答内容(共${formatContent.length}字):${formatContent}`;
+                displayText += `✏️ 回答内容(共${formatContent.length}字):<br>${formatContent}`;
             }
         } catch (e) {
             log.error(`转换Markdown内容时出错: ${e}`);
@@ -1136,10 +1141,24 @@ class SearchResultFormatter {
         // 校验输入
         if (!searchResultsArray?.length) return '';
         
-        // 筛选有效结果
-        const validResults = searchResultsArray.filter(item => item?.results);
+        log.info(`开始格式化搜索结果，共 ${searchResultsArray.length} 个查询结果`);
         
-        if (!validResults.length) return '';
+        // 筛选有效结果
+        const validResults = searchResultsArray.filter(item => {
+            // 检查结果是否存在
+            const hasResults = !!item?.results;
+            if (!hasResults) {
+                log.warn(`搜索结果项缺少 results 字段`);
+            }
+            return hasResults;
+        });
+        
+        if (!validResults.length) {
+            log.warn(`没有找到有效的搜索结果`);
+            return '';
+        }
+        
+        log.info(`有效的搜索结果: ${validResults.length}/${searchResultsArray.length}`);
         
         // 准备结果容器
         let specialOutput = "";
@@ -1148,43 +1167,68 @@ class SearchResultFormatter {
         
         // 第一步：收集所有结果和特殊结果
         for (const item of validResults) {
+            const results = item.results;
+            
             // 处理特殊结果
-            const specialText = this.processSpecialResults(item.results, '');
+            const specialText = this.processSpecialResults(results, '');
             if (specialText) {
+                log.info(`发现特殊结果类型: ${specialText.split('\n')[0]}...`);
                 specialOutput += specialText + '\n\n';
             }
             
-            // 处理搜索结果 - 修复: 直接使用 results，因为 google-sr 返回结果是数组或带有特殊属性的对象
-            const results = item.results;
-            
-            // 检查结果是否为数组（有机搜索结果）
+            // 处理搜索结果
             if (Array.isArray(results)) {
                 // 收集有效结果并计算质量分数
                 for (const result of results) {
-                    if (result && (result.title || result.snippet)) {
+                    if (result && (result.title || result.snippet || result.link)) {
                         allSearchResults.push({
                             result,
                             quality: ResponseFormatter.getResultQualityScore(result)
                         });
                     }
                 }
+            } else if (results?.organic && Array.isArray(results.organic)) {
+                // 兼容旧格式：结果在 organic 数组中
+                for (const organicResult of results.organic) {
+                    if (organicResult && (organicResult.title || organicResult.snippet || organicResult.link)) {
+                        allSearchResults.push({
+                            result: organicResult,
+                            quality: ResponseFormatter.getResultQualityScore(organicResult)
+                        });
+                    }
+                }
+            } else if (results?.json?.organic && Array.isArray(results.json.organic)) {
+                // 兼容另一种格式：结果在 json.organic 中
+                for (const organicResult of results.json.organic) {
+                    if (organicResult && (organicResult.title || organicResult.snippet || organicResult.link)) {
+                        allSearchResults.push({
+                            result: organicResult,
+                            quality: ResponseFormatter.getResultQualityScore(organicResult)
+                        });
+                    }
+                }
             }
         }
+        
+        log.info(`收集了 ${allSearchResults.length} 个搜索结果项`);
         
         // 第二步：去重并排序结果
         allSearchResults.sort((a, b) => b.quality - a.quality);
         
         const uniqueResults = [];
         for (const item of allSearchResults) {
-            const link = item.result.link;
+            const link = item.result.link || item.result.url;
             if (!link || !processedLinks.has(link)) {
                 if (link) processedLinks.add(link);
                 uniqueResults.push(item);
             }
         }
         
+        log.info(`去重后剩余 ${uniqueResults.length} 个搜索结果项`);
+        
         // 第三步：如果没有找到有效结果，创建备用结果
         if (!uniqueResults.length && !specialOutput) {
+            log.warn(`没有有效结果和特殊结果，尝试创建备用结果`);
             return this.createBackupResults(searchResultsArray, 5) || '';
         }
         
@@ -1198,6 +1242,8 @@ class SearchResultFormatter {
             // 选择结果
             const highQualityResults = uniqueResults.filter(item => item.quality > 5);
             const lowQualityResults = uniqueResults.filter(item => item.quality <= 5);
+            
+            log.info(`高质量结果: ${highQualityResults.length}, 低质量结果: ${lowQualityResults.length}`);
             
             // 高质量结果优先，但如果总结果数不超过5条，则全部保留
             let selectedResults: typeof uniqueResults = [];
@@ -1274,73 +1320,134 @@ class SearchResultFormatter {
                     if (!result) continue;
                     
                     // 查找可能包含特殊结果的对象
-                    if (result.type === 'dictionary' && result.dictionary) {
-                        const term = result.dictionary.term || '未知术语';
-                        const definition = result.dictionary.definition || '无定义';
-                        output.push(`字典解释: ${term} - ${definition}`);
-                    } else if (result.type === 'translate' && result.translate) {
-                        const source = result.translate.source || '未知';
-                        const target = result.translate.target || '未知';
-                        const sourceText = result.translate.sourceText || '无原文';
-                        const targetText = result.translate.targetText || '无译文';
+                    if (result.type === 'dictionary' || result.dictionary) {
+                        const dictionary = result.dictionary || result;
+                        const term = dictionary.term || result.term || '未知术语';
+                        const definition = dictionary.definition || result.definition || '无定义';
+                        output.push(`📚 字典解释: ${term} - ${definition}`);
+                    } else if (result.type === 'translate' || result.translate) {
+                        const translate = result.translate || result;
+                        const source = translate.source || result.source || '未知';
+                        const target = translate.target || result.target || '未知';
+                        const sourceText = translate.sourceText || result.sourceText || translate.source_text || result.source_text || '无原文';
+                        const targetText = translate.targetText || result.targetText || translate.target_text || result.target_text || '无译文';
                         
-                        output.push(`翻译结果: ${source} → ${target}`);
+                        output.push(`🌐 翻译结果: ${source} → ${target}`);
                         output.push(`原文: ${sourceText}`);
                         output.push(`译文: ${targetText}`);
-                    } else if (result.type === 'time' && result.time) {
-                        output.push(`时间信息: ${result.time.display || '未知时间'}`);
-                    } else if (result.type === 'currency' && result.currency) {
-                        const fromAmount = result.currency.fromAmount || '?';
-                        const fromCode = result.currency.fromCode || '?';
-                        const toAmount = result.currency.toAmount || '?';
-                        const toCode = result.currency.toCode || '?';
+                    } else if (result.type === 'time' || result.time) {
+                        const time = result.time || result;
+                        const timeDisplay = time.display || time.time_display || result.display || '未知时间';
+                        output.push(`⏰ 时间信息: ${timeDisplay}`);
+                    } else if (result.type === 'currency' || result.currency) {
+                        const currency = result.currency || result;
+                        const fromAmount = currency.fromAmount || currency.from_amount || result.fromAmount || result.from_amount || '?';
+                        const fromCode = currency.fromCode || currency.from_code || result.fromCode || result.from_code || '?';
+                        const toAmount = currency.toAmount || currency.to_amount || result.toAmount || result.to_amount || '?';
+                        const toCode = currency.toCode || currency.to_code || result.toCode || result.to_code || '?';
                         
-                        output.push(`货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
+                        output.push(`💱 货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
+                    } else if (result.type === 'weather' || result.weather) {
+                        const weather = result.weather || result;
+                        const location = weather.location || result.location || '未知地点';
+                        const condition = weather.condition || result.condition || '未知天气';
+                        const temperature = weather.temperature || result.temperature || '';
+                        
+                        output.push(`🌤️ 天气信息: ${location} - ${condition}${temperature ? ` ${temperature}` : ''}`);
                     }
                 }
-            } else {
-                // 非数组情况下的处理（向后兼容）
+            } else if (typeof results === 'object') {
+                // 非数组情况下的处理
                 
                 // 字典解释
                 if (results.dictionary) {
                     const term = results.dictionary.term || '未知术语';
                     const definition = results.dictionary.definition || '无定义';
-                    output.push(`字典解释: ${term} - ${definition}`);
+                    output.push(`📚 字典解释: ${term} - ${definition}`);
+                }
+                
+                // 直接在对象中查找
+                if (results.term && results.definition) {
+                    output.push(`📚 字典解释: ${results.term} - ${results.definition}`);
                 }
                 
                 // 翻译结果
                 if (results.translate) {
                     const source = results.translate.source || '未知';
                     const target = results.translate.target || '未知';
-                    const sourceText = results.translate.sourceText || '无原文';
-                    const targetText = results.translate.targetText || '无译文';
+                    const sourceText = results.translate.sourceText || results.translate.source_text || '无原文';
+                    const targetText = results.translate.targetText || results.translate.target_text || '无译文';
                     
-                    output.push(`翻译结果: ${source} → ${target}`);
+                    output.push(`🌐 翻译结果: ${source} → ${target}`);
+                    output.push(`原文: ${sourceText}`);
+                    output.push(`译文: ${targetText}`);
+                }
+                
+                // 直接检查翻译字段
+                if (results.source && results.target && (results.sourceText || results.source_text) && (results.targetText || results.target_text)) {
+                    const sourceText = results.sourceText || results.source_text;
+                    const targetText = results.targetText || results.target_text;
+                    
+                    output.push(`🌐 翻译结果: ${results.source} → ${results.target}`);
                     output.push(`原文: ${sourceText}`);
                     output.push(`译文: ${targetText}`);
                 }
                 
                 // 时间信息
-                if (results.time?.display) {
-                    output.push(`时间信息: ${results.time.display}`);
+                if (results.time?.display || results.time?.time_display) {
+                    output.push(`⏰ 时间信息: ${results.time.display || results.time.time_display}`);
+                }
+                
+                // 直接在对象中查找时间信息
+                if (results.display && results.type === 'time') {
+                    output.push(`⏰ 时间信息: ${results.display}`);
                 }
                 
                 // 货币转换
                 if (results.currency) {
-                    const fromAmount = results.currency.fromAmount || '?';
-                    const fromCode = results.currency.fromCode || '?';
-                    const toAmount = results.currency.toAmount || '?';
-                    const toCode = results.currency.toCode || '?';
+                    const fromAmount = results.currency.fromAmount || results.currency.from_amount || '?';
+                    const fromCode = results.currency.fromCode || results.currency.from_code || '?';
+                    const toAmount = results.currency.toAmount || results.currency.to_amount || '?';
+                    const toCode = results.currency.toCode || results.currency.to_code || '?';
                     
-                    output.push(`货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
+                    output.push(`💱 货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
+                }
+                
+                // 直接在对象中查找货币信息
+                if ((results.fromAmount || results.from_amount) && 
+                    (results.fromCode || results.from_code) && 
+                    (results.toAmount || results.to_amount) && 
+                    (results.toCode || results.to_code)) {
+                    
+                    const fromAmount = results.fromAmount || results.from_amount;
+                    const fromCode = results.fromCode || results.from_code;
+                    const toAmount = results.toAmount || results.to_amount;
+                    const toCode = results.toCode || results.to_code;
+                    
+                    output.push(`💱 货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
+                }
+                
+                // 天气信息
+                if (results.weather) {
+                    const location = results.weather.location || '未知地点';
+                    const condition = results.weather.condition || '未知天气';
+                    const temperature = results.weather.temperature || '';
+                    
+                    output.push(`🌤️ 天气信息: ${location} - ${condition}${temperature ? ` ${temperature}` : ''}`);
+                }
+                
+                // 直接在对象中查找天气信息
+                if (results.location && results.condition && results.type === 'weather') {
+                    const temperature = results.temperature || '';
+                    output.push(`🌤️ 天气信息: ${results.location} - ${results.condition}${temperature ? ` ${temperature}` : ''}`);
                 }
             }
+            
+            return output.length > 0 ? output.join('\n') : initialText;
         } catch (e) {
             log.error(`处理特殊结果类型时出错: ${e}`);
+            return initialText;
         }
-        
-        const resultText = output.join('\n');
-        return resultText ? initialText + resultText : initialText;
     }
 
     /**
@@ -1350,7 +1457,12 @@ class SearchResultFormatter {
         if (!searchResult) return '';
         
         try {
-            const { title, link, snippet, sitelinks } = searchResult;
+            // 提取各种可能的结果字段
+            const title = searchResult.title || searchResult.name || '';
+            const link = searchResult.link || searchResult.url || '';
+            const snippet = searchResult.snippet || searchResult.description || searchResult.content || '';
+            const sitelinks = searchResult.sitelinks || [];
+            
             let resultText = '';
             
             // 添加标题
@@ -1375,7 +1487,13 @@ class SearchResultFormatter {
                 }
                 resultText += `内容摘要: ${formattedSnippet}\n`;
             } else {
-                resultText += `内容摘要: (无摘要)\n`;
+                // 尝试从其他可能包含摘要内容的字段提取
+                const alternativeSnippet = this.extractAlternativeSnippet(searchResult);
+                if (alternativeSnippet) {
+                    resultText += `内容摘要: ${alternativeSnippet}\n`;
+                } else {
+                    resultText += `内容摘要: (无摘要)\n`;
+                }
             }
             
             // 添加相关链接
@@ -1397,6 +1515,53 @@ class SearchResultFormatter {
             log.error(`处理搜索结果项时出错: ${e}`);
             return '搜索结果处理出错\n\n';
         }
+    }
+    
+    /**
+     * 尝试从搜索结果的各种字段中提取替代摘要
+     */
+    private static extractAlternativeSnippet(result: any): string {
+        // 按优先级检查各种可能包含摘要的字段
+        const possibleFields = [
+            'abstract', 'summary', 'text', 'extract', 'description', 
+            'rich_snippet', 'meta_description', 'pagemap.metatags.description'
+        ];
+        
+        for (const field of possibleFields) {
+            if (field.includes('.')) {
+                // 处理嵌套字段 (例如 pagemap.metatags.description)
+                const parts = field.split('.');
+                let value = result;
+                
+                for (const part of parts) {
+                    if (value && typeof value === 'object' && part in value) {
+                        value = value[part];
+                    } else {
+                        value = null;
+                        break;
+                    }
+                }
+                
+                if (value && typeof value === 'string' && value.trim()) {
+                    return value.trim();
+                }
+            } else if (result[field] && typeof result[field] === 'string' && result[field].trim()) {
+                return result[field].trim();
+            }
+        }
+        
+        // 尝试从 pagemap 获取信息
+        if (result.pagemap) {
+            if (result.pagemap.metatags?.[0]?.['og:description']) {
+                return result.pagemap.metatags[0]['og:description'];
+            }
+            
+            if (result.pagemap.metatags?.[0]?.['description']) {
+                return result.pagemap.metatags[0]['description'];
+            }
+        }
+        
+        return '';
     }
 
     /**
@@ -1671,9 +1836,9 @@ ${safeSearchResults}
 7. 可以使用<blockquote>标签创建引用块，对引用内容进行突出
 
 思考过程格式：
-1. 在思考过程中也使用HTML标签进行格式化
+1. 在思考过程中请使用纯文本格式，不要使用HTML标签
 2. 使用明确的步骤表示你的分析过程
-3. 对关键词和重要结论使用<b>标签突出显示
+3. 对关键词和重要结论可使用大写字母或特殊符号标记(如*重要结论*)
 4. 指出信息来源，以便在思考过程中清晰显示信息的可靠性
 
 注意：
@@ -1681,6 +1846,8 @@ ${safeSearchResults}
 - 不要使用不支持的HTML标签（如<div>、<span>、<p>等）
 - 不要使用HTML标题标签（如<h1>、<h2>等），使用<b>加粗文本</b>代替
 - 支持嵌套标签但确保正确嵌套，如<b>粗体<i>斜体粗体</i></b>
+- 必须使用<br>标签表示换行，不要使用句号来分隔句子代替换行
+- 段落之间必须用<br><br>分隔，不要只依赖句号作为段落分隔
 
 信息可信度评估原则：
 - 官方网站(.gov、.edu、.org)和权威机构的信息通常更可靠
