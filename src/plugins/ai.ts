@@ -748,63 +748,76 @@ class ResponseFormatter {
     static markdownToHtml(text: string): string {
         if (!text) return '';
         
-        // 首先保存已有的HTML标签，避免被转换过程影响
-        const htmlPlaceholders: {[key: string]: string} = {};
-        let placeholderIndex = 0;
-        
-        // 临时替换已有的HTML标签
-        let processedText = text.replace(/<[^>]+>/g, (match) => {
-            const placeholder = `__HTML_PLACEHOLDER_${placeholderIndex}__`;
-            htmlPlaceholders[placeholder] = match;
-            placeholderIndex++;
-            return placeholder;
-        });
-    
-        // 定义Markdown到HTML的转换规则
-        const markdownRules = [
-            // 标题
-            { pattern: /^# (.+)$/gm, replacement: '<b>$1</b>' },
-            { pattern: /^## (.+)$/gm, replacement: '<b>$1</b>' },
-            { pattern: /^### (.+)$/gm, replacement: '<b>$1</b>' },
+        try {
+            // 使用数组存储html标签，避免正则替换问题
+            const htmlTags: string[] = [];
             
-            // 格式化
-            { pattern: /\*\*(.+?)\*\*/g, replacement: '<b>$1</b>' },
-            { pattern: /\*(.+?)\*/g, replacement: '<i>$1</i>' },
-            { pattern: /__(.+?)__/g, replacement: '<u>$1</u>' },
-            { pattern: /~~(.+?)~~/g, replacement: '<s>$1</s>' },
-            { pattern: /`(.+?)`/g, replacement: '<code>$1</code>' },
+            // 替换所有HTML标签为安全的占位符
+            let processedText = text.replace(/<[^>]+>/g, (match) => {
+                const placeholder = `__HTML_TAG_${htmlTags.length}__`;
+                htmlTags.push(match);
+                return placeholder;
+            });
             
-            // 链接和列表
-            { pattern: /\[(.+?)\]\((.+?)\)/g, replacement: '<a href="$2">$1</a>' },
-            { pattern: /^- (.+)$/gm, replacement: '• $1' },
-            { pattern: /^\d+\. (.+)$/gm, replacement: '• $1' },
+            // 定义Markdown到HTML的转换规则
+            const markdownRules = [
+                // 标题
+                { pattern: /^# (.+)$/gm, replacement: '<b>$1</b>' },
+                { pattern: /^## (.+)$/gm, replacement: '<b>$1</b>' },
+                { pattern: /^### (.+)$/gm, replacement: '<b>$1</b>' },
+                
+                // 格式化
+                { pattern: /\*\*(.+?)\*\*/g, replacement: '<b>$1</b>' },
+                { pattern: /\*(.+?)\*/g, replacement: '<i>$1</i>' },
+                { pattern: /__(.+?)__/g, replacement: '<u>$1</u>' },
+                { pattern: /~~(.+?)~~/g, replacement: '<s>$1</s>' },
+                { pattern: /`(.+?)`/g, replacement: '<code>$1</code>' },
+                
+                // 链接和列表
+                { pattern: /\[(.+?)\]\((.+?)\)/g, replacement: '<a href="$2">$1</a>' },
+                { pattern: /^- (.+)$/gm, replacement: '• $1' },
+                { pattern: /^\d+\. (.+)$/gm, replacement: '• $1' },
+                
+                // 其他格式
+                { pattern: /^---+$/gm, replacement: '<hr>' },
+                { pattern: /^> (.+)$/gm, replacement: '❝ <i>$1</i>' }
+            ];
             
-            // 其他格式
-            { pattern: /^---+$/gm, replacement: '<hr>' },
-            { pattern: /^> (.+)$/gm, replacement: '❝ <i>$1</i>' }
-        ];
-        
-        // 应用Markdown规则
-        for (const rule of markdownRules) {
-            processedText = processedText.replace(rule.pattern, rule.replacement);
-        }
-        
-        // 处理换行 - 确保在转换标签前处理
-        processedText = processedText
-            .replace(/\n\n+/g, '\n\n')  // 合并多个连续换行
-            .replace(/\n\n/g, '<br><br>')  // 段落换行
-            .replace(/\n/g, '<br>');  // 单行换行
-        
-        // 恢复HTML标签占位符
-        Object.keys(htmlPlaceholders).forEach(placeholder => {
-            const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const regex = new RegExp(escapedPlaceholder, 'g');
-            if (htmlPlaceholders[placeholder]) {
-                processedText = processedText.replace(regex, htmlPlaceholders[placeholder]);
+            // 应用Markdown规则
+            for (const rule of markdownRules) {
+                processedText = processedText.replace(rule.pattern, rule.replacement);
             }
-        });
-        
-        return processedText;
+            
+            // 处理换行 - 确保在转换标签前处理
+            processedText = processedText
+                .replace(/\n\n+/g, '\n\n')  // 合并多个连续换行
+                .replace(/\n\n/g, '<br><br>')  // 段落换行
+                .replace(/\n/g, '<br>');  // 单行换行
+                
+            // 恢复HTML标签 - 使用字符串替换，避免RegExp问题
+            for (let i = 0; i < htmlTags.length; i++) {
+                const placeholder = `__HTML_TAG_${i}__`;
+                // 使用简单的字符串替换，而不是RegExp
+                while (processedText.includes(placeholder)) {
+                    processedText = processedText.split(placeholder).join(htmlTags[i]);
+                }
+            }
+            
+            // 检查替换后的文本是否还包含占位符
+            if (processedText.includes('HTML_PLACEHOLDER') || processedText.includes('__HTML_TAG_')) {
+                log.warn('HTML占位符替换不完全，输出可能包含占位符');
+                // 强制清理任何残留的占位符
+                processedText = processedText
+                    .replace(/HTML_PLACEHOLDER_\d+/g, '')
+                    .replace(/__HTML_TAG_\d+__/g, '');
+            }
+            
+            return processedText;
+        } catch (e) {
+            log.error(`Markdown转HTML出错: ${e}`);
+            // 出错时返回去除了可能的占位符的原文本
+            return text.replace(/HTML_PLACEHOLDER_\d+/g, '').replace(/__HTML_TAG_\d+__/g, '');
+        }
     }
 
     /**
@@ -829,7 +842,7 @@ class ResponseFormatter {
                     // 3. 处理单行换行
                     formattedThinking = formattedThinking.replace(/\n/g, '<br>');
                     
-                    displayText += `<blockquote collapsible>\n<b>💭 思考过程</b><br><br>${formattedThinking}\n</blockquote><br><br>`;
+                    displayText += `<blockquote collapsible><b>💭 思考过程</b><br><br>${formattedThinking}</blockquote><br><br>`;
                 }
             } catch (e) {
                 log.error(`处理思考过程时出错: ${e}`);
@@ -846,14 +859,14 @@ class ResponseFormatter {
                 // 如果没有思考过程，可能是正在启动或遇到了问题
                 displayText += `${STATUS_EMOJIS.warning} AI尚未生成内容，可能正在初始化或遇到了问题。如果长时间无响应，可以尝试重新提问。`;
             }
-            return displayText;
+            return this.sanitizeOutput(displayText);
         }
         
         // 处理内容过短的情况（可能是生成中）
         if (content.trim().length < 20 && !content.includes('。') && !content.includes('.')) {
             displayText += this.markdownToHtml(content);
             displayText += `<br><br>${STATUS_EMOJIS.processing} AI正在继续生成内容...`;
-            return displayText;
+            return this.sanitizeOutput(displayText);
         }
         
         // 添加正文内容
@@ -871,7 +884,21 @@ class ResponseFormatter {
             displayText += content; // 回退到原始内容
         }
         
-        return displayText;
+        return this.sanitizeOutput(displayText);
+    }
+    
+    /**
+     * 清理输出中可能存在的占位符
+     */
+    private static sanitizeOutput(text: string): string {
+        if (!text) return '';
+        
+        // 清理各种可能的HTML占位符格式
+        return text
+            .replace(/HTML_PLACEHOLDER_\d+/g, '')  // 移除旧格式占位符
+            .replace(/__HTML_TAG_\d+__/g, '')      // 移除新格式占位符
+            .replace(/HTML_PLACEHOLDER/g, '')      // 移除不带数字的占位符
+            .replace(/__HTML_TAG__/g, '');         // 移除不带数字的新格式占位符
     }
 
     /**
@@ -1980,7 +2007,7 @@ class AIPlugin {
         }
         
         // 开始处理请求
-        const waitMsg = await ctx.message.replyText(`${STATUS_EMOJIS.analyzing} 正在分析您的问题并提取关键词...${slowModeTip}`);
+        const waitMsg = await ctx.message.replyText(`${STATUS_EMOJIS.analyzing} 正在分析您的问题...${slowModeTip}`);
         if (!waitMsg?.id) {
             log.error('Failed to send initial message');
             return;

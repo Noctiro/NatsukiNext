@@ -5,5 +5,5 @@ export function getHighQualityAI() {
 }
 
 export function getFastAI() {
-    return new OpenRouter([], "google/gemini-2.0-pro-exp-02-05:free");
+    return new OpenRouter([], "google/gemma-3-27b-it:free");
 }
