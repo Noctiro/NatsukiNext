@@ -6,25 +6,70 @@
 
 // 预编译正则表达式
 const RSS_VERSION_REGEX = /<(?:rss|rdf:RDF|feed)[^>]+(?:version=["']([^"']+)["']|xmlns=["']http:\/\/www\.w3\.org\/2005\/Atom["'])/i;
-const CHANNEL_REGEX = /<(?:channel|feed)>([\s\S]*?)<\/(?:channel|feed)>/i;
-const ITEM_REGEX = /<(?:item|entry)>([\s\S]*?)<\/(?:item|entry)>/gi;
+const CHANNEL_REGEX = /<(?:channel|feed)(?:\s+[^>]*)?>([\s\S]*?)<\/(?:channel|feed)>|<feed(?:\s+[^>]*)?\/>/i;
+const ITEM_REGEX = /<(?:item|entry)(?:\s+[^>]*)?>([\s\S]*?)<\/(?:item|entry)>/gi;
 const HTML_TAG_REGEX = /<\/?[a-z][^>]*>|<!--[\s\S]*?-->/gi;
 
 // XML实体映射表 - 保留常用实体以提高性能
 const XML_ENTITIES: Record<string, string> = {
+    // 基本实体
     'amp': '&',
     'lt': '<',
     'gt': '>',
     'quot': '"',
     'apos': "'",
+    
+    // 空格
     'nbsp': '\u00A0',
+    'ensp': '\u2002',
+    'emsp': '\u2003',
+    'thinsp': '\u2009',
+    
+    // 特殊字符
     'copy': '©',
     'reg': '®',
     'trade': '™',
     'euro': '€',
+    'yen': '¥',
+    'pound': '£',
+    'cent': '¢',
+    
+    // 标点符号
     'mdash': '—',
     'ndash': '–',
-    'hellip': '…'
+    'lsquo': '\'',
+    'rsquo': '\'',
+    'ldquo': '"',
+    'rdquo': '"',
+    'hellip': '…',
+    'bull': '•',
+    'middot': '·',
+    
+    // 箭头
+    'larr': '←',
+    'uarr': '↑',
+    'rarr': '→',
+    'darr': '↓',
+    
+    // 数学符号
+    'plusmn': '±',
+    'times': '×',
+    'divide': '÷',
+    'not': '¬',
+    'micro': 'µ',
+    'deg': '°',
+    
+    // 特殊字母
+    'acute': '´',
+    'uml': '¨',
+    'szlig': 'ß',
+    
+    // 希腊字母
+    'alpha': 'α',
+    'beta': 'β',
+    'gamma': 'γ',
+    'delta': 'δ',
+    'omega': 'ω'
 };
 
 // 预编译更多正则表达式以提高性能
@@ -286,14 +331,63 @@ function parseRSS(xmlContent: string): RSSFeed {
 // RSS 2.0 解析函数
 function parseRSS2(xmlContent: string, version: string): RSSFeed {
     const channelMatch = CHANNEL_REGEX.exec(xmlContent);
-    if (!channelMatch?.[1]) throw new Error("Invalid RSS: No channel element found");
+    if (!channelMatch?.[1]) {
+        // 尝试使用更宽松的正则表达式
+        const relaxedChannelRegex = /<channel(?:\s+[^>]*)?>([\s\S]*?)(?:<\/channel>|$)/i;
+        const relaxedMatch = relaxedChannelRegex.exec(xmlContent);
+        if (!relaxedMatch?.[1]) {
+            // 如果仍然无法匹配，创建默认的 channel 对象
+            const defaultChannel: RSSChannel = {
+                title: 'Unknown Feed',
+                link: '',
+                description: '',
+                items: []
+            };
+            
+            // 尝试直接提取 item 标签
+            const itemMatches = [...xmlContent.matchAll(/<item(?:\s+[^>]*)?>([\s\S]*?)<\/item>/gi)];
+            if (itemMatches.length > 0) {
+                defaultChannel.items = itemMatches
+                    .map(match => parseItem(match[1] || ''))
+                    .filter(item => item.title && item.link);
+            }
+            
+            return { channel: defaultChannel, version };
+        }
+        
+        // 使用放宽的匹配结果
+        const channelContent = relaxedMatch[1];
+        const baseURL = safeExtract(channelContent, "link");
+        
+        const channel: RSSChannel = {
+            title: cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }) || 'Unknown Feed',
+            link: normalizeURL(baseURL) || '',
+            description: cleanText(safeExtract(channelContent, "description"), { maxLength: 2000 }),
+            items: []
+        };
+        
+        // 解析频道元数据
+        channel.language = safeExtract(channelContent, "language", { stripHTML: true });
+        channel.copyright = safeExtract(channelContent, "copyright", { stripHTML: true });
+        channel.pubDate = parseDate(safeExtract(channelContent, "pubDate", { stripHTML: true }));
+        channel.lastBuildDate = parseDate(safeExtract(channelContent, "lastBuildDate", { stripHTML: true }));
+        channel.generator = safeExtract(channelContent, "generator", { stripHTML: true });
+        
+        // 批量解析 items
+        const itemMatches = [...channelContent.matchAll(/<item(?:\s+[^>]*)?>([\s\S]*?)<\/item>/gi)];
+        channel.items = itemMatches
+            .map(match => parseItem(match[1] || '', baseURL))
+            .filter(item => item.title && item.link);
+            
+        return { channel, version };
+    }
 
     const channelContent = channelMatch[1];
     const baseURL = safeExtract(channelContent, "link");
 
     const channel: RSSChannel = {
-        title: cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }),
-        link: normalizeURL(baseURL),
+        title: cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }) || 'Unknown Feed',
+        link: normalizeURL(baseURL) || '',
         description: cleanText(safeExtract(channelContent, "description"), { maxLength: 2000 }),
         items: []
     };
@@ -321,8 +415,8 @@ function parseRSS2(xmlContent: string, version: string): RSSFeed {
         }
     }
 
-    // 批量解析items
-    const itemMatches = [...channelContent.matchAll(ITEM_REGEX)];
+    // 批量解析items - 使用更灵活的正则表达式
+    const itemMatches = [...channelContent.matchAll(/<item(?:\s+[^>]*)?>([\s\S]*?)<\/item>/gi)];
     channel.items = itemMatches
         .map(match => parseItem(match[1] || '', baseURL))
         .filter(item => item.title && item.link); // 过滤掉无效项
@@ -332,14 +426,48 @@ function parseRSS2(xmlContent: string, version: string): RSSFeed {
 
 // Atom 解析函数
 function parseAtom(xmlContent: string): RSSFeed {
+    // 提取 feed 标签内容
     const channelMatch = CHANNEL_REGEX.exec(xmlContent);
-    if (!channelMatch?.[1]) throw new Error("Invalid Atom: No feed element found");
-
-    const feedContent = channelMatch[1];
+    
+    // 即使没有匹配到 feed 闭合标签，也尝试解析 XML 内容
+    const feedContent = channelMatch?.[1] || xmlContent;
+    
+    // 尝试提取直接的标题和链接
+    let title = cleanText(safeExtract(feedContent, "title"), { maxLength: 500 });
+    let link = normalizeURL(extractAttribute(feedContent, "link", "href"));
+    
+    // 如果找不到直接的标题，尝试在整个 XML 中搜索
+    if (!title) {
+        const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(xmlContent);
+        if (titleMatch?.[1]) {
+            title = cleanText(titleMatch[1], { maxLength: 500 });
+        }
+    }
+    
+    // 如果找不到直接的链接，尝试提取所有链接并选择第一个
+    if (!link) {
+        const linkMatches = [...xmlContent.matchAll(/<link[^>]+href=["']([^"']+)["'][^>]*>/gi)];
+        if (linkMatches.length > 0 && linkMatches[0]?.[1]) {
+            link = normalizeURL(linkMatches[0][1]);
+        }
+    }
+    
+    // 如果仍然没有链接，尝试从网站元数据中提取
+    if (!link) {
+        const websiteMatch = /<website[^>]*>([^<]+)<\/website>/i.exec(xmlContent);
+        if (websiteMatch?.[1]) {
+            link = normalizeURL(websiteMatch[1]);
+        }
+    }
+    
+    // 创建 channel 对象
     const channel: RSSChannel = {
-        title: cleanText(safeExtract(feedContent, "title"), { maxLength: 500 }),
-        link: normalizeURL(extractAttribute(feedContent, "link", "href")),
-        description: cleanText(safeExtract(feedContent, "subtitle") || safeExtract(feedContent, "summary"), { maxLength: 2000 }),
+        title: title || 'Unknown Feed',
+        link: link || '',
+        description: cleanText(safeExtract(feedContent, "subtitle") || 
+                             safeExtract(feedContent, "summary") || 
+                             safeExtract(feedContent, "description"), 
+                     { maxLength: 2000 }),
         items: []
     };
 
@@ -348,11 +476,22 @@ function parseAtom(xmlContent: string): RSSFeed {
     channel.generator = safeExtract(feedContent, "generator", { stripHTML: true });
     channel.pubDate = parseDate(safeExtract(feedContent, "updated", { stripHTML: true }));
 
-    // 解析条目
-    const itemMatches = [...xmlContent.matchAll(/<entry>([\s\S]*?)<\/entry>/gi)];
-    channel.items = itemMatches
-        .map(match => parseAtomEntry(match[1] || '', channel.link))
-        .filter(item => item.title && item.link);
+    // 解析条目 - 更灵活的匹配模式
+    const entryPattern = /<entry(?:\s+[^>]*)?>([\s\S]*?)<\/entry>/gi;
+    const itemMatches = [...xmlContent.matchAll(entryPattern)];
+    
+    if (itemMatches.length > 0) {
+        channel.items = itemMatches
+            .map(match => parseAtomEntry(match[1] || '', channel.link))
+            .filter(item => item.title && item.link);
+    } else {
+        // 如果没有找到 entry 标签，尝试解析 item 标签
+        const itemPattern = /<item(?:\s+[^>]*)?>([\s\S]*?)<\/item>/gi;
+        const alternativeMatches = [...xmlContent.matchAll(itemPattern)];
+        channel.items = alternativeMatches
+            .map(match => parseItem(match[1] || '', channel.link))
+            .filter(item => item.title && item.link);
+    }
 
     return { channel, version: 'Atom' };
 }
@@ -377,15 +516,56 @@ function parseAtomEntry(entryContent: string, baseURL?: string): RSSItem {
 // RDF/RSS 1.0 解析函数
 function parseRDF(xmlContent: string): RSSFeed {
     const channelMatch = /<channel[^>]*>([\s\S]*?)<\/channel>/i.exec(xmlContent);
-    if (!channelMatch?.[1]) throw new Error("Invalid RDF: No channel element found");
+    if (!channelMatch?.[1]) {
+        // 尝试使用更宽松的正则表达式
+        const relaxedChannelRegex = /<(?:channel|rdf:Description)[^>]*>([\s\S]*?)(?:<\/(?:channel|rdf:Description)>|$)/i;
+        const relaxedMatch = relaxedChannelRegex.exec(xmlContent);
+        
+        if (!relaxedMatch?.[1]) {
+            // 如果仍然无法匹配，创建默认的 channel 对象
+            const defaultChannel: RSSChannel = {
+                title: 'Unknown RDF Feed',
+                link: '',
+                description: '',
+                items: []
+            };
+            
+            // 尝试直接提取 item 标签
+            const itemMatches = [...xmlContent.matchAll(/<(?:item|rdf:li|rdf:Description)[^>]*>([\s\S]*?)<\/(?:item|rdf:li|rdf:Description)>/gi)];
+            if (itemMatches.length > 0) {
+                defaultChannel.items = itemMatches
+                    .map(match => parseRDFItem(match[1] || ''))
+                    .filter(item => item.title && item.link);
+            }
+            
+            return { channel: defaultChannel, version: 'RDF' };
+        }
+        
+        // 使用放宽的匹配结果
+        const channelContent = relaxedMatch[1];
+        const baseURL = safeExtract(channelContent, "link");
+        
+        const channel: RSSChannel = {
+            title: cleanText(safeExtract(channelContent, "title") || safeExtract(channelContent, "dc:title"), { maxLength: 500 }) || 'Unknown RDF Feed',
+            link: normalizeURL(baseURL) || '',
+            description: cleanText(safeExtract(channelContent, "description") || safeExtract(channelContent, "dc:description"), { maxLength: 2000 }),
+            items: []
+        };
+        
+        // 解析 RDF 特有的元数据
+        channel.language = safeExtract(channelContent, "dc:language", { stripHTML: true });
+        channel.pubDate = parseDate(safeExtract(channelContent, "dc:date", { stripHTML: true }));
+        
+        return { channel, version: 'RDF' };
+    }
 
     const channelContent = channelMatch[1];
     const baseURL = safeExtract(channelContent, "link");
 
     const channel: RSSChannel = {
-        title: cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }),
-        link: normalizeURL(baseURL),
-        description: cleanText(safeExtract(channelContent, "description"), { maxLength: 2000 }),
+        title: cleanText(safeExtract(channelContent, "title") || safeExtract(channelContent, "dc:title"), { maxLength: 500 }) || 'Unknown RDF Feed',
+        link: normalizeURL(baseURL) || '',
+        description: cleanText(safeExtract(channelContent, "description") || safeExtract(channelContent, "dc:description"), { maxLength: 2000 }),
         items: []
     };
 
@@ -393,8 +573,9 @@ function parseRDF(xmlContent: string): RSSFeed {
     channel.language = safeExtract(channelContent, "dc:language", { stripHTML: true });
     channel.pubDate = parseDate(safeExtract(channelContent, "dc:date", { stripHTML: true }));
 
-    // 解析条目
-    const itemMatches = [...xmlContent.matchAll(/<item[^>]*>([\s\S]*?)<\/item>/gi)];
+    // 解析条目 - 使用更灵活的正则表达式
+    const itemPattern = /<(?:item|rdf:li|rdf:Description)[^>]*>([\s\S]*?)<\/(?:item|rdf:li|rdf:Description)>/gi;
+    const itemMatches = [...xmlContent.matchAll(itemPattern)];
     channel.items = itemMatches
         .map(match => parseRDFItem(match[1] || '', baseURL))
         .filter(item => item.title && item.link);
@@ -578,7 +759,7 @@ function decodeXMLEntities(text: string): string {
     const withoutCDATA = text.replace(CDATA_REGEX, (_, content) => content);
 
     // 实体解码
-    return withoutCDATA.replace(XML_ENTITY_REGEX, (_, entity) => {
+    return withoutCDATA.replace(XML_ENTITY_REGEX, (match, entity) => {
         // 数字实体
         if (entity[0] === '#') {
             const code = entity[1]?.toLowerCase() === 'x'
@@ -590,14 +771,14 @@ function decodeXMLEntities(text: string): string {
                 try {
                     return String.fromCodePoint(code);
                 } catch {
-                    return '';
+                    return match; // 如果无法转换，保留原始实体
                 }
             }
-            return '';
+            return match; // 无效的数字实体，保留原始实体
         }
 
         // 命名实体
-        return XML_ENTITIES[entity.toLowerCase()] || '';
+        return XML_ENTITIES[entity.toLowerCase()] || match; // 如果实体未定义，保留原始实体而不是返回空字符串
     });
 }
 

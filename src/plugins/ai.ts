@@ -1,4 +1,4 @@
-import { html } from '@mtcute/bun';
+import { html, TelegramClient } from '@mtcute/bun';
 import { getHighQualityAI, getFastAI } from '../ai/AiManager';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext } from '../features';
 import { log } from '../log';
@@ -13,6 +13,7 @@ import {
 } from 'google-sr';
 import { slowModeState } from '../ai/provider/BaseProvider';
 import DynamicMap from '../utils/DynamicMap';
+import { Cron } from 'croner';
 
 /**
  * AI插件 - 模块化结构设计
@@ -48,12 +49,36 @@ class UserManager {
         maxQueriesPerUser: 15,
         maxQueriesTotal: 80,
         currentTotal: 0,
-        userSearchCounts: new Map<number, number>(),
-        lastReset: Date.now()
+        userSearchCounts: new Map<number, number>()
     };
 
     constructor(defaultUserLimit: number = 5) {
         this.userCount = new DynamicMap(defaultUserLimit);
+    }
+
+    /**
+     * 重置所有用户的每日AI使用次数
+     */
+    checkAndResetDailyLimits(): void {
+        log.info('开始重置所有用户的AI使用次数');
+        
+        // 获取所有用户ID
+        const userIds = Array.from(this.userCount.keys());
+        
+        // 重置每个用户的使用次数为默认值
+        for (const userId of userIds) {
+            this.userCount.set(userId, this.userCount.getDefaultData());
+        }
+        
+        log.info(`已重置${userIds.length}个用户的AI使用次数`);
+    }
+    
+    /**
+     * 获取用户当前剩余的AI使用次数
+     */
+    async getRemainingCount(userId: number): Promise<number> {
+        const count = await this.userCount.get(userId);
+        return Math.max(0, Math.floor(count * 10) / 10); // 保留一位小数
     }
 
     async hasUnlimitedAccess(ctx: CommandContext): Promise<boolean> {
@@ -72,7 +97,7 @@ class UserManager {
         if (count < 1) {
             return { 
                 canUse: false, 
-                message: `${STATUS_EMOJIS.warning} 您今日的AI使用次数已耗尽，每天会自动重置` 
+                message: `${STATUS_EMOJIS.warning} <b>AI使用次数已耗尽</b><br><br>您今日的AI助手使用次数已用完。<br><br>💡 <b>小贴士</b>：<br>• 每天凌晨0:00自动获得5次免费使用机会<br>• 在群聊中发送消息（5字以上）可获得额外次数<br>• 消息越长可获得的次数越多（最多+0.95次/条）<br>• 多多参与群聊互动吧！` 
             };
         }
         
@@ -81,27 +106,28 @@ class UserManager {
         return { canUse: true };
     }
 
-    incrementUsage(userId: number): void {
+    incrementUsage(userId: number, messageLength?: number): void {
         // 不适用于无限制用户
         const count = this.userCount.get(userId);
         // 修复类型问题：确保count是数字
         const numericCount = typeof count === 'number' ? count : 0;
-        this.userCount.set(userId, Math.min(this.userCount.getDefaultData() * 2, numericCount + 0.2));
-    }
 
-    checkAndResetSearchLimits(): void {
-        const now = Date.now();
-        if (now - this.searchLimits.lastReset > 24 * 60 * 60 * 1000) {
-            this.searchLimits.currentTotal = 0;
-            this.searchLimits.userSearchCounts.clear();
-            this.searchLimits.lastReset = now;
-            log.info('搜索限制已重置');
+        // 计算基于消息长度的增长值
+        let increment = 0.35; // 基础增长值
+        
+        // 如果提供了消息长度，根据消息长度线性增加
+        if (messageLength && messageLength > 5) {
+            // 计算额外增加值（最多额外增加0.6，使总和达到0.95）
+            const lengthFactor = Math.min(1, (messageLength - 5) / 300); // 300字为最大增长因子
+            const additionalIncrement = 0.6 * lengthFactor;
+            increment += additionalIncrement;
         }
+        
+        // 设置新值，限制最大值为默认次数的两倍
+        this.userCount.set(userId, Math.min(this.userCount.getDefaultData() * 2, numericCount + increment));
     }
 
     checkSearchLimit(userId: number): { canSearch: boolean, reason?: string } {
-        this.checkAndResetSearchLimits();
-        
         // 检查全局限制
         if (this.searchLimits.currentTotal >= this.searchLimits.maxQueriesTotal) {
             return { 
@@ -126,6 +152,13 @@ class UserManager {
         this.searchLimits.currentTotal++;
         const userCount = this.searchLimits.userSearchCounts.get(userId) || 0;
         this.searchLimits.userSearchCounts.set(userId, userCount + 1);
+    }
+
+    /**
+     * 获取默认的AI使用次数限制
+     */
+    getDefaultData(): number {
+        return this.userCount.getDefaultData();
     }
 }
 
@@ -1698,7 +1731,7 @@ const HELP = `<b>🤖 AI助手</b><br>
  * AI插件类 - 主要插件类，整合所有功能
  */
 class AIPlugin {
-    private userManager: UserManager;
+    protected userManager: UserManager;
     private messageManager: MessageManager;
     private searchService: SearchService;
 
@@ -1708,6 +1741,46 @@ class AIPlugin {
         this.searchService = new SearchService();
     }
 
+    /**
+     * 检查并重置用户AI使用次数的公共方法
+     */
+    checkAndResetUserLimits(): void {
+        this.userManager.checkAndResetDailyLimits();
+    }
+
+    /**
+     * 处理查询剩余次数命令
+     */
+    async handleCheckUsageCommand(ctx: CommandContext): Promise<void> {
+        const userId = ctx.message.sender.id;
+        const hasUnlimitedAccess = await this.userManager.hasUnlimitedAccess(ctx);
+        
+        if (hasUnlimitedAccess) {
+            await ctx.message.replyText(html(`${STATUS_EMOJIS.done} <b>您拥有无限使用权限</b><br><br>您可以无限制地使用AI助手，不受次数限制。`));
+            return;
+        }
+        
+        const remainingCount = await this.userManager.getRemainingCount(userId);
+        const maxCount = this.userManager.getDefaultData();
+        
+        // 格式化剩余次数（保留一位小数）
+        const formattedCount = Math.floor(remainingCount * 10) / 10;
+        
+        // 构建响应消息
+        let message = `${STATUS_EMOJIS.done} <b>AI使用次数状态</b><br><br>`;
+        message += `• 剩余次数：${formattedCount}/${maxCount * 2}次<br>`;
+        message += `• 基础每日免费：${maxCount}次<br>`;
+        message += `• 参与群聊可获得额外次数<br>`;
+        
+        if (formattedCount < 1) {
+            message += `<br>⚠️ <b>您的使用次数不足</b><br>发送更多消息（5字以上）可获得额外次数，消息越长获得的次数越多！`;
+        } else if (formattedCount < 2) {
+            message += `<br>⚠️ <b>您的使用次数较少</b><br>继续保持活跃以获取更多使用次数。`;
+        }
+        
+        await ctx.message.replyText(html(message));
+    }
+    
     /**
      * 处理AI命令
      */
@@ -1939,13 +2012,16 @@ class AIPlugin {
             return;
         }
         
-        // 每条有效消息增加0.2次使用机会
-        this.userManager.incrementUsage(userId);
+        // 获取消息长度并传递给incrementUsage方法
+        const messageLength = ctx.message.text?.trim().length || 0;
+        this.userManager.incrementUsage(userId, messageLength);
     }
 }
 
 // 创建插件实例
 const aiPluginInstance = new AIPlugin();
+// 用户次数刷新计划任务
+let userLimitResetCron: Cron | null = null;
 
 /**
  * 导出插件定义
@@ -1974,6 +2050,14 @@ const plugin: BotPlugin = {
             handler: async (ctx: CommandContext) => {
                 await aiPluginInstance.handleAICommand(ctx);
             }
+        },
+        {
+            name: 'aiusage',
+            description: '查看您的AI助手使用次数',
+            aliases: ['aicheck', 'aicount'],
+            handler: async (ctx: CommandContext) => {
+                await aiPluginInstance.handleCheckUsageCommand(ctx);
+            }
         }
     ],
     
@@ -1991,7 +2075,25 @@ const plugin: BotPlugin = {
                 await aiPluginInstance.handleMessageEvent(ctx);
             }
         }
-    ]
+    ],
+
+    async onLoad(client: TelegramClient) {
+        // 创建Cron任务，每天凌晨0点执行一次用户次数重置
+        userLimitResetCron = new Cron("0 0 * * *", () => {
+            log.info('执行定时任务：重置所有用户的AI使用次数');
+            aiPluginInstance.checkAndResetUserLimits();
+        });
+        
+        log.info('AI插件已加载：用户次数每日重置计划任务已创建（每天0:00执行）');
+    },
+
+    async onUnload() {
+        // 停止Cron任务
+        if (userLimitResetCron) {
+            userLimitResetCron.stop();
+            log.info('AI插件已卸载：用户次数刷新计划任务已停止');
+        }
+    }
 };
 
 export default plugin;

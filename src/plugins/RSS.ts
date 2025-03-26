@@ -27,6 +27,7 @@ interface NewsItem extends Omit<RSSItem, 'source'> {
     sourceName: string;      // 源名称
     score?: number;          // 新闻分数 (算法选择器使用)
     contentSnippet?: string; // 内容片段
+    category?: keyof typeof RSS_SOURCES; // 新闻分类
 }
 
 /**
@@ -308,6 +309,7 @@ abstract class NewsSelector {
     ): Promise<NewsItem[]> {
         try {
             const feed = await fetchRSS(source);
+            // 使用可空链操作符和默认空字符串处理，避免返回undefined
             const sourceName = feed.channel.title || source.split('/').pop() || '';
 
             return feed.channel.items
@@ -327,27 +329,79 @@ class AiNewsSelector extends NewsSelector {
     private readonly MAX_ITEMS_PER_BATCH = 70;
 
     /**
-     * 选择最佳新闻
+     * 实现抽象方法 - 选择最佳新闻
+     * 在当前版本中，我们通过从所有分类筛选新闻来实现
      * @param category - RSS分类
      * @param sources - RSS源列表
      * @returns 最佳新闻项或null
      */
     async selectNews(category: keyof typeof RSS_SOURCES, sources: string[]): Promise<NewsItem | null> {
-        const config = RSS_SOURCES[category];
-        if (!config) return null;
+        // 为了保持兼容性，我们尝试从所有分类获取，然后过滤相应分类的结果
+        const news = await this.selectNewsFromAllCategories();
+        
+        // 如果找不到任何新闻，则专门从指定分类中获取
+        if (!news) {
+            const maxItemsPerSource = Math.ceil(this.MAX_ITEMS_PER_BATCH / sources.length);
+            const newsPromises = sources.map(source => 
+                this.fetchNewsWithLimit(source, maxItemsPerSource, category));
+            
+            const allNewsArrays = await Promise.all(newsPromises);
+            const allNews = this.mergeAndFilterNews(allNewsArrays.flat());
+            
+            if (allNews.length === 0) return null;
+            
+            return await this.selectBestNewsWithAI(allNews);
+        }
+        
+        // 已经找到新闻，则直接返回
+        return news;
+    }
 
-        const maxItemsPerCategory = Math.floor(this.MAX_ITEMS_PER_BATCH / config.priority);
-
-        // 并行获取所有源的新闻
-        const newsPromises = sources.map(source => this.fetchNewsWithLimit(source, maxItemsPerCategory, category));
-        const allNewsArrays = await Promise.all(newsPromises);
-
-        // 合并并过滤新闻
-        const allNews = this.mergeAndFilterNews(allNewsArrays.flat());
-
-        if (allNews.length === 0) return null;
-
-        return await this.selectBestNewsWithAI(allNews);
+    /**
+     * 从所有分类获取新闻并按比例筛选
+     * @returns 最佳新闻项或null
+     */
+    async selectNewsFromAllCategories(): Promise<NewsItem | null> {
+        // 计算所有分类的新闻总数上限
+        const totalMaxItems = this.MAX_ITEMS_PER_BATCH;
+        
+        // 计算每个分类的权重总和
+        const totalWeight = Object.values(RSS_SOURCES).reduce((sum, config) => 
+            sum + (1 / config.priority), 0);
+        
+        // 获取每个分类的新闻
+        const allCategoryNews: NewsItem[] = [];
+        
+        for (const [category, config] of Object.entries(RSS_SOURCES)) {
+            // 根据优先级比例分配每个分类的条目数
+            const categoryWeight = 1 / config.priority;
+            const categoryMaxItems = Math.floor((categoryWeight / totalWeight) * totalMaxItems);
+            
+            // 平均分配到每个源
+            const itemsPerSource = Math.ceil(categoryMaxItems / config.sources.length);
+            
+            // 并行获取该分类所有源的新闻
+            const newsPromises = config.sources.map(source => 
+                this.fetchNewsWithLimit(source, itemsPerSource, category as keyof typeof RSS_SOURCES));
+            
+            const categoryNewsArrays = await Promise.all(newsPromises);
+            const categoryNews = categoryNewsArrays.flat();
+            
+            // 添加分类信息
+            categoryNews.forEach(item => {
+                item.category = category as keyof typeof RSS_SOURCES;
+            });
+            
+            allCategoryNews.push(...categoryNews);
+        }
+        
+        // 合并并过滤所有新闻
+        const filteredNews = this.mergeAndFilterNews(allCategoryNews);
+        
+        if (filteredNews.length === 0) return null;
+        
+        // 使用AI选择最佳新闻
+        return await this.selectBestNewsWithAI(filteredNews);
     }
 
     /**
@@ -364,13 +418,7 @@ class AiNewsSelector extends NewsSelector {
         category: keyof typeof RSS_SOURCES
     ): Promise<NewsItem[]> {
         const news = await this.fetchNewsFromSource(source, category);
-        const config = RSS_SOURCES[category];
-
-        if (!config) return [];
-
-        // 根据源的数量平均分配条目数量
-        const itemsPerSource = Math.ceil(maxItems / config.sources.length);
-        return news.slice(0, itemsPerSource);
+        return news.slice(0, maxItems);
     }
 
     /**
@@ -424,7 +472,20 @@ class AiNewsSelector extends NewsSelector {
      * @private
      */
     private buildAIPrompt(news: NewsItem[]): string {
-        return `作为新闻编辑，从以下${news.length}条新闻中选择最值得报道的一条。考虑新闻的：
+        // 统计各分类新闻数量
+        const categoryCounts = news.reduce((counts, item) => {
+            if (item.category) {
+                counts[item.category] = (counts[item.category] || 0) + 1;
+            }
+            return counts;
+        }, {} as Record<string, number>);
+        
+        // 构建分类统计信息
+        const categoryStats = Object.entries(categoryCounts)
+            .map(([category, count]) => `${category}: ${count}条`)
+            .join(', ');
+            
+        return `作为新闻编辑，从以下${news.length}条新闻中选择最值得报道的一条（${categoryStats}）。考虑新闻的：
 1. 重要性和影响力
 2. 时效性
 3. 受众关注度
@@ -435,7 +496,10 @@ class AiNewsSelector extends NewsSelector {
 
 现在时间 ${new Date().toLocaleString()}
 新闻清单：
-${news.map((n, i) => `${i + 1}. ${n.title.trim()} (${new Date(n.pubDate || '').toLocaleString()})`).join('\n')}
+${news.map((n, i) => {
+    const categoryInfo = n.category ? `[${n.category}] ` : '';
+    return `${i + 1}. ${categoryInfo}${n.title.trim()} (${new Date(n.pubDate || '').toLocaleString()})`;
+}).join('\n')}
 
 只需返回选择的新闻序号，例如: "3" 。不需要解释原因。`;
     }
@@ -693,15 +757,11 @@ class AlgorithmNewsSelector extends NewsSelector {
 class NewsService {
     private readonly cache = new NewsCache();
     private readonly lastUpdate = new Map<string, number>();
-    private readonly categoryRotation: Array<keyof typeof RSS_SOURCES>;
     private readonly aiSelector: AiNewsSelector;
     private readonly algorithmSelector: AlgorithmNewsSelector;
     private readonly cleanupTimer: ReturnType<typeof setInterval>;
 
     constructor() {
-        // 初始化分类轮转队列
-        this.categoryRotation = this.initCategoryRotation();
-
         // 初始化选择器
         const deps = { cache: this.cache, lastUpdate: this.lastUpdate };
         this.aiSelector = new AiNewsSelector(deps);
@@ -734,13 +794,13 @@ class NewsService {
         const waitMsg = replyMessage ? client.replyText(replyMessage, "📰 正在获取新闻...") : client.sendText(chatId, "📰 正在获取新闻...");
 
         try {
-            // 获取下一个轮转分类的新闻
-            const { category, news } = await this.getNextRotationNews();
+            // 从所有分类中获取新闻
+            const news = await this.getAllCategoriesNews();
 
             if (!news) {
                 await client.editMessage({
                     message: await waitMsg,
-                    text: `未找到合适的${category}类新闻`
+                    text: `未找到合适的新闻`
                 });
                 return;
             }
@@ -963,35 +1023,6 @@ class NewsService {
     }
 
     /**
-     * 初始化分类轮转队列
-     * @returns 初始化的轮转队列
-     */
-    private initCategoryRotation(): Array<keyof typeof RSS_SOURCES> {
-        const rotation: Array<keyof typeof RSS_SOURCES> = [];
-
-        // 根据优先级设置分类出现频率
-        Object.entries(RSS_SOURCES).forEach(([category, config]) => {
-            const frequency = Math.ceil(4 / config.priority);
-            rotation.push(...Array(frequency).fill(category as keyof typeof RSS_SOURCES));
-        });
-
-        // 随机打乱顺序
-        return this.shuffleArray(rotation);
-    }
-
-    /**
-     * 随机打乱数组
-     * @param array - 输入数组
-     * @returns 打乱后的数组
-     */
-    private shuffleArray<T>(array: T[]): T[] {
-        return array
-            .map(value => ({ value, sort: Math.random() }))
-            .sort((a, b) => a.sort - b.sort)
-            .map(({ value }) => value);
-    }
-
-    /**
      * 获取指定分类的新闻
      * @param category - RSS新闻分类
      * @returns 筛选后的新闻项
@@ -1035,32 +1066,30 @@ class NewsService {
     }
 
     /**
-     * 获取下一个待发送的新闻
-     * @returns 分类和对应的新闻项
+     * 从所有分类获取新闻
+     * @returns 最佳新闻项或null
      */
-    async getNextRotationNews(): Promise<{ category: keyof typeof RSS_SOURCES, news: NewsItem | null }> {
-        // 获取当前轮转队列中的第一个分类
-        const currentCategory = this.categoryRotation[0];
-        if (!currentCategory) {
-            throw new Error('新闻分类轮转队列为空');
+    async getAllCategoriesNews(): Promise<NewsItem | null> {
+        // 首先尝试使用AI选择器从所有分类获取新闻
+        let selectedNews = await this.aiSelector.selectNewsFromAllCategories();
+
+        // 如果AI筛选失败，回退到传统单类别筛选方式
+        if (!selectedNews) {
+            log.info('Falling back to algorithm selector for each category');
+            // 随机选择一个分类
+            const categories = Object.keys(RSS_SOURCES) as Array<keyof typeof RSS_SOURCES>;
+            const randomCategory = categories[Math.floor(Math.random() * categories.length)];
+            
+            // 获取该分类的新闻
+            selectedNews = await this.getNews(randomCategory as keyof typeof RSS_SOURCES);
         }
 
-        // 将当前分类移到队列末尾，实现轮转
-        this.rotateCategory();
-
-        // 获取该分类的新闻
-        const news = await this.getNews(currentCategory);
-        return { category: currentCategory, news };
-    }
-
-    /**
-     * 执行分类轮转
-     */
-    private rotateCategory(): void {
-        const category = this.categoryRotation.shift();
-        if (category) {
-            this.categoryRotation.push(category);
+        // 如果成功获取新闻，更新追踪信息
+        if (selectedNews) {
+            await this.updateNewsTracking(selectedNews);
         }
+
+        return selectedNews;
     }
 
     /**
@@ -1081,26 +1110,52 @@ class NewsService {
         try {
             // 记录开始时间
             const startTime = Date.now();
-
+            
             // 获取RSS源数据
             const feed = await this.fetchFeed(url, 1 as RetryCount);
-
+            
             // 计算响应时间
             const responseTime = Date.now() - startTime;
-
-            // 获取条目信息
-            const items = feed.channel.items;
-            const oldestItem = items[items.length - 1]?.pubDate;
-            const newestItem = items[0]?.pubDate;
-
+            
+            // 安全处理所有可能的undefined值
+            let sourceName = "未知源";
+            if (feed && feed.channel) {
+                if (feed.channel.title) {
+                    sourceName = feed.channel.title;
+                } else {
+                    const parts = url.split('/');
+                    const lastPart = parts[parts.length - 1];
+                    if (lastPart && lastPart.length > 0) {
+                        sourceName = lastPart;
+                    }
+                }
+            }
+            
+            // 安全处理条目数据
+            const items = feed && feed.channel && feed.channel.items ? feed.channel.items : [];
+            let oldestDate: Date | undefined;
+            let newestDate: Date | undefined;
+            
+            if (items.length > 0) {
+                const lastItem = items[items.length - 1];
+                if (lastItem && lastItem.pubDate) {
+                    oldestDate = new Date(lastItem.pubDate);
+                }
+                
+                const firstItem = items[0];
+                if (firstItem && firstItem.pubDate) {
+                    newestDate = new Date(firstItem.pubDate);
+                }
+            }
+            
             return {
                 status: 'ok',
                 url,
                 itemCount: items.length,
-                oldestItem: oldestItem ? new Date(oldestItem).toLocaleString() : 'N/A',
-                newestItem: newestItem ? new Date(newestItem).toLocaleString() : 'N/A',
+                oldestItem: oldestDate ? oldestDate.toLocaleString() : 'N/A',
+                newestItem: newestDate ? newestDate.toLocaleString() : 'N/A',
                 responseTime: `${responseTime}ms`,
-                name: feed.channel.title || url.split('/').pop()
+                name: sourceName
             };
         } catch (error) {
             return {
