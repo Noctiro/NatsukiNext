@@ -20,7 +20,7 @@ const REGEX = {
   SELF_CLOSING: /<br\s*\/?>/gi,
   COMMENT: /<!--[\s\S]*?-->/g,
   TRAILING_TAG: /<[^>]*$/,
-  ATTRIBUTES: /(\w+)=["']?((?:.(?!["']?\s+(?:\S+)=|\s*\/?[>"']))+.)["']?/gi,
+  ATTRIBUTES: /(\w+)(?:=["']?((?:.(?!["']?\s+(?:\S+)=|\s*\/?[>"']))+.)["']?)?/gi,
   SPOILER: /<\/?((?:tg-)?spoiler)/gi
 };
 
@@ -281,10 +281,10 @@ function sanitizeUrl(url: string): string {
   }
 }
 
-// function test() {
-//   const input = '<b>Title</b><br><br>Content<br>📎 详情 <a href="https://www.baidu.com">name</a>';
-//   const output = cleanHTML(input);
-//   console.log(output);
-// }
+function test() {
+  const input = '<blockquote collapsible><b>Title</b></blockquote><br><br>Content<br>📎 详情 <a href="https://www.baidu.com">name</a>';
+  const output = cleanHTML(input);
+  console.log(output);
+}
 
-// test();
+test();

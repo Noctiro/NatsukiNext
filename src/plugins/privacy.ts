@@ -40,6 +40,11 @@ const platformRules: SpecialUrlRule[] = [
         needsSpecialHandling: true,
         transform: (url, match) => {
             if (match && match[1]) {
+                // 如果已经是标准格式（只有v参数），则不再转换
+                const parsedUrl = new URL(url);
+                if (parsedUrl.searchParams.size === 1 && parsedUrl.searchParams.has('v')) {
+                    return url;
+                }
                 return `https://www.youtube.com/watch?v=${match[1]}`;
             }
             return url;
@@ -285,6 +290,11 @@ function cleanUrl(url: string): { url: string, platformName?: string } {
  * @returns 解析后的URL和平台信息
  */
 async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName?: string }> {
+    // 检查是否已经是标准YouTube链接格式
+    if (shortUrl.match(/^https?:\/\/(?:www\.)?youtube\.com\/watch\?v=[\w-]+$/)) {
+        return { url: shortUrl, platformName: "YouTube标准链接" };
+    }
+    
     // 先检查是否为需要特殊处理的平台链接
     const { url: specialHandled, platformName: specialPlatform } = applySpecialRules(shortUrl);
     if (specialHandled !== shortUrl) {
@@ -351,13 +361,17 @@ async function processLinksInMessage(messageText: string): Promise<{
 
     let text = messageText;
     const uniqueLinks = new Set<string>();
+    const atPrefixedLinks = new Map<string, string>(); // 用于存储带@前缀的链接及其原始形式
 
     // 处理带@符号的特殊格式链接 (例如: @https://youtu.be/phZPdNfIzsQ?si=oV6Gr0JdmbnSEzrC)
     const atSignLinkPattern = /@(https?:\/\/\S+)/g;
     let atSignMatch;
     while ((atSignMatch = atSignLinkPattern.exec(text)) !== null) {
         if (atSignMatch && atSignMatch[1]) {
-            uniqueLinks.add(atSignMatch[1]);
+            const originalAtLink = atSignMatch[0]; // 完整匹配，包括@符号
+            const actualLink = atSignMatch[1];    // 不包括@符号的URL部分
+            uniqueLinks.add(actualLink);
+            atPrefixedLinks.set(actualLink, originalAtLink);
         }
     }
 
@@ -384,8 +398,19 @@ async function processLinksInMessage(messageText: string): Promise<{
                     const cached = localCache.get(link)!;
                     return { 
                         original: link, 
+                        originalWithAt: atPrefixedLinks.get(link),  // 保存带@前缀的原始形式
                         resolved: cached.url,
                         platformName: cached.platformName
+                    };
+                }
+
+                // 检查YouTube标准链接，避免不必要的转换
+                if (link.match(/^https?:\/\/(?:www\.)?youtube\.com\/watch\?v=[\w-]+$/)) {
+                    return {
+                        original: link,
+                        originalWithAt: atPrefixedLinks.get(link),
+                        resolved: link,  // 保持不变
+                        platformName: "YouTube标准链接"
                     };
                 }
 
@@ -396,20 +421,21 @@ async function processLinksInMessage(messageText: string): Promise<{
                 localCache.set(link, { url: resolved, platformName });
 
                 return { 
-                    original: link, 
+                    original: link,
+                    originalWithAt: atPrefixedLinks.get(link),
                     resolved,
                     platformName
                 };
             } catch (error) {
                 log.error(`处理链接失败 ${link}: ${error}`);
-                return { original: link, resolved: link };
+                return { original: link, originalWithAt: atPrefixedLinks.get(link), resolved: link };
             }
         })
     );
 
     // 提取成功的结果
     const replacements = resolveResults
-        .filter((result): result is PromiseFulfilledResult<UrlProcessingResult> =>
+        .filter((result): result is PromiseFulfilledResult<any> =>
             result.status === 'fulfilled')
         .map(result => result.value);
 
@@ -424,18 +450,24 @@ async function processLinksInMessage(messageText: string): Promise<{
     replacements.sort((a, b) => b.original.length - a.original.length);
 
     // 应用所有替换
-    for (const { original, resolved } of replacements) {
+    for (const { original, originalWithAt, resolved } of replacements) {
         // 只有当解析的URL和原始URL不同时才替换
         if (original !== resolved) {
-            // 处理带@符号的格式
-            const atFormatRegex = new RegExp(`@${original.replace(regexEscapePattern, '\\$&')}`, 'g');
-            if (text.match(atFormatRegex)) {
-                text = text.replace(atFormatRegex, resolved);
+            // 如果是带@的链接，则替换完整形式
+            if (originalWithAt) {
+                const atEscaped = originalWithAt.replace(regexEscapePattern, '\\$&');
+                const atRegex = new RegExp(atEscaped, 'g');
+                text = text.replace(atRegex, resolved);
+            } else {
+                // 使用正则表达式全局替换所有匹配实例
+                const regex = new RegExp(original.replace(regexEscapePattern, '\\$&'), 'g');
+                text = text.replace(regex, resolved);
             }
-
-            // 使用正则表达式全局替换所有匹配实例
-            const regex = new RegExp(original.replace(regexEscapePattern, '\\$&'), 'g');
-            text = text.replace(regex, resolved);
+        } else if (originalWithAt) {
+            // 如果链接没有变化但有@前缀，则保留原始链接但移除@前缀
+            const atEscaped = originalWithAt.replace(regexEscapePattern, '\\$&');
+            const atRegex = new RegExp(atEscaped, 'g');
+            text = text.replace(atRegex, original);
         }
     }
 

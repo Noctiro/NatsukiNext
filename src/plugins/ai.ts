@@ -13,7 +13,7 @@ import {
 import { slowModeState } from '../ai/provider/BaseProvider';
 import DynamicMap from '../utils/DynamicMap';
 import { Cron } from 'croner';
-import { cleanHTML, ALLOWED_TAGS } from '../utils/HtmlHelper';
+import { cleanHTML } from '../utils/HtmlHelper';
 
 /**
  * AI插件 - 模块化结构设计
@@ -244,7 +244,7 @@ class MessageManager {
             .replace(/HTML_TAG/g, '')
             .replace(/__HTML_TAG__/g, '')
             .replace(/HTML[_-][A-Za-z]+[_-]?\d*/g, '');
-            
+
         // 使用cleanHTML处理HTML标签
         return cleanHTML(cleanedText);
     }
@@ -812,10 +812,10 @@ class ResponseFormatter {
                 htmlText = htmlText.replace(rule.pattern, rule.replacement);
             }
 
-            // 处理换行，符合 @mtcute/html-parser 的标准
-            htmlText = htmlText
-                .replace(/\n\n+/g, '<br><br>')  // 多个连续换行转为两个 <br>
-                .replace(/\n/g, '<br>');        // 单个换行转为 <br>
+            // 处理换行，但根据AI实际情况还是会忍不住换行，所以注释掉这段
+            // htmlText = htmlText
+            //     .replace(/\n\n+/g, '<br><br>')  // 多个连续换行转为两个 <br>
+            //     .replace(/\n/g, '<br>');        // 单个换行转为 <br>
 
             // 注意：不在这里调用cleanHTML，而是将HTML文本返回给调用者
             // 由调用者决定在最终组装完所有内容后一次性进行清理，避免多次清理
@@ -836,8 +836,8 @@ class ResponseFormatter {
         // 添加思考过程（如果有）
         if (thinking && thinking.trim()) {
             // 先不对思考过程单独清理，保存原始转换后的内容
-            const formattedThinking = this.markdownToHtml(thinking.trim());
-            displayText += `<blockquote><b>💭 思考过程:</b><br><br>${formattedThinking}</blockquote><br><br>`;
+            const formattedThinking = this.markdownToHtml(thinking.trim()).replace(/\n/g, '<br>'); // 换行转<br>
+            displayText += `<blockquote collapsible><b>💭 思考过程:</b><br><br>${formattedThinking}</blockquote><br><br>`;
         }
 
         // 处理内容为空或生成中的情况
@@ -862,7 +862,7 @@ class ResponseFormatter {
 
         // 添加正文内容
         try {
-            const formatContent = this.markdownToHtml(content);
+            const formatContent = this.markdownToHtml(content).replace(/\n/g, ''); // 去除所有换行
 
             // 根据内容长度决定显示格式
             if (formatContent.length > 500 && !formatContent.includes('blockquote>')) {
@@ -2025,7 +2025,7 @@ class AIPlugin {
                                 // 最终更新直接发送，不使用节流机制
                                 const finalDisplayText = ResponseFormatter.formatAIResponse(safeContent, safeThinking || '');
                                 // 使用新方法清理最终输出中的HTML
-                                const cleanFinalText = this.processHtmlContent(finalDisplayText);
+                                const cleanFinalText = cleanHTML(finalDisplayText);
                                 const key = `${ctx.chatId}:${waitMsg.id}`;
 
                                 // 检查内容是否与上次相同
@@ -2052,7 +2052,7 @@ class AIPlugin {
                                 // 使用节流机制更新中间消息
                                 const displayText = ResponseFormatter.formatAIResponse(safeContent, safeThinking || '');
                                 // 使用新方法清理中间输出的HTML
-                                const cleanText = this.processHtmlContent(displayText);
+                                const cleanText = cleanHTML(displayText);
                                 this.messageManager.throttledEditMessage(ctx, ctx.chatId, waitMsg.id, cleanText);
                             } catch (e) {
                                 log.error(`创建中间消息时出错: ${e}`);
@@ -2106,26 +2106,6 @@ class AIPlugin {
         // 获取消息长度并传递给incrementUsage方法
         const messageLength = ctx.message.text?.trim().length || 0;
         this.userManager.incrementUsage(userId, messageLength);
-    }
-
-    /**
-     * 处理HTML内容，确保符合 @mtcute/html-parser 标准
-     * @param content HTML内容
-     * @param allowBlockquote 是否允许blockquote标签
-     * @returns 处理后的HTML
-     */
-    private processHtmlContent(content: string, allowBlockquote: boolean = true): string {
-        if (!content) return '';
-        
-        // 创建允许的标签列表（这一步其实不再需要，因为cleanHTML已经处理了）
-        // 如果需要过滤掉blockquote标签，可以在调用cleanHTML前处理内容
-        if (!allowBlockquote) {
-            // 如果不允许blockquote标签，先移除所有blockquote标签
-            content = content.replace(/<\/?blockquote[^>]*>/gi, '');
-        }
-        
-        // 使用新的清理函数
-        return cleanHTML(content);
     }
 }
 
