@@ -774,9 +774,7 @@ class ResponseFormatter {
             // 应用Markdown转换规则，符合 @mtcute/html-parser 支持的实体
             const markdownRules = [
                 // 标题（转为粗体）
-                { pattern: /^# (.+)$/gm, replacement: '<b>$1</b>' },
-                { pattern: /^## (.+)$/gm, replacement: '<b>$1</b>' },
-                { pattern: /^### (.+)$/gm, replacement: '<b>$1</b>' },
+                { pattern: /^#+ (.+)$/gm, replacement: '<b>$1</b>' },
 
                 // 基本格式
                 { pattern: /\*\*(.+?)\*\*/g, replacement: '<b>$1</b>' },         // 粗体

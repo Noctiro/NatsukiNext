@@ -499,31 +499,6 @@ const plugin: BotPlugin = {
         },
 
         {
-            name: 'say',
-            description: '让机器人说话，并删除您的命令消息\n用法：\n/say 你好 - 机器人说"你好"\n回复某消息并使用 /say 文本 - 机器人回复该消息',
-            async handler(ctx: CommandContext) {
-                if (!ctx.content) {
-                    await ctx.message.replyText('请输入要说的话');
-                    return;
-                }
-
-                // 尝试回复被引用的消息，如果没有则直接发送
-                if (ctx.message.replyToMessage) {
-                    await ctx.message.replyText(ctx.content);
-                } else {
-                    await ctx.client.sendText(ctx.chatId, ctx.content);
-                }
-
-                // 尝试删除用户的指令消息
-                try {
-                    await ctx.client.deleteMessagesById(ctx.chatId, [ctx.message.id]);
-                } catch (err) {
-                    // 忽略权限错误
-                }
-            }
-        },
-
-        {
             name: 'coin',
             description: '抛硬币游戏，随机显示正面或反面\n用法：\n/coin - 随机抛出一枚硬币',
             async handler(ctx: CommandContext) {
@@ -567,40 +542,6 @@ const plugin: BotPlugin = {
                 const answer = answers[randomIndex];
 
                 await ctx.message.replyText(`🎱 问题: ${ctx.content}\n\n${answer}`);
-            }
-        },
-
-        {
-            name: 'scramble',
-            description: '打乱文字顺序，但保留首尾字母位置\n用法：\n/scramble 这是一段测试文本 - 将文本中单词的中间字母顺序打乱',
-            async handler(ctx: CommandContext) {
-                if (!ctx.content) {
-                    await ctx.message.replyText('请输入要打乱的文本');
-                    return;
-                }
-
-                // 打乱文字顺序，但保留首尾字母位置
-                const words = ctx.content.split(' ');
-
-                const scrambledWords = words.map(word => {
-                    if (word.length <= 3) return word;
-
-                    const first = word.charAt(0);
-                    const last = word.charAt(word.length - 1);
-                    const middle = word.substring(1, word.length - 1).split('');
-
-                    // 打乱中间字母
-                    for (let i = middle.length - 1; i > 0; i--) {
-                        const j = Math.floor(Math.random() * (i + 1));
-                        const temp = middle[i];
-                        middle[i] = middle[j] || '';
-                        middle[j] = temp || '';
-                    }
-
-                    return first + middle.join('') + last;
-                });
-
-                await ctx.message.replyText(`原文: ${ctx.content}\n打乱后: ${scrambledWords.join(' ')}\n\n(研究表明，只要单词的首尾字母位置不变，中间字母顺序混乱也不影响阅读)`);
             }
         },
 
