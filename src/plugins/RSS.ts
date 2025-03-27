@@ -5,7 +5,7 @@ import type { BotPlugin, CommandContext } from '../features';
 import { html, Message, type TelegramClient, type TextWithEntities } from "@mtcute/bun";
 import { Cron } from "croner";
 import { enableChats } from "../app";
-import { ensureProperHtml, filterAllowedTags, ALLOWED_TAGS } from "../utils/HtmlHelper";
+import { cleanHTML } from "../utils/HtmlHelper";
 
 /**
  * RSS 源配置接口
@@ -123,6 +123,7 @@ const AI_SUMMARY_PROMPT = `你是一名专业新闻编辑，擅长提炼新闻�
    - 长新闻可拆分为**简要摘要 + 详细补充**（使用可折叠引用）。
 5. **内容安全**：
    - 严格基于原文，不提供额外解释或无关信息。
+   - 无需提供标题、来源，直接输出新闻摘要。
    - 如无法提炼有效内容，直接返回 **[CANCEL]**。
 
 ### 输出格式（仅支持以下HTML标签）：
@@ -947,7 +948,7 @@ class NewsService {
 
         // 组装最终内容
         return {
-            text: html`<b>${news.title}</b><br><br>${contentText}<br><br>${aiComment}📎 详情 <a href="${news.link}">${news.sourceName}</a>`,
+            text: html`<b>${news.title}</b><br><br>${html(contentText)}<br><br>${aiComment}📎 详情 <a href="${news.link}">${news.sourceName}</a>`,
             images
         };
     }
@@ -966,9 +967,8 @@ class NewsService {
             
             if (!comment || comment === '[CANCEL]') return '';
             
-            // 使用HtmlHelper过滤和修复HTML标签
-            const filteredHtml = filterAllowedTags(comment.trim(), ALLOWED_TAGS);
-            return ensureProperHtml(filteredHtml);
+            // 使用HtmlHelper一站式处理HTML
+            return cleanHTML(comment.trim());
         } catch (error) {
             log.error(`AI summary generation failed: ${error}`);
             return '';
@@ -989,9 +989,8 @@ class NewsService {
             
             if (!comment || comment === '[CANCEL]' || comment.length > 150) return '';
             
-            // 使用HtmlHelper过滤和修复HTML标签
-            const filteredHtml = filterAllowedTags(comment.trim(), ALLOWED_TAGS);
-            const cleanHtml = ensureProperHtml(filteredHtml);
+            // 使用HtmlHelper一站式处理HTML
+            const cleanHtml = cleanHTML(comment.trim());
             
             return cleanHtml ? `🤖 ${cleanHtml}\n` : '';
         } catch (error) {
