@@ -1,7 +1,6 @@
-import { html, md, SqliteStorage, TelegramClient } from "@mtcute/bun";
+import { SqliteStorage, TelegramClient } from "@mtcute/bun";
 import { log } from './log';
 import { Features } from './features';
-import { Dispatcher } from "@mtcute/dispatcher";
 
 export const enableChats = process.env.ENABLE_CHATS?.split(',').map(Number) || [];
 export const managerIds = process.env.MANAGER_IDS?.split(',').map(Number) || [];
@@ -29,12 +28,6 @@ log.setConfig({
 });
 
 log.info(`Login in ${self.username} (${self.id})`, { remote: true });
-
-// Dispatcher.for(telegram).onNewMessage(
-//     async (ctx) => {
-//         ctx.replyText(html`<blockquote collapsible><br></blockquote>`)
-//     }
-// )
 
 // 初始化功能模块
 // Features类负责设置事件处理器和命令处理

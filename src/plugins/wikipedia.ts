@@ -233,20 +233,19 @@ function isValidWikiLang(lang: string): lang is WikiLang {
  */
 async function searchWiki(keyword: string, lang: WikiLang, limit = 1, withInterwiki = false): Promise<WikiPage[]> {
     // 构建请求参数
-    const params = new URLSearchParams({
-        action: 'query',
-        format: 'json',
-        origin: '*',
-        exchars: '300',
-        exintro: '1',
-        explaintext: '1',
-        gsrlimit: limit.toString(),
-        gsrsearch: keyword,
-        inprop: 'url',
-        pithumbsize: '200',
-        lllimit: '500',
-        llprop: 'url|langname'
-    });
+    const params = new URLSearchParams();
+    params.append('action', 'query');
+    params.append('format', 'json');
+    params.append('origin', '*');
+    params.append('exchars', '300');
+    params.append('exintro', '1');
+    params.append('explaintext', '1');
+    params.append('gsrlimit', limit.toString());
+    params.append('gsrsearch', keyword);
+    params.append('inprop', 'url');
+    params.append('pithumbsize', '200');
+    params.append('lllimit', '500');
+    params.append('llprop', 'url|langname');
 
     // 确定要获取的属性
     let props = ['extracts', 'info', 'pageimages'];
@@ -278,21 +277,20 @@ async function searchWiki(keyword: string, lang: WikiLang, limit = 1, withInterw
  */
 async function getRandomArticle(lang: WikiLang): Promise<WikiPage> {
     // 构建请求参数
-    const params = new URLSearchParams({
-        action: 'query',
-        format: 'json',
-        origin: '*',
-        prop: 'extracts|info|pageimages',
-        generator: 'random',
-        grnnamespace: '0',
-        grnlimit: '1',
-        exchars: '200',
-        exintro: '1',
-        explaintext: '1',
-        inprop: 'url',
-        piprop: 'thumbnail',
-        pithumbsize: '100'
-    });
+    const params = new URLSearchParams();
+    params.append('action', 'query');
+    params.append('format', 'json');
+    params.append('origin', '*');
+    params.append('prop', 'extracts|info|pageimages');
+    params.append('generator', 'random');
+    params.append('grnnamespace', '0');
+    params.append('grnlimit', '1');
+    params.append('exchars', '200');
+    params.append('exintro', '1');
+    params.append('explaintext', '1');
+    params.append('inprop', 'url');
+    params.append('piprop', 'thumbnail');
+    params.append('pithumbsize', '100');
 
     // 发送请求
     const apiUrl = `${WIKI_API[lang].search}?${params.toString()}`;

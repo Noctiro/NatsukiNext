@@ -862,9 +862,16 @@ class NewsService {
      * 获取并发送新闻
      * @param client - 客户端
      * @param chatId - 聊天ID
+     * @param messageToReply - 回复的消息对象（null表示不回复任何消息）
+     * @param isCommand - 是否由命令触发，如果是则显示等待消息
      */
-    async fetchAndSendNews(client: TelegramClient, chatId: number, replyMessage: Message | null): Promise<void> {
-        const waitMsg = replyMessage ? client.replyText(replyMessage, "📰 正在获取新闻...") : client.sendText(chatId, "📰 正在获取新闻...");
+    async fetchAndSendNews(client: TelegramClient, chatId: number, messageToReply: Message | null, isCommand: boolean = false): Promise<void> {
+        // 创建等待消息（命令触发或提供了回复消息时）
+        const waitMsgPromise = isCommand 
+            ? (messageToReply 
+                ? client.replyText(messageToReply, "📰 正在获取新闻...") 
+                : client.sendText(chatId, "📰 正在获取新闻..."))
+            : null;
 
         try {
             // 设置整体超时
@@ -876,43 +883,60 @@ class NewsService {
             const newsPromise = this.getAllSourcesNews();
             const news = await Promise.race([newsPromise, timeoutPromise]);
 
+            // 如果没有找到新闻
             if (!news) {
-                await client.editMessage({
-                    message: await waitMsg,
-                    text: `未找到合适的新闻`
-                });
+                if (waitMsgPromise) {
+                    // 仅在有等待消息时需要编辑
+                    await client.editMessage({
+                        message: await waitMsgPromise,
+                        text: `未找到合适的新闻`
+                    });
+                }
                 return;
             }
 
-            // 并行处理内容和准备消息发送
-            const [formattedContent, resolvedWaitMsg] = await Promise.all([
-                // 处理新闻内容
-                this.processNewsContent(news),
-                // 同时等待waitMsg解析
-                waitMsg
-            ]);
-
+            // 处理新闻内容
+            const formattedContent = await this.processNewsContent(news);
+            
             // 从结果中提取文本和图片
             const { text, images } = formattedContent;
 
             // 如果没有图片，直接发送文本
             if (!images.length) {
-                await client.editMessage({
-                    message: await waitMsg,
-                    text: text
-                });
+                if (waitMsgPromise) {
+                    // 有等待消息时，编辑它
+                    await client.editMessage({
+                        message: await waitMsgPromise,
+                        text: text
+                    });
+                } else {
+                    // 没有等待消息时，直接发送
+                    await client.sendText(chatId, text);
+                }
                 return;
+            }
+
+            // 如果有等待消息，需要在后续发送媒体前删除它
+            const shouldDeleteWaitMsg = waitMsgPromise !== null;
+            let waitMsgId: number | undefined;
+            
+            if (shouldDeleteWaitMsg) {
+                waitMsgId = (await waitMsgPromise!).id;
             }
 
             // 如果只有一张图片，发送带图片的消息
             const firstImage = images[0];
             if (images.length === 1 && firstImage) {
-                if (replyMessage) {
-                    client.replyMedia(replyMessage, firstImage, { caption: text });
+                if (messageToReply) {
+                    await client.replyMedia(messageToReply, firstImage, { caption: text });
                 } else {
-                    client.sendMedia(chatId, firstImage, { caption: text });
+                    await client.sendMedia(chatId, firstImage, { caption: text });
                 }
-                await client.deleteMessagesById(chatId, [(await waitMsg).id]);
+                
+                // 删除等待消息
+                if (shouldDeleteWaitMsg && waitMsgId) {
+                    await client.deleteMessagesById(chatId, [waitMsgId]);
+                }
                 return;
             }
 
@@ -925,21 +949,30 @@ class NewsService {
                     caption: index === 0 ? text : undefined
                 }));
 
-
-            if (replyMessage) {
-                client.replyMediaGroup(replyMessage, mediaGroup);
+            if (messageToReply) {
+                await client.replyMediaGroup(messageToReply, mediaGroup);
             } else {
-                client.sendMediaGroup(chatId, mediaGroup);
+                await client.sendMediaGroup(chatId, mediaGroup);
             }
 
             // 删除等待消息
-            await client.deleteMessagesById(chatId, [(await waitMsg).id]);
+            if (shouldDeleteWaitMsg && waitMsgId) {
+                await client.deleteMessagesById(chatId, [waitMsgId]);
+            }
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            await client.editMessage({
-                message: await waitMsg,
-                text: `获取新闻失败: ${errorMessage}`
-            });
+            
+            if (waitMsgPromise) {
+                // 只在有等待消息时才编辑更新错误
+                await client.editMessage({
+                    message: await waitMsgPromise,
+                    text: `获取新闻失败: ${errorMessage}`
+                });
+            } else {
+                // 定时任务出错时发送新消息
+                await client.sendText(chatId, `获取新闻失败: ${errorMessage}`);
+            }
+            
             log.error('News fetch error:', error);
         }
     }
@@ -1428,7 +1461,9 @@ const plugin: BotPlugin = {
                     await ctx.message.replyText("RSS服务未初始化");
                     return;
                 }
-                await serviceInstance.fetchAndSendNews(ctx.client, ctx.chatId, ctx.message);
+                
+                // 传递isCommand=true，表示由命令触发
+                await serviceInstance.fetchAndSendNews(ctx.client, ctx.chatId, ctx.message, true);
             }
         },
         {
@@ -1440,7 +1475,7 @@ const plugin: BotPlugin = {
                     return;
                 }
 
-                const waitMsg = await ctx.message.replyText("⚙️ 正在检查RSS状态...");
+                const waitMsg = ctx.message.replyText("⚙️ 正在检查RSS状态...");
                 try {
                     const status = await serviceInstance.getServiceStatus();
                     const response = ["📊 RSS 服务状态\n"];
@@ -1465,12 +1500,14 @@ const plugin: BotPlugin = {
                     }
 
                     await ctx.client.editMessage({
-                        message: waitMsg,
+                        chatId: ctx.chatId,
+                        message: (await waitMsg).id,
                         text: response.join('\n')
                     });
                 } catch (error) {
                     await ctx.client.editMessage({
-                        message: waitMsg,
+                        chatId: ctx.chatId,
+                        message: (await waitMsg).id,
                         text: `检查失败\n${error}`
                     });
                 }
@@ -1485,7 +1522,7 @@ const plugin: BotPlugin = {
 
         cycleSendJob = new Cron("0,30 * * * *", () => {
             for (const chatId of enableChats) {
-                serviceInstance?.fetchAndSendNews(client, chatId, null);
+                serviceInstance?.fetchAndSendNews(client, chatId, null, false);
             }
         });
     },
