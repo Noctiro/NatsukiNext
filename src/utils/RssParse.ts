@@ -189,7 +189,10 @@ function normalizeURL(url: string | undefined, baseURL?: string): string {
         }
 
         // 规范化查询参数顺序
-        const searchParams = new URLSearchParams([...urlObj.searchParams.entries()].sort());
+        const searchParams = new URLSearchParams();
+        [...urlObj.searchParams.entries()].sort().forEach(([key, value]) => {
+            searchParams.append(key, value);
+        });
         urlObj.search = searchParams.toString();
 
         return urlObj.toString();
@@ -289,14 +292,34 @@ interface RSSFeed {
 }
 
 // 增加 RSS 格式类型定义
-type RSSFormat = 'RSS2.0' | 'RSS1.0' | 'Atom' | 'RDF' | 'Unknown';
+type RSSFormat = 'RSS2.0' | 'RSS1.0' | 'Atom' | 'RDF' | 'JSON' | 'Unknown';
 
 // 增加格式检测函数
 function detectRSSFormat(xmlContent: string): RSSFormat {
+    // 排除JSON格式(即使检测到也不支持)
+    if (xmlContent.trim().startsWith('{') && xmlContent.includes('"version"')) {
+        throw new Error("不支持JSON格式的RSS");
+    }
+    
+    // RSS 2.0检测
     if (/<rss[^>]+version=["']2\.0["']/i.test(xmlContent)) return 'RSS2.0';
+    // RSS 2.0但没有明确指定版本
+    if (/<rss[^>]+>/i.test(xmlContent) && !/<rss[^>]+version=/i.test(xmlContent)) return 'RSS2.0';
+    
+    // RDF/RSS 1.0检测 
     if (/<rdf:RDF/i.test(xmlContent)) return 'RDF';
-    if (/<feed[^>]+xmlns=["']http:\/\/www\.w3\.org\/2005\/Atom["']/i.test(xmlContent)) return 'Atom';
     if (/<rss[^>]+version=["']1\.0["']/i.test(xmlContent)) return 'RSS1.0';
+    
+    // Atom检测
+    if (/<feed[^>]+xmlns=["']http:\/\/www\.w3\.org\/2005\/Atom["']/i.test(xmlContent)) return 'Atom';
+    if (/<feed[^>]*>/i.test(xmlContent)) return 'Atom'; // 简化的Atom检测
+    
+    // 没有匹配的格式，尝试更宽松的检测
+    if (/<rss/i.test(xmlContent)) return 'RSS2.0';
+    if (/<channel/i.test(xmlContent)) return 'RSS2.0';
+    if (/<item/i.test(xmlContent)) return 'RSS2.0';
+    if (/<entry/i.test(xmlContent)) return 'Atom';
+    
     return 'Unknown';
 }
 
@@ -308,23 +331,77 @@ function parseRSS(xmlContent: string): RSSFeed {
     }
 
     // 移除危险字符
-    xmlContent = xmlContent.replace(INVALID_CHARS_REGEX, '');
+    const cleanedContent = xmlContent.replace(INVALID_CHARS_REGEX, '');
+    
+    // 检查是否为JSON格式
+    if (cleanedContent.trim().startsWith('{') && (
+        cleanedContent.includes('"items"') || 
+        cleanedContent.includes('"entries"') || 
+        cleanedContent.includes('"feed"')
+    )) {
+        throw new Error("不支持JSON格式的RSS");
+    }
+    
+    // 将HTML实体转换为XML实体（某些RSS源会错误地使用HTML实体）
+    const normalizedContent = cleanedContent
+        .replace(/&nbsp;/g, '&#160;')
+        .replace(/&copy;/g, '&#169;')
+        .replace(/&reg;/g, '&#174;')
+        .replace(/&amp;/g, '&amp;amp;'); // 确保已转义的&amp;不被重新解释
 
-    // 检测 RSS 格式
-    const format = detectRSSFormat(xmlContent);
-    const version = RSS_VERSION_REGEX.exec(xmlContent)?.[1] ?? format;
-
-    // 根据不同格式选择解析策略
-    switch (format) {
-        case 'Atom':
-            return parseAtom(xmlContent);
-        case 'RDF':
-            return parseRDF(xmlContent);
-        case 'RSS1.0':
-            return parseRDF(xmlContent); // RSS 1.0 使用 RDF 格式
-        case 'RSS2.0':
-        default:
-            return parseRSS2(xmlContent, version);
+    try {
+        // 检测 RSS 格式
+        const format = detectRSSFormat(normalizedContent);
+        const version = RSS_VERSION_REGEX.exec(normalizedContent)?.[1] ?? format;
+        
+        // 根据不同格式选择解析策略
+        switch (format) {
+            case 'Atom':
+                return parseAtom(normalizedContent);
+            case 'RDF':
+                return parseRDF(normalizedContent);
+            case 'RSS1.0':
+                return parseRDF(normalizedContent); // RSS 1.0 使用 RDF 格式
+            case 'RSS2.0':
+                return parseRSS2(normalizedContent, version);
+            case 'Unknown':
+            default:
+                // 未知格式尝试检测常见的RSS元素
+                if (normalizedContent.includes('<item') || normalizedContent.includes('<channel')) {
+                    return parseRSS2(normalizedContent, 'RSS2.0');
+                } else if (normalizedContent.includes('<entry') || normalizedContent.includes('<feed')) {
+                    return parseAtom(normalizedContent);
+                } else {
+                    // 尝试最宽松的解析方式
+                    const channel: RSSChannel = {
+                        title: 'Unknown Feed',
+                        link: '',
+                        description: '',
+                        items: []
+                    };
+                    
+                    // 尝试从内容中直接提取标题
+                    const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(normalizedContent);
+                    if (titleMatch && titleMatch[1]) {
+                        channel.title = cleanText(titleMatch[1], { maxLength: 500 });
+                    }
+                    
+                    // 返回默认Feed对象
+                    return { channel, version: 'Unknown' };
+                }
+        }
+    } catch (error) {
+        console.error("解析RSS失败:", error);
+        
+        // 出错时返回最基本的Feed对象
+        const channel: RSSChannel = {
+            title: 'Error Parsing Feed',
+            link: '',
+            description: error instanceof Error ? error.message : String(error),
+            items: []
+        };
+        
+        return { channel, version: 'Error' };
     }
 }
 
@@ -434,11 +511,21 @@ function parseAtom(xmlContent: string): RSSFeed {
     
     // 尝试提取直接的标题和链接
     let title = cleanText(safeExtract(feedContent, "title"), { maxLength: 500 });
-    let link = normalizeURL(extractAttribute(feedContent, "link", "href"));
+    
+    // 处理链接 - 提取各种可能的链接格式
+    const linkAlternateMatch = /<link[^>]+rel=["']?alternate["']?[^>]+href=["']([^"']+)["'][^>]*>/i.exec(feedContent);
+    const linkSelfMatch = /<link[^>]+rel=["']?self["']?[^>]+href=["']([^"']+)["'][^>]*>/i.exec(feedContent);
+    const genericLinkMatch = extractAttribute(feedContent, "link", "href");
+    
+    let link = normalizeURL(
+        (linkAlternateMatch && linkAlternateMatch[1]) || 
+        (linkSelfMatch && linkSelfMatch[1]) || 
+        genericLinkMatch
+    );
     
     // 如果找不到直接的标题，尝试在整个 XML 中搜索
     if (!title) {
-        const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(xmlContent);
+        const titleMatch = /<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/i.exec(xmlContent);
         if (titleMatch?.[1]) {
             title = cleanText(titleMatch[1], { maxLength: 500 });
         }
@@ -466,15 +553,28 @@ function parseAtom(xmlContent: string): RSSFeed {
         link: link || '',
         description: cleanText(safeExtract(feedContent, "subtitle") || 
                              safeExtract(feedContent, "summary") || 
-                             safeExtract(feedContent, "description"), 
+                             safeExtract(feedContent, "description") || 
+                             safeExtract(feedContent, "content"), 
                      { maxLength: 2000 }),
         items: []
     };
 
     // 解析 Atom 特有的元数据
-    channel.language = safeExtract(feedContent, "lang", { stripHTML: true });
+    // 尝试从feed标签属性中提取语言
+    const langAttr = /<feed[^>]+xml:lang=["']([^"']+)["'][^>]*>/i.exec(feedContent);
+    channel.language = langAttr?.[1] || safeExtract(feedContent, "lang", { stripHTML: true });
     channel.generator = safeExtract(feedContent, "generator", { stripHTML: true });
-    channel.pubDate = parseDate(safeExtract(feedContent, "updated", { stripHTML: true }));
+    channel.pubDate = parseDate(safeExtract(feedContent, "updated", { stripHTML: true })) || 
+                     parseDate(safeExtract(feedContent, "published", { stripHTML: true }));
+    
+    // 解析图片 - 先查找logo标签，再查找icon标签
+    const logoContent = safeExtract(feedContent, "logo") || safeExtract(feedContent, "icon");
+    if (logoContent) {
+        channel.image = {
+            url: normalizeURL(logoContent),
+            title: channel.title
+        };
+    }
 
     // 解析条目 - 更灵活的匹配模式
     const entryPattern = /<entry(?:\s+[^>]*)?>([\s\S]*?)<\/entry>/gi;
@@ -483,14 +583,14 @@ function parseAtom(xmlContent: string): RSSFeed {
     if (itemMatches.length > 0) {
         channel.items = itemMatches
             .map(match => parseAtomEntry(match[1] || '', channel.link))
-            .filter(item => item.title && item.link);
+            .filter(item => item.title || item.link); // 允许只有链接的条目
     } else {
         // 如果没有找到 entry 标签，尝试解析 item 标签
         const itemPattern = /<item(?:\s+[^>]*)?>([\s\S]*?)<\/item>/gi;
         const alternativeMatches = [...xmlContent.matchAll(itemPattern)];
         channel.items = alternativeMatches
             .map(match => parseItem(match[1] || '', channel.link))
-            .filter(item => item.title && item.link);
+            .filter(item => item.title || item.link);
     }
 
     return { channel, version: 'Atom' };
@@ -599,11 +699,38 @@ function parseRDFItem(itemContent: string, baseURL?: string): RSSItem {
 
 // 优化后的条目解析函数
 function parseItem(itemContent: string, baseURL?: string): RSSItem {
-    const link = safeExtract(itemContent, "link");
+    // 安全检查
+    if (!itemContent) {
+        return {
+            title: '',
+            link: '',
+            description: ''
+        };
+    }
+    
+    // 提取链接并确保规范化
+    const linkRaw = safeExtract(itemContent, "link");
+    const link = normalizeURL(linkRaw, baseURL) || '';
+    
+    // 提取标题内容 - 处理CDATA
+    let title = '';
+    const titleMatch = /<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/is.exec(itemContent);
+    if (titleMatch && titleMatch[1]) {
+        title = cleanText(titleMatch[1], { maxLength: 500 });
+    }
+    
+    // 提取描述 - 处理CDATA
+    let description = '';
+    const descriptionMatch = /<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/is.exec(itemContent);
+    if (descriptionMatch && descriptionMatch[1]) {
+        description = cleanText(descriptionMatch[1], { maxLength: 5000 });
+    }
+    
+    // 创建条目并添加其他元数据
     const item: RSSItem = {
-        title: cleanText(safeExtract(itemContent, "title"), { maxLength: 500 }),
-        link: normalizeURL(link) || '',  // 确保返回字符串
-        description: cleanText(safeExtract(itemContent, "description"), { maxLength: 5000 }),
+        title: title,
+        link: link,
+        description: description,
         contentEncoded: cleanText(safeExtract(itemContent, "content:encoded"), { maxLength: 50000 }),
         pubDate: parseDate(safeExtract(itemContent, "pubDate", { stripHTML: true })),
         guid: safeExtract(itemContent, "guid", { stripHTML: true }),
@@ -611,22 +738,53 @@ function parseItem(itemContent: string, baseURL?: string): RSSItem {
             validateEmail(safeExtract(itemContent, "dc:creator")) ||
             cleanText(safeExtract(itemContent, "author") || safeExtract(itemContent, "dc:creator")),
         categories: extractAllTags(itemContent, "category").map(cat => cleanText(cat)),
-        comments: normalizeURL(safeExtract(itemContent, "comments"), baseURL) || '',  // 确保返回字符串
+        comments: normalizeURL(safeExtract(itemContent, "comments"), baseURL) || '',
         enclosure: parseEnclosure(itemContent, baseURL),
         source: parseSource(itemContent, baseURL),
         dcCreator: cleanText(safeExtract(itemContent, "dc:creator")),
         dcDate: parseDate(safeExtract(itemContent, "dc:date", { stripHTML: true })),
-        dcSubject: extractAllTags(itemContent, "dc:subject").map(subj => cleanText(subj)),
-        itunesDuration: normalizeDuration(safeExtract(itemContent, "itunes:duration")),
-        itunesExplicit: normalizeBoolean(safeExtract(itemContent, "itunes:explicit")),
-        itunesImage: normalizeURL(extractAttribute(itemContent, "itunes:image", "href"), baseURL) || '',  // 确保返回字符串
-        itunesEpisode: normalizeInteger(safeExtract(itemContent, "itunes:episode")),
-        itunesSeason: normalizeInteger(safeExtract(itemContent, "itunes:season")),
-        mediaContent: parseMediaContent(itemContent, baseURL),
-        mediaThumbnail: extractAllAttributes(itemContent, "media:thumbnail", "url")
-            .map(url => normalizeURL(url, baseURL) || '')  // 确保返回字符串
-            .filter(url => url !== '')  // 过滤掉空字符串
+        dcSubject: extractAllTags(itemContent, "dc:subject").map(subj => cleanText(subj))
     };
+
+    // 如果没有pubDate，尝试使用dc:date
+    if (!item.pubDate && item.dcDate) {
+        item.pubDate = item.dcDate;
+    }
+    
+    // 如果缺少必要内容，尝试从内容中提取
+    if (!item.title && item.description) {
+        // 从描述中提取标题（取前50个字符）
+        item.title = item.description.substring(0, 50) + (item.description.length > 50 ? '...' : '');
+    }
+
+    // 提取iTunes特有的元数据
+    item.itunesDuration = normalizeDuration(safeExtract(itemContent, "itunes:duration"));
+    item.itunesExplicit = normalizeBoolean(safeExtract(itemContent, "itunes:explicit"));
+    
+    // 尝试兼容不同命名空间的iTunes图片
+    const itunesImageHref = extractAttribute(itemContent, "itunes:image", "href");
+    const itunesImageUrl = extractAttribute(itemContent, "itunes:image", "url");
+    item.itunesImage = normalizeURL(itunesImageHref || itunesImageUrl, baseURL) || '';
+    
+    item.itunesEpisode = normalizeInteger(safeExtract(itemContent, "itunes:episode"));
+    item.itunesSeason = normalizeInteger(safeExtract(itemContent, "itunes:season"));
+    
+    // 处理媒体内容
+    item.mediaContent = parseMediaContent(itemContent, baseURL);
+    
+    // 处理媒体缩略图
+    item.mediaThumbnail = extractAllAttributes(itemContent, "media:thumbnail", "url")
+        .map(url => normalizeURL(url, baseURL) || '')
+        .filter(url => url !== '');
+    
+    // 如果没有找到media:thumbnail，尝试提取其他格式的图片
+    if (!item.mediaThumbnail || item.mediaThumbnail.length === 0) {
+        // 从内容中提取图片
+        const imgSrcMatch = /<img[^>]+src=["']([^"']+)["'][^>]*>/i.exec(item.description || item.contentEncoded || '');
+        if (imgSrcMatch && imgSrcMatch[1]) {
+            item.mediaThumbnail = [normalizeURL(imgSrcMatch[1], baseURL) || ''];
+        }
+    }
 
     return item;
 }
@@ -755,6 +913,8 @@ function stripHTML(html: string): string {
 
 // 优化的实体解码函数 - 不使用缓存
 function decodeXMLEntities(text: string): string {
+    if (!text) return '';
+    
     // CDATA处理优化
     const withoutCDATA = text.replace(CDATA_REGEX, (_, content) => content);
 
@@ -816,46 +976,133 @@ function extractAllAttributes(content: string, tag: string, attr: string): strin
 // 增强的日期解析函数
 function parseDate(dateStr?: string): Date | undefined {
     if (!dateStr) return undefined;
+    
+    // 清理输入
+    const cleanedStr = dateStr.trim();
+    if (!cleanedStr) return undefined;
 
     // ISO格式快速路径
-    const isoMatch = dateStr.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
+    const isoMatch = cleanedStr.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
     if (isoMatch) {
         const normalized = `${isoMatch[1]}T${isoMatch[2]}${isoMatch[3]?.replace(/:(?=\d{2}$)/, '') || 'Z'}`;
         const parsed = new Date(normalized);
         if (!isNaN(parsed.getTime())) return parsed;
     }
 
+    // RFC 822/RFC 2822格式 (常见于RSS)
+    const rfcMatch = cleanedStr.match(/^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+)?(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+(?:GMT|UTC)?([+-]\d{4})?$/i);
+    if (rfcMatch && rfcMatch[1] && rfcMatch[2] && rfcMatch[3] && rfcMatch[4] && rfcMatch[5] && rfcMatch[6]) {
+        const months: {[key: string]: number} = {
+            jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+        };
+        const day = rfcMatch[1];
+        const monthStr = rfcMatch[2];
+        const year = rfcMatch[3];
+        const hour = rfcMatch[4];
+        const minute = rfcMatch[5];
+        const second = rfcMatch[6];
+        const timezone = rfcMatch[7];
+        
+        const monthLower = monthStr.toLowerCase();
+        const month = months[monthLower];
+        
+        if (month !== undefined) {
+            const date = new Date(Date.UTC(
+                parseInt(year), 
+                month, 
+                parseInt(day), 
+                parseInt(hour), 
+                parseInt(minute), 
+                parseInt(second)
+            ));
+            
+            // 处理时区偏移
+            if (timezone) {
+                const offset = parseInt(timezone);
+                const hours = Math.floor(Math.abs(offset) / 100);
+                const minutes = Math.abs(offset) % 100;
+                const totalMinutes = hours * 60 + minutes;
+                
+                if (offset > 0) {
+                    date.setTime(date.getTime() - totalMinutes * 60000);
+                } else {
+                    date.setTime(date.getTime() + totalMinutes * 60000);
+                }
+            }
+            
+            if (!isNaN(date.getTime())) return date;
+        }
+    }
+
     // 处理更多日期格式
     try {
-        const cleaned = dateStr
+        const cleaned = cleanedStr
             .replace(/,/g, ' ')
             .replace(/(\d)(st|nd|rd|th)\b/gi, '$1')
             .replace(/([A-Z]{3,4})\s+([A-Z]{3})/, '$1 $2')
             .replace(/(\d{2}:\d{2}:\d{2})\s+([A-Z]+)/, '$1 GMT$2')
             // 处理中文日期格式
             .replace(/(\d{4})年(\d{1,2})月(\d{1,2})日/, '$1-$2-$3')
-            // 处理更多本地化日期格式
-            .replace(/(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})/, '$3-$1-$2');
+            // 处理公共时间格式
+            .replace(/(\d{4})\/(\d{1,2})\/(\d{1,2})/, '$1-$2-$3')
+            // 处理欧洲时间格式 DD/MM/YYYY
+            .replace(/(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})/, '$3-$2-$1')
+            // 处理美国时间格式 MM/DD/YYYY
+            .replace(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, '$3-$1-$2');
 
         const parsed = new Date(cleaned);
-        return isNaN(parsed.getTime()) ? undefined : parsed;
+        if (!isNaN(parsed.getTime())) return parsed;
+        
+        // 最后尝试使用区域设置无关的解析
+        const timestamp = Date.parse(cleanedStr);
+        if (!isNaN(timestamp)) {
+            return new Date(timestamp);
+        }
+        
+        return undefined;
     } catch {
         return undefined;
     }
 }
 
+// 创建一个带超时控制的请求
+function createRequestWithTimeout(timeoutMs = 15000): { signal: AbortSignal; cleanup: () => void } {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    return {
+        signal: controller.signal,
+        cleanup: () => clearTimeout(timeoutId)
+    };
+}
+
 // 带重试机制的Fetch
 async function fetchRSS(url: string, retries = 3): Promise<RSSFeed> {
     for (let i = 0; i < retries; i++) {
+        // 设置请求选项
+        const { signal, cleanup } = createRequestWithTimeout(15000);
+        
+        const bunOptions: BunFetchRequestInit = {
+            signal,
+            headers: {
+                // 添加常见的请求头，增加兼容性
+                'User-Agent': 'Mozilla/5.0 NatsukiNext RSS Reader',
+                'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*'
+            }
+        };
+        
         try {
-            // Bun 环境 - 使用 Bun 特有的选项
-            const bunOptions: BunFetchRequestInit = {
-                signal: AbortSignal.timeout(15000), // 增加超时时间
-            };
             const response = await fetch(url, bunOptions);
-
+            cleanup(); // 清理超时定时器
+            
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
+            }
+
+            const contentType = response.headers.get('Content-Type') || '';
+            // 检查是否是JSON格式，如果是则拒绝
+            if (contentType.includes('application/json')) {
+                throw new Error("不支持JSON格式的RSS");
             }
 
             const text = await response.text();
@@ -865,6 +1112,8 @@ async function fetchRSS(url: string, retries = 3): Promise<RSSFeed> {
 
             return parseRSS(text);
         } catch (error) {
+            cleanup(); // 确保在出错时也清理超时定时器
+            
             const errorMessage = error instanceof Error ? error.message : String(error);
             console.error(`尝试 ${i + 1}/${retries} 失败:`, errorMessage);
 
