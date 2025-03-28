@@ -1001,7 +1001,7 @@ class NewsService {
         
         // 组装最终内容
         return {
-            text: html`<b>${news.title}</b><br><br>${html(contentText)}<br><br>${html(aiComment)}${html(detailsText)}`,
+            text: html`<b>${news.title}</b><br><br>${html(cleanHTML(contentText))}<br><br>${html(cleanHTML(aiComment))}${html(detailsText)}`,
             images
         };
     }
@@ -1031,7 +1031,7 @@ class NewsService {
             if (!comment || comment === '[CANCEL]') return '';
             
             // 使用HtmlHelper一站式处理HTML
-            return cleanHTML(comment.trim());
+            return comment.trim();
         } catch (error) {
             log.error(`AI summary generation failed: ${error}`);
             return '';
@@ -1062,9 +1062,9 @@ class NewsService {
             if (!comment || comment === '[CANCEL]' || comment.length > 150) return '';
             
             // 使用HtmlHelper一站式处理HTML
-            const cleanHtml = cleanHTML(comment.trim());
+            const commentText = comment.trim();
             
-            return cleanHtml ? `🤖 ${cleanHtml}<br>` : '';
+            return commentText ? `🤖 ${commentText}<br>` : '';
         } catch (error) {
             log.error(`AI comment generation failed: ${error}`);
             return '';
