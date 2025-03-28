@@ -1064,7 +1064,7 @@ class NewsService {
             // 使用HtmlHelper一站式处理HTML
             const cleanHtml = cleanHTML(comment.trim());
             
-            return cleanHtml ? `🤖 ${cleanHtml}\n` : '';
+            return cleanHtml ? `🤖 ${cleanHtml}<br>` : '';
         } catch (error) {
             log.error(`AI comment generation failed: ${error}`);
             return '';
