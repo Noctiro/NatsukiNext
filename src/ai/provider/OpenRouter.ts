@@ -74,7 +74,7 @@ export default class OpenRouter extends BaseProvider {
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 60000);
+                const timeoutId = setTimeout(() => controller.abort(), 180000);
                 
                 const response = await fetch(`${API_CONFIG.baseURL}/chat/completions`, {
                     method: 'POST',

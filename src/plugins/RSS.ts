@@ -1001,7 +1001,7 @@ class NewsService {
         
         // 组装最终内容
         return {
-            text: html`<b>${news.title}</b><br><br>${html(contentText)}<br><br>${aiComment}${html(detailsText)}`,
+            text: html`<b>${news.title}</b><br><br>${html(contentText)}<br><br>${html(aiComment)}${html(detailsText)}`,
             images
         };
     }
