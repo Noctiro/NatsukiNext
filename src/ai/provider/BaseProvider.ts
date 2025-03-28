@@ -140,6 +140,7 @@ export default class BaseProvider {
                 // 确保value是有效的
                 if (value) {
                     buffer += decoder.decode(value, { stream: true });
+                    // log.info(`buffer: ${buffer}, value: ${value}`);
                     const events = buffer.split("\n\n");
                     buffer = events.pop() || '';
 
