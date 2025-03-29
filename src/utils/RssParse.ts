@@ -1,16 +1,19 @@
 /**
  * 高性能RSS解析器 for Bun
  * 支持 RSS 2.0、RSS 1.0、Atom、RDF 等格式
- * 优化点：类型安全、HTML清理、日期解析优化、多格式支持
+ * 优化点：类型安全、HTML清理、日期解析优化、多格式支持、CDATA处理
  */
 
 // 预编译正则表达式
 const RSS_VERSION_REGEX = /<(?:rss|rdf:RDF|feed)[^>]+(?:version=["']([^"']+)["']|xmlns=["']http:\/\/www\.w3\.org\/2005\/Atom["'])/i;
+// 频道/摘要提取 - 增强模式支持不规范的XML
 const CHANNEL_REGEX = /<(?:channel|feed)(?:\s+[^>]*)?>([\s\S]*?)<\/(?:channel|feed)>|<feed(?:\s+[^>]*)?\/>/i;
+// 条目提取 - 增强模式支持不规范的XML
 const ITEM_REGEX = /<(?:item|entry)(?:\s+[^>]*)?>([\s\S]*?)<\/(?:item|entry)>/gi;
+// HTML标签清理
 const HTML_TAG_REGEX = /<\/?[a-z][^>]*>|<!--[\s\S]*?-->/gi;
 
-// XML实体映射表 - 保留常用实体以提高性能
+// XML实体映射表 - 增强常用实体支持
 const XML_ENTITIES: Record<string, string> = {
     // 基本实体
     'amp': '&',
@@ -80,15 +83,23 @@ const INVALID_CHARS_REGEX = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF
 const NORMALIZE_SPACE_REGEX = /[\t\n\r ]+/g;
 const SMART_QUOTES_REGEX = /[\u2018\u2019\u201C\u201D]/g;
 const CONTROL_CHARS_REGEX = /[\x00-\x1F\x7F]/g;
+// 增强标签内容正则 - 更宽松处理不规范XML
 const TAG_CONTENT_REGEX = (tagName: string, isAll = false) =>
     new RegExp(isAll
         ? `<${tagName}(?:\\s+[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`
-        : `<${tagName}(?:\\s+[^>]*)?>\\s*((?:<!\\[CDATA\\[)?.*?(?:]]>)?)\\s*<\\/${tagName}>|<${tagName}(?:\\s+[^>]*)?\\/>`,
+        : `<${tagName}(?:\\s+[^>]*)?>\\s*((?:<\\!\\[CDATA\\[)?[\\s\\S]*?(?:\\]\\]>)?)\\s*<\\/${tagName}>|<${tagName}(?:\\s+[^>]*)?\\/>`,
         isAll ? "gis" : "is");
-const ATTRIBUTE_REGEX = (tag: string, attr: string) => new RegExp(`<${tag}[^>]+${attr}=["']([^"']+)["']`, "i");
-const ATTRIBUTE_REGEX_GLOBAL = (tag: string, attr: string) => new RegExp(`<${tag}[^>]+${attr}=["']([^"']+)["']`, "gi");
+// 属性提取增强 - 支持无引号和单引号属性
+const ATTRIBUTE_REGEX = (tag: string, attr: string) => 
+    new RegExp(`<${tag}[^>]+${attr}=(?:["']([^"']+)["']|([^\\s>]+))`, "i");
+const ATTRIBUTE_REGEX_GLOBAL = (tag: string, attr: string) => 
+    new RegExp(`<${tag}[^>]+${attr}=(?:["']([^"']+)["']|([^\\s>]+))`, "gi");
+// CDATA处理
 const CDATA_REGEX = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
+// XML实体处理
 const XML_ENTITY_REGEX = /&(#?(?:x[0-9a-f]+|\d+)|[a-z]+);/gi;
+// 未闭合的XML标签检测
+const UNCLOSED_TAG_REGEX = /<([a-z][a-z0-9]*)(?:\s+[^>]*)?>[^<]*$/gi;
 
 // 数据验证和清理选项接口
 interface CleanOptions {
@@ -108,13 +119,19 @@ const DEFAULT_CLEAN_OPTIONS: CleanOptions = {
     trim: true
 };
 
-// 文本清理函数 - 优化后无缓存版本
+// 文本清理函数 - 进一步优化
 function cleanText(text: string, options: Partial<CleanOptions> = {}): string {
     const opts = { ...DEFAULT_CLEAN_OPTIONS, ...options };
 
     if (!text) return '';
 
-    let cleaned = text;
+    // 确保输入是字符串类型
+    let cleaned = String(text);
+
+    // 处理CDATA标记（可能某些实现没有正确移除）
+    if (cleaned.includes('<![CDATA[')) {
+        cleaned = cleaned.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+    }
 
     // 移除控制字符
     if (opts.removeControlChars) {
@@ -141,6 +158,9 @@ function cleanText(text: string, options: Partial<CleanOptions> = {}): string {
             .replace(WHITESPACE_REGEX, ' ');
     }
 
+    // 处理XML/HTML实体
+    cleaned = decodeXMLEntities(cleaned);
+
     // 移除HTML标签
     if (opts.stripHTML) {
         cleaned = stripHTML(cleaned);
@@ -160,44 +180,70 @@ function safeExtract(content: string, tagName: string, options: Partial<CleanOpt
     return result ? cleanText(result, options) : '';
 }
 
-// URL 规范化函数 - 优化后无缓存版本
+/**
+ * URL 规范化函数 - 增强错误处理
+ * 将各种格式的URL统一标准化，并处理相对URL
+ * @param url 原始URL
+ * @param baseURL 基础URL（用于相对路径）
+ * @returns 规范化后的URL
+ */
 function normalizeURL(url: string | undefined, baseURL?: string): string {
     if (!url) return '';
 
+    // 移除URL中的控制字符
+    url = url.replace(CONTROL_CHARS_REGEX, '');
+    
+    // 移除URL中的前后空格
+    url = url.trim();
+    
+    // 处理相对路径问题
+    if (url.startsWith('//')) {
+        url = 'https:' + url;
+    }
+    
     try {
         let normalizedUrl = url;
 
         // 处理相对URL
         if (baseURL && URL_PROTOCOL_REGEX.test(url)) {
-            normalizedUrl = new URL(url, baseURL).href;
+            try {
+                normalizedUrl = new URL(url, baseURL).href;
+            } catch {
+                // 如果URL构造失败，尝试修复baseURL
+                if (!baseURL.startsWith('http')) {
+                    normalizedUrl = 'https://' + (baseURL.startsWith('//') ? baseURL.substring(2) : baseURL) + '/' + url;
+                } else {
+                    // 其他情况，尝试简单拼接
+                    normalizedUrl = baseURL + (baseURL.endsWith('/') ? '' : '/') + url;
+                }
+            }
         } else if (URL_PROTOCOL_REGEX.test(url)) {
             normalizedUrl = `https://${url}`;
         }
 
-        // 规范化URL
-        const urlObj = new URL(normalizedUrl);
+        // 尝试规范化URL
+        try {
+            const urlObj = new URL(normalizedUrl);
 
-        // 移除URL中的默认端口
-        if ((urlObj.protocol === 'http:' && urlObj.port === '80') ||
-            (urlObj.protocol === 'https:' && urlObj.port === '443')) {
-            urlObj.port = '';
+            // 移除URL中的默认端口
+            if ((urlObj.protocol === 'http:' && urlObj.port === '80') ||
+                (urlObj.protocol === 'https:' && urlObj.port === '443')) {
+                urlObj.port = '';
+            }
+
+            // 移除URL末尾的斜杠
+            if (urlObj.pathname.length > 1 && urlObj.pathname.endsWith('/')) {
+                urlObj.pathname = urlObj.pathname.slice(0, -1);
+            }
+
+            return urlObj.toString();
+        } catch {
+            // 如果URL对象创建失败，返回简单清理后的URL
+            return normalizedUrl.replace(/\s+/g, '%20');
         }
-
-        // 移除URL末尾的斜杠
-        if (urlObj.pathname.length > 1 && urlObj.pathname.endsWith('/')) {
-            urlObj.pathname = urlObj.pathname.slice(0, -1);
-        }
-
-        // 规范化查询参数顺序
-        const searchParams = new URLSearchParams();
-        [...urlObj.searchParams.entries()].sort().forEach(([key, value]) => {
-            searchParams.append(key, value);
-        });
-        urlObj.search = searchParams.toString();
-
-        return urlObj.toString();
     } catch {
-        return url; // 如果URL无效，返回原始URL
+        // 如果URL处理过程中出现任何错误，返回清理后的原始URL
+        return url.replace(/\s+/g, '%20');
     }
 }
 
@@ -294,6 +340,20 @@ interface RSSFeed {
 // 增加 RSS 格式类型定义
 type RSSFormat = 'RSS2.0' | 'RSS1.0' | 'Atom' | 'RDF' | 'JSON' | 'Unknown';
 
+// fetchRSS 函数选项接口
+interface FetchRSSOptions {
+    /** 重试次数 */
+    retries?: number;
+    /** 超时时间(毫秒) */
+    timeout?: number;
+    /** 用户代理 */
+    userAgent?: string;
+    /** 是否禁用缓存 */
+    noCache?: boolean;
+    /** 自定义HTTP请求头 */
+    headers?: Record<string, string>;
+}
+
 // 增加格式检测函数
 function detectRSSFormat(xmlContent: string): RSSFormat {
     // 排除JSON格式(即使检测到也不支持)
@@ -380,10 +440,28 @@ function parseRSS(xmlContent: string): RSSFeed {
                         items: []
                     };
                     
-                    // 尝试从内容中直接提取标题
-                    const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(normalizedContent);
-                    if (titleMatch && titleMatch[1]) {
-                        channel.title = cleanText(titleMatch[1], { maxLength: 500 });
+                    // 尝试从内容中直接提取标题 - 改进CDATA处理
+                    const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/i.exec(normalizedContent);
+                    if (titleMatch) {
+                        const cdataContent = titleMatch[1] || '';
+                        const regularContent = titleMatch[2] || '';
+                        channel.title = cleanText(cdataContent || regularContent, { maxLength: 500 });
+                    }
+                    
+                    // 尝试从内容中直接提取描述 - 改进CDATA处理
+                    const descMatch = /<description[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/description>/i.exec(normalizedContent);
+                    if (descMatch) {
+                        const cdataContent = descMatch[1] || '';
+                        const regularContent = descMatch[2] || '';
+                        channel.description = cleanText(cdataContent || regularContent, { maxLength: 2000 });
+                    }
+                    
+                    // 尝试直接提取条目
+                    const itemMatches = [...normalizedContent.matchAll(/<(?:item|entry)(?:\s+[^>]*)?>([\s\S]*?)<\/(?:item|entry)>/gi)];
+                    if (itemMatches.length > 0) {
+                        channel.items = itemMatches
+                            .map(match => parseItem(match[1] || ''))
+                            .filter(item => item.title || item.link);
                     }
                     
                     // 返回默认Feed对象
@@ -434,12 +512,35 @@ function parseRSS2(xmlContent: string, version: string): RSSFeed {
         
         // 使用放宽的匹配结果
         const channelContent = relaxedMatch[1];
+        
+        // 改进：直接提取并处理CDATA标题
+        let title = '';
+        const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/is.exec(channelContent);
+        if (titleMatch) {
+            const cdataContent = titleMatch[1] || '';
+            const regularContent = titleMatch[2] || '';
+            title = cleanText(cdataContent || regularContent, { maxLength: 500 });
+        } else {
+            title = cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }) || 'Unknown Feed';
+        }
+        
+        // 改进：直接提取并处理CDATA描述
+        let description = '';
+        const descMatch = /<description[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/description>/is.exec(channelContent);
+        if (descMatch) {
+            const cdataContent = descMatch[1] || '';
+            const regularContent = descMatch[2] || '';
+            description = cleanText(cdataContent || regularContent, { maxLength: 2000 });
+        } else {
+            description = cleanText(safeExtract(channelContent, "description"), { maxLength: 2000 });
+        }
+        
         const baseURL = safeExtract(channelContent, "link");
         
         const channel: RSSChannel = {
-            title: cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }) || 'Unknown Feed',
+            title: title,
             link: normalizeURL(baseURL) || '',
-            description: cleanText(safeExtract(channelContent, "description"), { maxLength: 2000 }),
+            description: description,
             items: []
         };
         
@@ -460,12 +561,35 @@ function parseRSS2(xmlContent: string, version: string): RSSFeed {
     }
 
     const channelContent = channelMatch[1];
+    
+    // 改进：直接提取并处理CDATA标题
+    let title = '';
+    const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/is.exec(channelContent);
+    if (titleMatch) {
+        const cdataContent = titleMatch[1] || '';
+        const regularContent = titleMatch[2] || '';
+        title = cleanText(cdataContent || regularContent, { maxLength: 500 });
+    } else {
+        title = cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }) || 'Unknown Feed';
+    }
+    
+    // 改进：直接提取并处理CDATA描述
+    let description = '';
+    const descMatch = /<description[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/description>/is.exec(channelContent);
+    if (descMatch) {
+        const cdataContent = descMatch[1] || '';
+        const regularContent = descMatch[2] || '';
+        description = cleanText(cdataContent || regularContent, { maxLength: 2000 });
+    } else {
+        description = cleanText(safeExtract(channelContent, "description"), { maxLength: 2000 });
+    }
+    
     const baseURL = safeExtract(channelContent, "link");
 
     const channel: RSSChannel = {
-        title: cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }) || 'Unknown Feed',
+        title: title,
         link: normalizeURL(baseURL) || '',
-        description: cleanText(safeExtract(channelContent, "description"), { maxLength: 2000 }),
+        description: description,
         items: []
     };
 
@@ -523,11 +647,13 @@ function parseAtom(xmlContent: string): RSSFeed {
         genericLinkMatch
     );
     
-    // 如果找不到直接的标题，尝试在整个 XML 中搜索
+    // 如果找不到直接的标题，尝试在整个 XML 中搜索（改进CDATA处理）
     if (!title) {
-        const titleMatch = /<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/i.exec(xmlContent);
-        if (titleMatch?.[1]) {
-            title = cleanText(titleMatch[1], { maxLength: 500 });
+        const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/i.exec(xmlContent);
+        if (titleMatch) {
+            const cdataContent = titleMatch[1] || '';
+            const regularContent = titleMatch[2] || '';
+            title = cleanText(cdataContent || regularContent, { maxLength: 500 });
         }
     }
     
@@ -599,17 +725,51 @@ function parseAtom(xmlContent: string): RSSFeed {
 // Atom 条目解析函数
 function parseAtomEntry(entryContent: string, baseURL?: string): RSSItem {
     const link = extractAttribute(entryContent, "link", "href");
+    
+    // 提取标题内容 - 处理CDATA
+    let title = '';
+    const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/is.exec(entryContent);
+    if (titleMatch) {
+        const cdataContent = titleMatch[1] || '';
+        const regularContent = titleMatch[2] || '';
+        title = cleanText(cdataContent || regularContent, { maxLength: 500 });
+    } else {
+        title = cleanText(safeExtract(entryContent, "title"), { maxLength: 500 });
+    }
+    
+    // 提取内容/摘要 - 处理CDATA
+    let content = '';
+    let summary = '';
+    
+    const contentMatch = /<content[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/content>/is.exec(entryContent);
+    if (contentMatch) {
+        const cdataContent = contentMatch[1] || '';
+        const regularContent = contentMatch[2] || '';
+        content = cleanText(cdataContent || regularContent, { maxLength: 50000 });
+    } else {
+        content = cleanText(safeExtract(entryContent, "content"), { maxLength: 50000 });
+    }
+    
+    const summaryMatch = /<summary[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/summary>/is.exec(entryContent);
+    if (summaryMatch) {
+        const cdataContent = summaryMatch[1] || '';
+        const regularContent = summaryMatch[2] || '';
+        summary = cleanText(cdataContent || regularContent, { maxLength: 5000 });
+    } else {
+        summary = cleanText(safeExtract(entryContent, "summary"), { maxLength: 5000 });
+    }
+    
     return {
-        title: cleanText(safeExtract(entryContent, "title"), { maxLength: 500 }),
+        title: title,
         link: normalizeURL(link) || '',  // 确保返回字符串
-        description: cleanText(safeExtract(entryContent, "summary") || safeExtract(entryContent, "content"), { maxLength: 5000 }),
+        description: summary || content,
         pubDate: parseDate(safeExtract(entryContent, "published") || safeExtract(entryContent, "updated")),
         author: cleanText(safeExtract(entryContent, "author/name") || safeExtract(entryContent, "author")),
         guid: safeExtract(entryContent, "id"),
         categories: extractAllTags(entryContent, "category").map(cat =>
             extractAttribute(cat, "category", "term") || cleanText(cat)
         ),
-        contentEncoded: cleanText(safeExtract(entryContent, "content"), { maxLength: 50000 })
+        contentEncoded: content
     };
 }
 
@@ -685,11 +845,35 @@ function parseRDF(xmlContent: string): RSSFeed {
 
 // RDF 条目解析函数
 function parseRDFItem(itemContent: string, baseURL?: string): RSSItem {
+    // 直接提取链接 - 规范化
     const link = safeExtract(itemContent, "link");
+    
+    // 提取标题内容 - 处理CDATA
+    let title = '';
+    const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/is.exec(itemContent);
+    if (titleMatch) {
+        const cdataContent = titleMatch[1] || '';
+        const regularContent = titleMatch[2] || '';
+        title = cleanText(cdataContent || regularContent, { maxLength: 500 });
+    } else {
+        title = cleanText(safeExtract(itemContent, "title"), { maxLength: 500 });
+    }
+    
+    // 提取描述内容 - 处理CDATA
+    let description = '';
+    const descMatch = /<description[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/description>/is.exec(itemContent);
+    if (descMatch) {
+        const cdataContent = descMatch[1] || '';
+        const regularContent = descMatch[2] || '';
+        description = cleanText(cdataContent || regularContent, { maxLength: 5000 });
+    } else {
+        description = cleanText(safeExtract(itemContent, "description"), { maxLength: 5000 });
+    }
+    
     return {
-        title: cleanText(safeExtract(itemContent, "title"), { maxLength: 500 }),
+        title: title,
         link: normalizeURL(link) || '',  // 确保返回字符串
-        description: cleanText(safeExtract(itemContent, "description"), { maxLength: 5000 }),
+        description: description,
         pubDate: parseDate(safeExtract(itemContent, "dc:date")),
         author: cleanText(safeExtract(itemContent, "dc:creator")),
         guid: safeExtract(itemContent, "dc:identifier") || safeExtract(itemContent, "rdf:about"),
@@ -712,18 +896,30 @@ function parseItem(itemContent: string, baseURL?: string): RSSItem {
     const linkRaw = safeExtract(itemContent, "link");
     const link = normalizeURL(linkRaw, baseURL) || '';
     
-    // 提取标题内容 - 处理CDATA
+    // 提取标题内容 - 完善CDATA处理
     let title = '';
-    const titleMatch = /<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/is.exec(itemContent);
-    if (titleMatch && titleMatch[1]) {
-        title = cleanText(titleMatch[1], { maxLength: 500 });
+    const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/is.exec(itemContent);
+    if (titleMatch) {
+        // 优先使用CDATA中的内容，如果没有则使用普通内容
+        const cdataContent = titleMatch[1] || '';
+        const regularContent = titleMatch[2] || '';
+        title = cleanText(cdataContent || regularContent, { maxLength: 500 });
+    } else {
+        // 回退到safeExtract方法
+        title = cleanText(safeExtract(itemContent, "title"), { maxLength: 500 });
     }
     
-    // 提取描述 - 处理CDATA
+    // 提取描述 - 完善CDATA处理
     let description = '';
-    const descriptionMatch = /<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/is.exec(itemContent);
-    if (descriptionMatch && descriptionMatch[1]) {
-        description = cleanText(descriptionMatch[1], { maxLength: 5000 });
+    const descriptionMatch = /<description[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/description>/is.exec(itemContent);
+    if (descriptionMatch) {
+        // 优先使用CDATA中的内容，如果没有则使用普通内容
+        const cdataContent = descriptionMatch[1] || '';
+        const regularContent = descriptionMatch[2] || '';
+        description = cleanText(cdataContent || regularContent, { maxLength: 5000 });
+    } else {
+        // 回退到safeExtract方法
+        description = cleanText(safeExtract(itemContent, "description"), { maxLength: 5000 });
     }
     
     // 创建条目并添加其他元数据
@@ -875,23 +1071,42 @@ function parseMediaContent(content: string, baseURL?: string): RSSItem['mediaCon
     }).filter(media => media.url !== '');  // 过滤掉无效URL
 }
 
-// 优化后的标签内容提取函数 - 不使用缓存
+/**
+ * 提取XML标签内容并处理CDATA
+ * @param content XML内容
+ * @param tagName 要提取的标签名
+ * @returns 提取出的标签内容
+ */
 function extractTagContent(content: string, tagName: string): string {
+    // 预处理内容，确保标签完整
+    let processedContent = content;
+    const unclosedTags = [...content.matchAll(UNCLOSED_TAG_REGEX)]
+        .filter(match => match[1]?.toLowerCase() === tagName.toLowerCase());
+    
+    // 如果检测到未闭合的标签，尝试修复
+    if (unclosedTags.length > 0) {
+        processedContent = content + `</${tagName}>`;
+    }
+    
+    // 使用预编译的正则表达式提取内容
     const regex = TAG_CONTENT_REGEX(tagName);
-    const match = content.match(regex);
+    const match = processedContent.match(regex);
     const rawContent = match?.[1]?.trim() || "";
 
     // 处理CDATA内容
-    return rawContent.replace(CDATA_REGEX, (_, content) => {
-        // 对CDATA内容进行特殊处理
-        return content
-            .replace(NORMALIZE_SPACE_REGEX, ' ') // 规范化空白字符
-            .replace(WHITESPACE_REGEX, ' ') // 处理多余空白
-            .trim();
+    return rawContent.replace(CDATA_REGEX, (matchText, cdataContent) => {
+        // 直接返回CDATA内容，保留原始内容不做处理
+        // 在cleanText函数中会进行后续处理
+        return cdataContent;
     });
 }
 
-// 优化后的 extractAllTags 函数 - 不使用缓存
+/**
+ * 提取多个标签内容
+ * @param content XML内容
+ * @param tagName 要提取的标签名
+ * @returns 标签内容数组
+ */
 function extractAllTags(content: string, tagName: string): string[] {
     const regex = TAG_CONTENT_REGEX(tagName, true);
     return [...content.matchAll(regex)]
@@ -899,11 +1114,20 @@ function extractAllTags(content: string, tagName: string): string[] {
         .filter(Boolean);
 }
 
-// 简化的HTML清理函数
+/**
+ * 清理HTML内容
+ * @param html HTML内容
+ * @returns 清理后的纯文本
+ */
 function cleanContent(html: string): string {
     return stripHTML(decodeXMLEntities(html));
 }
 
+/**
+ * 移除HTML标签
+ * @param html HTML内容
+ * @returns 移除标签后的文本
+ */
 function stripHTML(html: string): string {
     return html
         .replace(HTML_TAG_REGEX, '')
@@ -911,131 +1135,238 @@ function stripHTML(html: string): string {
         .trim();
 }
 
-// 优化的实体解码函数 - 不使用缓存
+/**
+ * 解码XML实体
+ * @param text 包含XML实体的文本
+ * @returns 解码后的文本
+ */
 function decodeXMLEntities(text: string): string {
     if (!text) return '';
     
-    // CDATA处理优化
-    const withoutCDATA = text.replace(CDATA_REGEX, (_, content) => content);
-
-    // 实体解码
-    return withoutCDATA.replace(XML_ENTITY_REGEX, (match, entity) => {
-        // 数字实体
-        if (entity[0] === '#') {
-            const code = entity[1]?.toLowerCase() === 'x'
-                ? parseInt(entity.slice(2), 16)
-                : parseInt(entity.slice(1), 10);
-
-            // 检查是否为有效的 Unicode 码点
-            if (!isNaN(code) && code >= 0 && code <= 0x10FFFF) {
+    try {
+        // CDATA处理优化 - 直接提取内容
+        const withoutCDATA = text.replace(CDATA_REGEX, (_, content) => content || '');
+        
+        // 处理未闭合的实体
+        const fixedEntities = withoutCDATA.replace(/&([a-z0-9#]+)(?=\s|&|<|$)/gi, '&$1;');
+        
+        // 增强的实体解码处理
+        return fixedEntities.replace(XML_ENTITY_REGEX, (match, entity) => {
+            // 空实体处理
+            if (!entity) return match;
+            
+            // 数字实体
+            if (entity[0] === '#') {
                 try {
-                    return String.fromCodePoint(code);
+                    const code = entity[1]?.toLowerCase() === 'x'
+                        ? parseInt(entity.slice(2), 16)
+                        : parseInt(entity.slice(1), 10);
+                    
+                    // 检查是否为有效的 Unicode 码点
+                    if (!isNaN(code) && code >= 0 && code <= 0x10FFFF) {
+                        return String.fromCodePoint(code);
+                    }
                 } catch {
-                    return match; // 如果无法转换，保留原始实体
+                    // 实体解析错误，返回原始字符串
                 }
+                return match; // 无效的数字实体，保留原始实体
             }
-            return match; // 无效的数字实体，保留原始实体
-        }
-
-        // 命名实体
-        return XML_ENTITIES[entity.toLowerCase()] || match; // 如果实体未定义，保留原始实体而不是返回空字符串
-    });
+            
+            // 命名实体
+            const entityLower = entity.toLowerCase();
+            return XML_ENTITIES[entityLower] || match; // 如果实体未定义，保留原始实体
+        });
+    } catch (error) {
+        // 如果解码过程中出现任何错误，返回原始文本
+        console.error("解码XML实体出错:", error);
+        return text;
+    }
 }
 
-// 优化后的属性提取函数
+/**
+ * 提取标签属性 - 增强版
+ * @param content XML内容
+ * @param tag 标签名
+ * @param attr 属性名
+ * @returns 属性值
+ */
 function extractAttribute(content: string, tag: string, attr: string): string | undefined {
     const regex = ATTRIBUTE_REGEX(tag, attr);
     const match = regex.exec(content);
-    if (!match?.[1]) return undefined;
+    // 支持引号和无引号属性
+    const value = match?.[1] || match?.[2];
+    if (!value) return undefined;
 
     // 如果是URL属性，进行规范化
     const urlAttributes = ['href', 'src', 'url', 'link'];
     if (urlAttributes.includes(attr.toLowerCase())) {
-        return normalizeURL(match[1]);
+        return normalizeURL(value);
     }
 
-    return match[1];
+    return value;
 }
 
-// 优化后的多属性提取函数
+/**
+ * 提取所有相同属性 
+ * @param content XML内容
+ * @param tag 标签名
+ * @param attr 属性名
+ * @returns 属性值数组
+ */
 function extractAllAttributes(content: string, tag: string, attr: string): string[] {
-    const regex = ATTRIBUTE_REGEX_GLOBAL(tag, attr);
-    return [...content.matchAll(regex)]
-        .map(match => match[1])
-        .filter((value): value is string => value !== undefined)
-        .map(value => {
-            // 如果是URL属性，进行规范化
-            const urlAttributes = ['href', 'src', 'url', 'link'];
-            if (urlAttributes.includes(attr.toLowerCase())) {
-                return normalizeURL(value);
+    const results: string[] = [];
+    
+    // 最简单和直接的方法 - 使用字符串操作
+    const tagPattern = `<${tag}`;
+    const attrPattern = `${attr}=`;
+    
+    let pos = 0;
+    while (pos < content.length) {
+        // 查找标签开始
+        const tagStart = content.indexOf(tagPattern, pos);
+        if (tagStart === -1) break;
+        
+        // 查找标签结束
+        const tagEnd = content.indexOf('>', tagStart);
+        if (tagEnd === -1) break;
+        
+        // 获取标签内容
+        const tagContent = content.substring(tagStart, tagEnd + 1);
+        
+        // 查找属性
+        const attrPos = tagContent.indexOf(attrPattern);
+        if (attrPos !== -1) {
+            // 提取属性值
+            const afterAttr = tagContent.substring(attrPos + attrPattern.length);
+            let value = '';
+            
+            if (afterAttr.startsWith('"')) {
+                // 双引号属性
+                const endQuote = afterAttr.indexOf('"', 1);
+                if (endQuote !== -1) {
+                    value = afterAttr.substring(1, endQuote);
+                }
+            } else if (afterAttr.startsWith("'")) {
+                // 单引号属性
+                const endQuote = afterAttr.indexOf("'", 1);
+                if (endQuote !== -1) {
+                    value = afterAttr.substring(1, endQuote);
+                }
+            } else {
+                // 无引号属性
+                const endSpace = afterAttr.search(/[\s>]/);
+                if (endSpace !== -1) {
+                    value = afterAttr.substring(0, endSpace);
+                }
             }
-            return value;
-        });
+            
+            // 添加到结果
+            if (value) {
+                const urlAttributes = ['href', 'src', 'url', 'link'];
+                if (urlAttributes.includes(attr.toLowerCase())) {
+                    // @ts-ignore - 忽略可能的类型错误
+                    const normalizedUrl = normalizeURL(value);
+                    if (normalizedUrl) {
+                        results.push(normalizedUrl);
+                    }
+                } else {
+                    results.push(value);
+                }
+            }
+        }
+        
+        // 移动到下一个位置
+        pos = tagEnd + 1;
+    }
+    
+    return results;
 }
 
-// 增强的日期解析函数
+// 增强的日期解析函数 - 支持更多格式
 function parseDate(dateStr?: string): Date | undefined {
     if (!dateStr) return undefined;
     
     // 清理输入
     const cleanedStr = dateStr.trim();
     if (!cleanedStr) return undefined;
-
-    // ISO格式快速路径
-    const isoMatch = cleanedStr.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
-    if (isoMatch) {
-        const normalized = `${isoMatch[1]}T${isoMatch[2]}${isoMatch[3]?.replace(/:(?=\d{2}$)/, '') || 'Z'}`;
-        const parsed = new Date(normalized);
-        if (!isNaN(parsed.getTime())) return parsed;
-    }
-
-    // RFC 822/RFC 2822格式 (常见于RSS)
-    const rfcMatch = cleanedStr.match(/^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+)?(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+(?:GMT|UTC)?([+-]\d{4})?$/i);
-    if (rfcMatch && rfcMatch[1] && rfcMatch[2] && rfcMatch[3] && rfcMatch[4] && rfcMatch[5] && rfcMatch[6]) {
-        const months: {[key: string]: number} = {
-            jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
-        };
-        const day = rfcMatch[1];
-        const monthStr = rfcMatch[2];
-        const year = rfcMatch[3];
-        const hour = rfcMatch[4];
-        const minute = rfcMatch[5];
-        const second = rfcMatch[6];
-        const timezone = rfcMatch[7];
-        
-        const monthLower = monthStr.toLowerCase();
-        const month = months[monthLower];
-        
-        if (month !== undefined) {
-            const date = new Date(Date.UTC(
-                parseInt(year), 
-                month, 
-                parseInt(day), 
-                parseInt(hour), 
-                parseInt(minute), 
-                parseInt(second)
-            ));
-            
-            // 处理时区偏移
-            if (timezone) {
-                const offset = parseInt(timezone);
-                const hours = Math.floor(Math.abs(offset) / 100);
-                const minutes = Math.abs(offset) % 100;
-                const totalMinutes = hours * 60 + minutes;
-                
-                if (offset > 0) {
-                    date.setTime(date.getTime() - totalMinutes * 60000);
-                } else {
-                    date.setTime(date.getTime() + totalMinutes * 60000);
-                }
-            }
-            
-            if (!isNaN(date.getTime())) return date;
-        }
-    }
-
-    // 处理更多日期格式
+    
     try {
+        // 1. ISO格式快速路径
+        const isoMatch = cleanedStr.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
+        if (isoMatch) {
+            const normalized = `${isoMatch[1]}T${isoMatch[2]}${isoMatch[3]?.replace(/:(?=\d{2}$)/, '') || 'Z'}`;
+            const parsed = new Date(normalized);
+            if (!isNaN(parsed.getTime())) return parsed;
+        }
+
+        // 2. RFC 822/RFC 2822格式 (常见于RSS)
+        const rfcMatch = cleanedStr.match(/^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+)?(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+(?:GMT|UTC)?([+-]\d{4})?$/i);
+        if (rfcMatch && rfcMatch[1] && rfcMatch[2] && rfcMatch[3] && rfcMatch[4] && rfcMatch[5] && rfcMatch[6]) {
+            const months: {[key: string]: number} = {
+                jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+            };
+            const day = parseInt(rfcMatch[1] || '0');
+            const monthStr = rfcMatch[2] || '';
+            const year = parseInt(rfcMatch[3] || '0');
+            const hour = parseInt(rfcMatch[4] || '0');
+            const minute = parseInt(rfcMatch[5] || '0');
+            const second = parseInt(rfcMatch[6] || '0');
+            const timezone = rfcMatch[7];
+            
+            const monthLower = monthStr.toLowerCase();
+            const month = months[monthLower];
+            
+            if (month !== undefined && !isNaN(day) && !isNaN(year) && 
+                !isNaN(hour) && !isNaN(minute) && !isNaN(second)) {
+                const date = new Date(Date.UTC(year, month, day, hour, minute, second));
+                
+                // 处理时区偏移
+                if (timezone) {
+                    const offset = parseInt(timezone);
+                    if (!isNaN(offset)) {
+                        const hours = Math.floor(Math.abs(offset) / 100);
+                        const minutes = Math.abs(offset) % 100;
+                        const totalMinutes = hours * 60 + minutes;
+                        
+                        if (offset > 0) {
+                            date.setTime(date.getTime() - totalMinutes * 60000);
+                        } else {
+                            date.setTime(date.getTime() + totalMinutes * 60000);
+                        }
+                    }
+                }
+                
+                if (!isNaN(date.getTime())) return date;
+            }
+        }
+        
+        // 3. 处理中文日期格式
+        const chineseMatch = cleanedStr.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+        if (chineseMatch && chineseMatch[1] && chineseMatch[2] && chineseMatch[3]) {
+            const year = parseInt(chineseMatch[1] || '0');
+            const month = parseInt(chineseMatch[2] || '0') - 1;
+            const day = parseInt(chineseMatch[3] || '0');
+            
+            if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
+                const date = new Date(year, month, day);
+                if (!isNaN(date.getTime())) return date;
+            }
+        }
+        
+        // 4. 处理YYYYMMDD格式
+        const compactMatch = cleanedStr.match(/^(\d{4})(\d{2})(\d{2})$/);
+        if (compactMatch && compactMatch[1] && compactMatch[2] && compactMatch[3]) {
+            const year = parseInt(compactMatch[1] || '0');
+            const month = parseInt(compactMatch[2] || '0') - 1;
+            const day = parseInt(compactMatch[3] || '0');
+            
+            if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
+                const date = new Date(year, month, day);
+                if (!isNaN(date.getTime())) return date;
+            }
+        }
+
+        // 5. 处理更多日期格式
         const cleaned = cleanedStr
             .replace(/,/g, ' ')
             .replace(/(\d)(st|nd|rd|th)\b/gi, '$1')
@@ -1050,17 +1381,20 @@ function parseDate(dateStr?: string): Date | undefined {
             // 处理美国时间格式 MM/DD/YYYY
             .replace(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, '$3-$1-$2');
 
+        // 6. 尝试直接解析
         const parsed = new Date(cleaned);
         if (!isNaN(parsed.getTime())) return parsed;
         
-        // 最后尝试使用区域设置无关的解析
+        // 7. 最后尝试使用区域设置无关的解析
         const timestamp = Date.parse(cleanedStr);
         if (!isNaN(timestamp)) {
             return new Date(timestamp);
         }
         
+        // 如果都失败，返回undefined
         return undefined;
-    } catch {
+    } catch (error) {
+        console.error("日期解析错误:", error);
         return undefined;
     }
 }
@@ -1076,82 +1410,184 @@ function createRequestWithTimeout(timeoutMs = 15000): { signal: AbortSignal; cle
     };
 }
 
-// 带重试机制的Fetch
-async function fetchRSS(url: string, retries = 3): Promise<RSSFeed> {
+// 带重试机制的Fetch - 增强错误处理和用户体验
+async function fetchRSS(url: string, options: FetchRSSOptions = {}): Promise<RSSFeed> {
+    const { 
+        retries = 3, 
+        userAgent = 'Mozilla/5.0 NatsukiNext RSS Reader'
+    } = options;
+    
+    // 使用let声明超时时间，使其可修改
+    let { timeout = 15000 } = options;
+    
+    let lastError: Error | null = null;
+    
     for (let i = 0; i < retries; i++) {
         // 设置请求选项
-        const { signal, cleanup } = createRequestWithTimeout(15000);
+        const { signal, cleanup } = createRequestWithTimeout(timeout);
         
-        const bunOptions: BunFetchRequestInit = {
-            signal,
-            headers: {
-                // 添加常见的请求头，增加兼容性
-                'User-Agent': 'Mozilla/5.0 NatsukiNext RSS Reader',
-                'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*'
-            }
+        const headers: Record<string, string> = {
+            'User-Agent': userAgent,
+            'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*'
         };
         
+        // 如果是本地文件系统URL，调整请求
+        const isFileProtocol = url.startsWith('file://');
+        
         try {
-            const response = await fetch(url, bunOptions);
+            let response: Response;
+            let responseText: string;
+            
+            if (isFileProtocol) {
+                // 如果是本地文件，尝试使用文件系统API
+                try {
+                    if (typeof Bun !== 'undefined') {
+                        // 使用Bun文件API
+                        const filePath = url.substring(7); // 移除 'file://'
+                        const file = Bun.file(filePath);
+                        responseText = await file.text();
+                    } else if (typeof globalThis !== 'undefined' && 'window' in globalThis && typeof (globalThis as any).window?.fetch === 'function') {
+                        // 浏览器环境
+                        response = await fetch(url, { signal });
+                        responseText = await response.text();
+                    } else if (typeof process !== 'undefined') {
+                        // Node.js环境
+                        const fs = await import('fs/promises');
+                        const filePath = url.substring(isFileProtocol ? 7 : 0); // 移除 'file://'
+                        responseText = await fs.readFile(filePath, 'utf-8');
+                    } else {
+                        throw new Error("无法在当前环境中读取本地文件");
+                    }
+                } catch (error) {
+                    throw new Error(`读取本地文件失败: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            } else {
+                // 网络请求
+                response = await fetch(url, {
+                    signal,
+                    headers,
+                    redirect: 'follow'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+                }
+                
+                const contentType = response.headers.get('Content-Type') || '';
+                // 检查是否是JSON格式，如果是则拒绝
+                if (contentType.includes('application/json')) {
+                    throw new Error("不支持JSON格式的RSS");
+                }
+                
+                responseText = await response.text();
+            }
+            
             cleanup(); // 清理超时定时器
             
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-
-            const contentType = response.headers.get('Content-Type') || '';
-            // 检查是否是JSON格式，如果是则拒绝
-            if (contentType.includes('application/json')) {
-                throw new Error("不支持JSON格式的RSS");
-            }
-
-            const text = await response.text();
-            if (!text || text.trim() === '') {
+            if (!responseText || responseText.trim() === '') {
                 throw new Error("Empty response body");
             }
-
-            return parseRSS(text);
+            
+            // 尝试解析RSS
+            return parseRSS(responseText);
+            
         } catch (error) {
             cleanup(); // 确保在出错时也清理超时定时器
             
-            const errorMessage = error instanceof Error ? error.message : String(error);
+            lastError = error instanceof Error ? error : new Error(String(error));
+            const errorMessage = lastError.message;
+            
             console.error(`尝试 ${i + 1}/${retries} 失败:`, errorMessage);
-
+            
             // 处理特定错误类型
-            if (errorMessage.includes('certificate') && process && process.env) {
+            if (errorMessage.includes('certificate') && typeof process !== 'undefined' && process.env) {
                 // 在 Node.js 环境下，提示用户设置环境变量
                 console.warn('遇到证书错误。如果您信任该网站，可以尝试设置 NODE_TLS_REJECT_UNAUTHORIZED=0 环境变量');
             }
-
-            if (i === retries - 1) throw error;
-            await (typeof Bun !== 'undefined' ? Bun.sleep(1000 * (i + 1)) : new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))));
+            
+            // 超时错误特殊处理
+            if (errorMessage.includes('abort') || errorMessage.includes('timeout')) {
+                console.warn(`请求超时，将在尝试 ${i + 2}/${retries} 时使用更长的超时时间`);
+                timeout = timeout * 1.5; // 下次尝试增加50%的超时时间
+            }
+            
+            if (i === retries - 1) break; // 最后一次尝试失败，跳出循环
+            
+            // 增加重试延迟时间 - 指数退避策略
+            const delayMs = 1000 * Math.pow(2, i);
+            console.log(`等待 ${delayMs / 1000} 秒后重试...`);
+            await (typeof Bun !== 'undefined' 
+                ? Bun.sleep(delayMs) 
+                : new Promise(resolve => setTimeout(resolve, delayMs)));
         }
     }
-    throw new Error("Max retries reached");
+    
+    // 所有重试都失败，抛出上次错误
+    throw lastError || new Error("获取RSS失败，达到最大重试次数");
 }
 
-// 示例用法
+/**
+ * 高性能RSS解析器的使用示例
+ */
 async function main() {
     try {
-        const feed = await fetchRSS("http://cn.nytimes.com/rss/news.xml");
+        // 基本使用
+        console.log("=== 基本使用示例 ===");
+        const feed = await fetchRSS("https://news.google.com/rss");
 
         console.log(`Feed: ${feed.channel.title}`);
         console.log(`Link: ${feed.channel.link}`);
         console.log(`Description: ${feed.channel.description.slice(0, 100)}...`);
 
+        // 显示最新条目
         feed.channel.items.slice(0, 3).forEach((item, index) => {
             console.log(`\n[${index + 1}] ${item.title}`);
             console.log(`Link: ${item.link}`);
             console.log(`Published: ${item.pubDate?.toISOString() || 'N/A'}`);
             console.log(`Description: ${item.description.slice(0, 120)}...`);
-            console.log(item)
         });
+
+        // 设置自定义选项
+        console.log("\n=== 带自定义选项的示例 ===");
+        const options: FetchRSSOptions = {
+            retries: 2,
+            timeout: 10000,
+            userAgent: "NatsukiNext RSS Reader Test"
+        };
+        
+        try {
+            const customFeed = await fetchRSS("https://www.zhihu.com/rss", options);
+            console.log(`获取到 ${customFeed.channel.items.length} 条信息`);
+            
+            // 处理专题内容
+            if (customFeed.channel.items.length > 0) {
+                const firstItem = customFeed.channel.items[0];
+                if (firstItem) {
+                    console.log(`最新信息: ${firstItem.title}`);
+                    if (firstItem.categories && firstItem.categories.length > 0) {
+                        console.log(`分类: ${firstItem.categories.join(', ')}`);
+                    }
+                    if (firstItem.enclosure?.url) {
+                        console.log(`附件: ${firstItem.enclosure.url} (${firstItem.enclosure.type || '未知类型'})`);
+                    }
+                }
+            }
+        } catch (error) {
+            console.log(`自定义请求失败: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
+        return feed;
     } catch (error) {
         console.error("Error:", error instanceof Error ? error.message : error);
+        throw error;
     }
 }
 
-// main().catch(console.error);
+// 仅在直接运行时执行示例
+if (require.main === module) {
+    main().catch(console.error);
+}
 
-export { fetchRSS, stripHTML, decodeXMLEntities };
-export type { RSSFeed, RSSChannel, RSSItem };
+// 导出接口和函数
+export { fetchRSS, stripHTML, decodeXMLEntities, parseRSS, cleanText, parseDate };
+export type { RSSFeed, RSSChannel, RSSItem, FetchRSSOptions, RSSFormat };

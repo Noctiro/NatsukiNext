@@ -278,42 +278,39 @@ const plugin: BotPlugin = {
             description: '查看系统信息',
             aliases: ['sys', '系统'],
             async handler(ctx: CommandContext) {
-                const subCommand = ctx.args[0]?.toLowerCase() || '';
+                const memoryUsage = process.memoryUsage();
+                const uptime = process.uptime();
+                const osUptime = os.uptime();
 
-                if (!subCommand) {
-                    const memoryUsage = process.memoryUsage();
-                    const uptime = process.uptime();
-                    const osUptime = os.uptime();
+                const formatBytes = (bytes: number) => {
+                    if (bytes === 0) return '0 Bytes';
+                    const k = 1024;
+                    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                    const i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+                };
 
-                    const formatBytes = (bytes: number) => {
-                        if (bytes === 0) return '0 Bytes';
-                        const k = 1024;
-                        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-                        const i = Math.floor(Math.log(bytes) / Math.log(k));
-                        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-                    };
+                const formatTime = (seconds: number) => {
+                    const days = Math.floor(seconds / 86400);
+                    seconds %= 86400;
+                    const hours = Math.floor(seconds / 3600);
+                    seconds %= 3600;
+                    const minutes = Math.floor(seconds / 60);
+                    seconds = Math.floor(seconds % 60);
 
-                    const formatTime = (seconds: number) => {
-                        const days = Math.floor(seconds / 86400);
-                        seconds %= 86400;
-                        const hours = Math.floor(seconds / 3600);
-                        seconds %= 3600;
-                        const minutes = Math.floor(seconds / 60);
-                        seconds = Math.floor(seconds % 60);
+                    if (days > 0) {
+                        return `${days}天${hours}小时${minutes}分钟`;
+                    } else if (hours > 0) {
+                        return `${hours}小时${minutes}分钟${seconds}秒`;
+                    } else {
+                        return `${minutes}分钟${seconds}秒`;
+                    }
+                };
 
-                        if (days > 0) {
-                            return `${days}天${hours}小时${minutes}分钟`;
-                        } else if (hours > 0) {
-                            return `${hours}小时${minutes}分钟${seconds}秒`;
-                        } else {
-                            return `${minutes}分钟${seconds}秒`;
-                        }
-                    };
+                const loadedPlugins = ctx.client.features.getPlugins();
+                const activePlugins = loadedPlugins.filter(p => p.status === 'active');
 
-                    const loadedPlugins = ctx.client.features.getPlugins();
-                    const activePlugins = loadedPlugins.filter(p => p.status === 'active');
-
-                    await ctx.message.replyText(md`
+                await ctx.message.replyText(md`
 🖥️ **系统信息**
 
 📊 **资源使用情况**
@@ -329,37 +326,8 @@ const plugin: BotPlugin = {
 ✅ 已启用插件: ${activePlugins.length}
 ❌ 禁用/错误插件: ${loadedPlugins.length - activePlugins.length}
 
-💡 使用 /plugins 查看插件列表
-💡 使用 /system reload 重新加载所有插件
-`);
-                    return;
-                }
-
-                switch (subCommand) {
-                    case 'reload':
-                        // 检查权限
-                        if (!ctx.hasPermission('admin')) {
-                            await ctx.message.replyText('❌ 你没有执行此命令的权限');
-                            return;
-                        }
-
-                        await ctx.message.replyText('🔄 正在重新加载插件系统...');
-
-                        const success = await ctx.client.features.reload();
-
-                        if (success) {
-                            const loadedPlugins = ctx.client.features.getPlugins();
-                            const activePlugins = loadedPlugins.filter(p => p.status === 'active');
-
-                            await ctx.message.replyText(`✅ 插件系统已重新加载。\n已加载 ${loadedPlugins.length} 个插件，其中 ${activePlugins.length} 个已启用。`);
-                        } else {
-                            await ctx.message.replyText('❌ 重新加载插件系统失败。');
-                        }
-                        break;
-
-                    default:
-                        await ctx.message.replyText(`❌ 未知子命令: ${subCommand}\n使用 /system 查看可用命令`);
-                }
+❓ 使用 /help 查看帮助信息
+💡 使用 /plugins 查看插件列表`);
             }
         },
         {
@@ -453,11 +421,11 @@ const plugin: BotPlugin = {
                     message += `${emoji.success} 您可以使用 <b>${totalCommands}</b> 个命令，分布在 <b>${sortedCategories.length}</b> 个插件中。<br><br><blockquote collapsible>`;
 
                     const categoryCount = sortedCategories.length;
-                    
+
                     // 遍历所有分类
                     sortedCategories.forEach(([name, { plugin, commands }], categoryIndex) => {
                         const isLastCategory = categoryIndex === categoryCount - 1;
-                        
+
                         // 添加插件标题和描述
                         const pluginEmoji = getPluginEmoji(name);
                         const categoryPrefix = '├──';
@@ -476,7 +444,7 @@ const plugin: BotPlugin = {
 
                         // 对命令按名称排序
                         const sortedCommands = [...commands].sort((a, b) => a.name.localeCompare(b.name));
-                        
+
                         // 添加命令和插件描述之间的间隔
                         if (sortedCommands.length > 0) {
                             message += `${pluginPrefix}<br>`;
@@ -486,7 +454,7 @@ const plugin: BotPlugin = {
                         sortedCommands.forEach((cmd, cmdIndex) => {
                             const isLastCmd = cmdIndex === sortedCommands.length - 1;
                             const cmdPrefix = pluginPrefix + (isLastCmd ? '└──' : '├──');
-                            
+
                             const aliases = cmd.aliases?.length
                                 ? ` <i>(别名: ${cmd.aliases.join(', ')})</i>`
                                 : '';
@@ -533,7 +501,7 @@ const plugin: BotPlugin = {
 
                     // 清理消息末尾的多余空行
                     message = message.replace(/(<br>\s*)+$/g, '');
-                    
+
                     message += `</blockquote>`;
                 }
 
