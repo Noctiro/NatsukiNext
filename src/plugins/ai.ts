@@ -2127,6 +2127,7 @@ const plugin: BotPlugin = {
             name: 'ai',
             description: '使用AI助手回答问题，支持联网搜索',
             aliases: ['ask', 'chat'],
+            cooldown: 6,
             handler: async (ctx: CommandContext) => {
                 await aiPluginInstance.handleAICommand(ctx);
             }

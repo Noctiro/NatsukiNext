@@ -12,6 +12,7 @@ const plugin: BotPlugin = {
         {
             name: 'hole',
             description: '树洞',
+            cooldown: 10,
             async handler(ctx: CommandContext) {
                 const text = md(await getTextFromAPI());
                 await ctx.message.replyText(text);

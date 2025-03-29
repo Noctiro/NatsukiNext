@@ -1420,6 +1420,7 @@ const plugin: BotPlugin = {
             name: 'rss',
             description: '获取最新新闻',
             aliases: ['news', 'feed', 'feeds'],
+            cooldown: 6,
             async handler(ctx: CommandContext) {
                 if (!serviceInstance) {
                     await ctx.message.replyText("RSS服务未初始化");
