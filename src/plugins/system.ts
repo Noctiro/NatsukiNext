@@ -252,7 +252,6 @@ const plugin: BotPlugin = {
         {
             name: 'start',
             description: '开始使用机器人',
-            aliases: ['开始'],
             async handler(ctx: CommandContext) {
                 const me = await ctx.client.getMe();
                 const plugins = ctx.client.features.getPlugins();
@@ -276,7 +275,7 @@ const plugin: BotPlugin = {
         {
             name: 'system',
             description: '查看系统信息',
-            aliases: ['sys', '系统'],
+            aliases: ['sys', 'status'],
             async handler(ctx: CommandContext) {
                 const memoryUsage = process.memoryUsage();
                 const uptime = process.uptime();
@@ -333,7 +332,7 @@ const plugin: BotPlugin = {
         {
             name: 'help',
             description: 'Display help information',
-            aliases: ['h', '帮助'],
+            aliases: ['h'],
             async handler(ctx: CommandContext) {
                 const plugins = ctx.client.features.getPlugins();
 

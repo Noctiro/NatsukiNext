@@ -123,8 +123,32 @@ interface CommandCooldown {
 }
 
 /**
- * 功能管理器类
- * 负责插件加载、事件分发、权限管理等核心功能
+ * 功能管理器类 (Features)
+ * 
+ * 功能管理器是机器人的核心组件，负责整个系统的插件管理、事件分发和命令处理。
+ * 主要职责包括：
+ * 
+ * 1. 插件系统管理：
+ *    - 加载、启用、禁用和重载插件
+ *    - 管理插件依赖关系
+ *    - 处理插件配置
+ * 
+ * 2. 事件处理系统：
+ *    - 注册和分发事件（消息、命令、回调查询）
+ *    - 优先级管理，支持按优先级和并行处理事件
+ *    - 超时保护，防止事件处理器阻塞
+ * 
+ * 3. 命令处理系统：
+ *    - 解析和执行命令
+ *    - 命令权限和冷却时间管理
+ *    - 命令队列，防止同一用户并发处理
+ *    - 命令处理器缓存（LRU策略）
+ * 
+ * 4. 权限管理：
+ *    - 集成权限管理器
+ *    - 权限检查
+ * 
+ * 整个系统采用分层设计，确保代码结构清晰、易于维护，并提供高性能的事件和命令处理能力。
  */
 export class Features {
     private plugins = new Map<string, BotPlugin>();
@@ -146,8 +170,10 @@ export class Features {
     private commandQueue = new Map<number, Promise<void>>();
     // 最近使用的命令缓存容量
     private readonly CACHE_MAX_SIZE = 50;
-    // 最近使用的命令
+    // 最近使用的命令列表（按使用顺序存储，最新使用的在前面）
     private recentlyUsedCommands: string[] = [];
+    // 命令执行超时时间（毫秒）
+    private readonly COMMAND_TIMEOUT = 180000; // 3分钟
 
     /**
      * 创建功能管理器实例
@@ -451,7 +477,14 @@ export class Features {
 
     /**
      * 处理事件分发
-     * @param type 事件类型
+     * 根据事件类型和优先级，将事件分发给注册的处理器
+     * 特点：
+     * 1. 按优先级顺序处理，高优先级先执行
+     * 2. 同一优先级的处理器并行执行
+     * 3. 每个处理器都有超时保护
+     * 4. 错误隔离，单个处理器错误不影响其他处理器
+     * 
+     * @param type 事件类型（'message'|'command'|'callback'）
      * @param context 事件上下文
      */
     private async handleEvent(type: string, context: EventContext) {
@@ -529,6 +562,7 @@ export class Features {
 
     /**
      * 设置基础事件处理器
+     * 注册所有基础的Telegram事件处理器，如消息、命令和回调查询等
      */
     private setupHandlers() {
         // 处理普通消息
@@ -606,7 +640,13 @@ export class Features {
     }
 
     /**
-     * 处理命令消息
+     * 命令处理流程 - 第一层：队列管理与资源控制
+     * 该方法负责:
+     * 1. 管理用户命令队列，确保同一用户的命令按顺序处理
+     * 2. 设置整体命令处理超时（3分钟）
+     * 3. 清理资源（计时器、队列）
+     * 4. 错误处理与传播
+     * 
      * @param ctx 消息上下文
      */
     private async processCommand(ctx: MessageContext) {
@@ -615,7 +655,7 @@ export class Features {
         
         // 如果无法获取用户ID，直接处理
         if (!userId) {
-            await this.executeCommand(ctx);
+            await this.executeCommandLogic(ctx);
             return;
         }
         
@@ -645,10 +685,10 @@ export class Features {
             // 设置命令处理超时
             const timeoutId = setTimeout(() => {
                 rejectFn(new Error('命令处理超时'));
-            }, 30000); // 30秒超时
+            }, this.COMMAND_TIMEOUT);
             
-            // 执行命令
-            await this.executeCommand(ctx);
+            // 执行命令逻辑
+            await this.executeCommandLogic(ctx);
             
             // 清除超时计时器
             clearTimeout(timeoutId);
@@ -669,10 +709,18 @@ export class Features {
     }
     
     /**
-     * 执行命令的实际逻辑
+     * 命令处理流程 - 第二层：命令解析与执行
+     * 该方法负责:
+     * 1. 解析命令文本和参数
+     * 2. 创建命令上下文对象
+     * 3. 查找合适的命令处理器
+     * 4. 检查权限和冷却时间
+     * 5. 调用实际的命令处理函数
+     * 6. 命令执行超时控制
+     * 
      * @param ctx 消息上下文
      */
-    private async executeCommand(ctx: MessageContext) {
+    private async executeCommandLogic(ctx: MessageContext) {
         try {
             const text = ctx.text;
             if (!text?.startsWith('/')) return;
@@ -797,7 +845,7 @@ export class Features {
                 const timeoutPromise = new Promise<void>((_, reject) => {
                     setTimeout(() => {
                         reject(new Error('命令执行超时'));
-                    }, 200000); // 200秒超时
+                    }, this.COMMAND_TIMEOUT);
                 });
                 
                 await Promise.race([
@@ -829,8 +877,11 @@ export class Features {
 
     /**
      * 查找命令处理器
-     * @param command 命令名称
-     * @returns 命令处理器数组
+     * 该方法会首先检查缓存，没有命中则遍历所有插件寻找匹配的命令
+     * 结果会被缓存以提高后续查找性能
+     * 
+     * @param command 命令名称（不含/前缀）
+     * @returns 命令处理器数组，包含插件和命令信息
      */
     private findCommandHandlers(command: string): { plugin: BotPlugin, cmd: PluginCommand }[] {
         // 检查缓存是否有效
@@ -880,18 +931,24 @@ export class Features {
 
     /**
      * 更新最近使用的命令列表（LRU缓存策略）
+     * 该方法实现了Least Recently Used（最近最少使用）缓存淘汰策略
+     * 最近使用的命令会被移到列表开头，当列表超过最大容量时，
+     * 最少使用的命令及其缓存会被移除
+     * 
      * @param command 命令名称
      */
     private updateRecentlyUsedCommands(command: string): void {
-        // 移除已存在的相同命令
+        // 移除已存在的相同命令（如果存在）
         this.recentlyUsedCommands = this.recentlyUsedCommands.filter(cmd => cmd !== command);
-        // 将命令添加到列表开头
+        
+        // 将命令添加到列表开头，表示最近使用
         this.recentlyUsedCommands.unshift(command);
         
         // 如果列表超过最大容量，删除最旧的命令及其缓存
         if (this.recentlyUsedCommands.length > this.CACHE_MAX_SIZE) {
             const oldestCommand = this.recentlyUsedCommands.pop();
             if (oldestCommand) {
+                // 同时从缓存中删除该命令的处理器
                 this.commandHandlersCache.delete(oldestCommand);
             }
         }
@@ -899,7 +956,9 @@ export class Features {
 
     /**
      * 注册插件事件处理器
-     * @param plugin 插件对象
+     * 将插件中定义的事件处理器添加到相应的事件类型集合中
+     * 
+     * @param plugin 要注册事件的插件对象
      */
     private registerPluginEvents(plugin: BotPlugin) {
         if (!plugin.events || plugin.events.length === 0) return;
@@ -917,7 +976,10 @@ export class Features {
 
     /**
      * 取消注册插件事件处理器
-     * @param plugin 插件对象
+     * 从事件类型集合中移除指定插件的所有事件处理器
+     * 通常在插件禁用或重载时调用
+     * 
+     * @param plugin 要取消注册事件的插件对象
      */
     private unregisterPluginEvents(plugin: BotPlugin) {
         if (!plugin.events || plugin.events.length === 0) return;
@@ -1645,11 +1707,13 @@ export class Features {
 
     /**
      * 检查命令冷却时间
+     * 判断用户是否可以执行指定的命令，基于冷却时间限制
+     * 同时会清理过期的冷却记录，优化内存使用
+     * 
      * @param userId 用户ID
      * @param command 命令名称
      * @param cooldownSeconds 冷却时间（秒）
-     * @returns 是否可以执行命令
-     * @private
+     * @returns 如果可以执行则返回true，否则返回false
      */
     private checkCommandCooldown(userId: number, command: string, cooldownSeconds: number): boolean {
         const now = Date.now();
@@ -1671,9 +1735,11 @@ export class Features {
 
     /**
      * 更新命令冷却时间
+     * 记录用户执行命令的时间戳，用于冷却时间检查
+     * 如果记录已存在则更新时间戳，否则添加新记录
+     * 
      * @param userId 用户ID
      * @param command 命令名称
-     * @private
      */
     private updateCommandCooldown(userId: number, command: string): void {
         const now = Date.now();
