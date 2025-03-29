@@ -49,20 +49,43 @@ const platformRules: SpecialUrlRule[] = [
     {
         name: "YouTube标准链接",
         pattern: /https?:\/\/(?:www\.)?youtube\.com\/watch\?v=([\w-]+)(?:&.*)?/,
-        description: "保留YouTube视频ID，移除跟踪参数",
+        description: "保留YouTube视频ID和时间戳，移除跟踪参数",
         needsSpecialHandling: true,
         shouldTransform: (url, match) => {
-            // 如果已经是标准格式（只有v参数），则不转换
+            // 如果已经是标准格式（只有v参数或v和t参数），则不转换
             try {
                 const parsedUrl = new URL(url);
-                return !(parsedUrl.searchParams.size === 1 && parsedUrl.searchParams.has('v'));
+                return !(
+                    (parsedUrl.searchParams.size === 1 && parsedUrl.searchParams.has('v')) ||
+                    (parsedUrl.searchParams.size === 2 && parsedUrl.searchParams.has('v') && parsedUrl.searchParams.has('t'))
+                );
             } catch (e) {
                 return true; // 解析失败时默认转换
             }
         },
         transform: (url, match) => {
             if (match && match[1]) {
-                return `https://www.youtube.com/watch?v=${match[1]}`;
+                try {
+                    const parsedUrl = new URL(url);
+                    // 提取视频ID和时间戳
+                    const videoId = match[1];
+                    const timeParam = parsedUrl.searchParams.get('t');
+
+                    // 构建新URL，保留必要参数
+                    if (timeParam) {
+                        return `https://www.youtube.com/watch?v=${videoId}&t=${timeParam}`;
+                    } else {
+                        return `https://www.youtube.com/watch?v=${videoId}`;
+                    }
+                } catch (e) {
+                    // 解析URL失败，使用基本处理
+                    // 尝试提取时间戳参数
+                    const timeMatch = url.match(/[?&]t=([^&]+)/);
+                    if (timeMatch && timeMatch[1]) {
+                        return `https://www.youtube.com/watch?v=${match[1]}&t=${timeMatch[1]}`;
+                    }
+                    return `https://www.youtube.com/watch?v=${match[1]}`;
+                }
             }
             return url;
         }
@@ -79,7 +102,7 @@ const platformRules: SpecialUrlRule[] = [
             return url;
         }
     },
-    
+
     // 哔哩哔哩 - 需要保留时间戳参数，去除其他跟踪参数
     {
         name: "哔哩哔哩视频",
@@ -90,7 +113,7 @@ const platformRules: SpecialUrlRule[] = [
             try {
                 const parsedUrl = new URL(url);
                 // 如果没有参数或只有t参数或p参数，则不需要转换
-                return !(parsedUrl.search === '' || 
+                return !(parsedUrl.search === '' ||
                     (parsedUrl.searchParams.size === 1 && (parsedUrl.searchParams.has('t') || parsedUrl.searchParams.has('p'))));
             } catch (e) {
                 return true; // 解析失败时默认转换
@@ -102,7 +125,7 @@ const platformRules: SpecialUrlRule[] = [
                     // 提取视频ID（BV号或av号）
                     const videoIdMatch = match[0].match(/\/video\/([Bb][Vv][\w-]+|[Aa][Vv]\d+)/i);
                     if (!videoIdMatch || !videoIdMatch[1]) return url;
-                    
+
                     // 标准化视频ID格式 (确保BV和av的大小写统一)
                     let videoId = videoIdMatch[1];
                     if (videoId.toLowerCase().startsWith('bv')) {
@@ -110,18 +133,18 @@ const platformRules: SpecialUrlRule[] = [
                     } else if (videoId.toLowerCase().startsWith('av')) {
                         videoId = 'av' + videoId.substring(2);
                     }
-                    
+
                     const parsedUrl = new URL(url);
-                    
+
                     // 提取需要保留的参数：时间戳t和分P参数p
                     const timeParam = parsedUrl.searchParams.get('t');
                     const partParam = parsedUrl.searchParams.get('p');
-                    
+
                     // 构建新URL，保留必要参数
                     const params = new URLSearchParams();
                     if (timeParam) params.append('t', timeParam);
                     if (partParam) params.append('p', partParam);
-                    
+
                     const paramString = params.toString();
                     if (paramString) {
                         return `https://www.bilibili.com/video/${videoId}?${paramString}`;
@@ -139,15 +162,15 @@ const platformRules: SpecialUrlRule[] = [
                         } else if (videoId.toLowerCase().startsWith('av')) {
                             videoId = 'av' + videoId.substring(2);
                         }
-                        
+
                         // 尝试提取需要保留的参数
                         const timeMatch = url.match(/[?&]t=([^&]+)/);
                         const partMatch = url.match(/[?&]p=([^&]+)/);
-                        
+
                         let paramParts = [];
                         if (timeMatch && timeMatch[1]) paramParts.push(`t=${timeMatch[1]}`);
                         if (partMatch && partMatch[1]) paramParts.push(`p=${partMatch[1]}`);
-                        
+
                         if (paramParts.length > 0) {
                             return `https://www.bilibili.com/video/${videoId}?${paramParts.join('&')}`;
                         }
@@ -159,7 +182,7 @@ const platformRules: SpecialUrlRule[] = [
             return url;
         }
     },
-    
+
     // Twitter/X - 需要适当保留参数
     {
         name: "Twitter/X",
@@ -182,31 +205,51 @@ const platformRules: SpecialUrlRule[] = [
             return url;
         }
     },
-    
-    // Instagram - 简化链接形式
+
+    // Instagram - 完整支持，包括多种内容格式
     {
-        name: "Instagram",
-        pattern: /https?:\/\/(?:www\.)?instagram\.com\/(?:p|reel)\/([\w-]+)(?:\?.*)?/,
-        description: "统一Instagram内容格式，移除跟踪参数",
+        name: "Instagram帖子",
+        pattern: /https?:\/\/(?:www\.)?instagram\.com\/p\/([\w-]+)(?:\?.*)?/,
+        description: "清理Instagram帖子链接，移除igsh等跟踪参数",
         needsSpecialHandling: true,
-        shouldTransform: (url, match) => {
-            try {
-                const parsedUrl = new URL(url);
-                // 如果已经是干净URL（没有参数）或非reel格式，则不转换
-                return parsedUrl.search !== '' || url.includes('/reel/');
-            } catch (e) {
-                return true; // 解析失败时默认转换
-            }
+        shouldTransform: (url) => {
+            // 只要有查询参数就应该转换
+            return url.includes('?');
         },
         transform: (url, match) => {
             if (match && match[1]) {
+                // 提取帖子ID，移除所有查询参数
                 return `https://www.instagram.com/p/${match[1]}`;
             }
             return url;
         }
     },
-    
-    // Facebook - 提取视频ID
+    {
+        name: "Instagram Reels",
+        pattern: /https?:\/\/(?:www\.)?instagram\.com\/reel\/([\w-]+)(?:\?.*)?/,
+        description: "统一Instagram Reels格式",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                return `https://www.instagram.com/reel/${match[1]}`;
+            }
+            return url;
+        }
+    },
+    {
+        name: "Instagram Stories",
+        pattern: /https?:\/\/(?:www\.)?instagram\.com\/stories\/([^\/]+)\/(\d+)(?:\?.*)?/,
+        description: "清理Instagram Stories链接",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1] && match[2]) {
+                return `https://www.instagram.com/stories/${match[1]}/${match[2]}`;
+            }
+            return url;
+        }
+    },
+
+    // Facebook - 提取视频ID和帖子ID
     {
         name: "Facebook视频",
         pattern: /https?:\/\/(?:www\.)?facebook\.com\/(?:watch\/\?v=|[\w.]+\/videos\/)(\d+)(?:\?.*)?/,
@@ -231,7 +274,126 @@ const platformRules: SpecialUrlRule[] = [
             return url;
         }
     },
-    
+    {
+        name: "Facebook帖子",
+        pattern: /https?:\/\/(?:www\.)?facebook\.com\/(?:[\w.]+\/posts\/|permalink\.php\?story_fbid=)(\d+)(?:&|\?)?(?:.*)?/,
+        description: "清理Facebook帖子链接",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                // 如果是permalink.php格式，需要处理特殊情况
+                if (url.includes('permalink.php')) {
+                    try {
+                        const parsedUrl = new URL(url);
+                        const id = parsedUrl.searchParams.get('id');
+                        if (id) {
+                            return `https://www.facebook.com/${id}/posts/${match[1]}`;
+                        }
+                    } catch (e) {
+                        // 解析失败，使用默认处理
+                    }
+                }
+
+                // 提取用户名或页面ID
+                const userMatch = url.match(/facebook\.com\/([\w.]+)\/posts\//);
+                if (userMatch && userMatch[1]) {
+                    return `https://www.facebook.com/${userMatch[1]}/posts/${match[1]}`;
+                }
+
+                // 如果无法提取用户名，则使用原始URL
+                return url;
+            }
+            return url;
+        }
+    },
+
+    // TikTok 支持
+    {
+        name: "TikTok",
+        pattern: /https?:\/\/(?:www\.)?tiktok\.com\/@([\w.]+)\/video\/(\d+)(?:\?.*)?/,
+        description: "清理TikTok视频链接",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1] && match[2]) {
+                return `https://www.tiktok.com/@${match[1]}/video/${match[2]}`;
+            }
+            return url;
+        }
+    },
+
+    // Reddit 支持
+    {
+        name: "Reddit",
+        pattern: /https?:\/\/(?:www\.)?reddit\.com\/r\/([^\/]+)\/comments\/([^\/]+)(?:\/[^\/]+)?(?:\/)?(?:\?.*)?/,
+        description: "清理Reddit帖子链接",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1] && match[2]) {
+                return `https://www.reddit.com/r/${match[1]}/comments/${match[2]}`;
+            }
+            return url;
+        }
+    },
+
+    // LinkedIn 支持
+    {
+        name: "LinkedIn",
+        pattern: /https?:\/\/(?:www\.)?linkedin\.com\/(?:posts|feed\/update)(?:\/|\?)(?:.*?)(?:activity:|id=)([\w-]+)(?:&.*)?/,
+        description: "清理LinkedIn帖子链接",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                return `https://www.linkedin.com/feed/update/urn:li:activity:${match[1]}`;
+            }
+            return url;
+        }
+    },
+
+    // Pinterest 支持
+    {
+        name: "Pinterest",
+        pattern: /https?:\/\/(?:www\.)?pinterest\.(?:com|[a-z]{2})\/pin\/(\d+)(?:\?.*)?/,
+        description: "清理Pinterest图钉链接",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                return `https://www.pinterest.com/pin/${match[1]}`;
+            }
+            return url;
+        }
+    },
+
+    // Spotify 支持
+    {
+        name: "Spotify",
+        pattern: /https?:\/\/open\.spotify\.com\/(track|album|playlist|artist)\/([a-zA-Z0-9]+)(?:\?.*)?/,
+        description: "清理Spotify链接",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1] && match[2]) {
+                return `https://open.spotify.com/${match[1]}/${match[2]}`;
+            }
+            return url;
+        }
+    },
+
+    // Medium 支持
+    {
+        name: "Medium",
+        pattern: /https?:\/\/(?:www\.)?medium\.com\/(?:@?[^\/]+\/)?([^\/\?]+)(?:\?.*)?/,
+        description: "清理Medium文章链接",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            try {
+                const parsedUrl = new URL(url);
+                const path = parsedUrl.pathname;
+                return `https://medium.com${path}`;
+            } catch (e) {
+                return url;
+            }
+        }
+    },
+
     // 通用短链接平台 - 这些平台不需要特殊处理，只需解析为原始URL后清理参数
     {
         name: "哔哩哔哩短链接",
@@ -330,14 +492,61 @@ const platformRules: SpecialUrlRule[] = [
         description: "解析Facebook短链接并清理参数",
         needsSpecialHandling: false,
         transform: (url) => url
+    },
+    {
+        name: "Instagram短链接",
+        pattern: /https?:\/\/instagr\.am\/[\w-]+/g,
+        description: "解析Instagram短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "TikTok短链接",
+        pattern: /https?:\/\/vm\.tiktok\.com\/[\w-]+/g,
+        description: "解析TikTok短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "Spotify短链接",
+        pattern: /https?:\/\/spoti\.fi\/[\w-]+/g,
+        description: "解析Spotify短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "LinkedIn短链接",
+        pattern: /https?:\/\/lnkd\.in\/[\w-]+/g,
+        description: "解析LinkedIn短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "Pinterest短链接",
+        pattern: /https?:\/\/pin\.it\/[\w-]+/g,
+        description: "解析Pinterest短链接并清理参数",
+        needsSpecialHandling: false,
+        transform: (url) => url
+    },
+    {
+        name: "Instagram带igsh参数",
+        pattern: /https?:\/\/(?:www\.)?instagram\.com\/p\/([\w-]+)\/?\?igsh=[^&\s]+/,
+        description: "清理Instagram带igsh跟踪参数的链接",
+        needsSpecialHandling: true,
+        transform: (url, match) => {
+            if (match && match[1]) {
+                return `https://www.instagram.com/p/${match[1]}`;
+            }
+            return url;
+        }
     }
 ];
 
 // 构建用于识别所有支持平台链接的正则表达式
 const allUrlPatternsRegex = new RegExp(
-    platformRules.map(rule => 
+    platformRules.map(rule =>
         rule.pattern.source.replace(/^\/|\/g$/g, '')
-    ).join('|'), 
+    ).join('|'),
     'g'
 );
 
@@ -362,44 +571,44 @@ function applySpecialRules(url: string): { url: string, platformName?: string } 
     // 为无协议前缀的URL添加临时前缀以便匹配规则
     const urlWithProtocol = url.includes('://') ? url : `https://${url}`;
     const hasProtocol = url.includes('://');
-    
+
     for (const rule of platformRules) {
         // 对于全局正则模式，需要重置lastIndex
         if (rule.pattern.global) {
             rule.pattern.lastIndex = 0;
         }
-        
+
         // 尝试匹配原始URL（带/不带前缀的都尝试）
         let match = url.match(rule.pattern);
-        
+
         // 如果原始URL没匹配到，并且是没有协议前缀的URL，尝试匹配带前缀的版本
         if (!match && !hasProtocol) {
             match = urlWithProtocol.match(rule.pattern);
         }
-        
+
         if (match) {
             if (rule.needsSpecialHandling) {
                 // 检查是否需要转换
                 if (rule.shouldTransform && !rule.shouldTransform(urlWithProtocol, match)) {
                     return { url, platformName: rule.name };
                 }
-                
+
                 // 应用转换
                 const transformedUrl = rule.transform(url, match);
-                
+
                 // 如果原始URL没有协议前缀，且转换后有了前缀，则根据需求决定是否移除
-                const finalUrl = !hasProtocol && transformedUrl.includes('://') ? 
+                const finalUrl = !hasProtocol && transformedUrl.includes('://') ?
                     transformedUrl.replace(/^https?:\/\//, '') : transformedUrl;
-                
-                return { 
+
+                return {
                     url: finalUrl,
-                    platformName: rule.name 
+                    platformName: rule.name
                 };
             } else {
                 // 对于不需要特殊处理的平台，记录平台名但不修改URL
-                return { 
-                    url, 
-                    platformName: rule.name 
+                return {
+                    url,
+                    platformName: rule.name
                 };
             }
         }
@@ -417,41 +626,41 @@ function shouldProcessUrl(url: string): boolean {
         if (!url || url.length < 4) {
             return false;
         }
-        
+
         // 快速检查：如果URL没有参数，不需要处理
         if (!url.includes('?')) {
             return false;
         }
-        
+
         // 确保URL有协议前缀
         const hasProtocol = url.includes('://');
         const urlWithProtocol = hasProtocol ? url : `https://${url}`;
-        
+
         try {
             const parsedUrl = new URL(urlWithProtocol);
-            
+
             // 如果URL没有参数，则不需要处理
             if (parsedUrl.search === '') {
                 return false;
             }
-            
+
             // 对于某些平台的标准格式，不需要处理
             for (const rule of platformRules) {
                 if (rule.needsSpecialHandling && rule.shouldTransform) {
                     // 尝试匹配原始URL
                     let match = url.match(rule.pattern);
-                    
+
                     // 如果原始URL没匹配到，并且是没有协议前缀的URL，尝试匹配带前缀的版本
                     if (!match && !hasProtocol) {
                         match = urlWithProtocol.match(rule.pattern);
                     }
-                    
+
                     if (match && !rule.shouldTransform(urlWithProtocol, match)) {
                         return false;
                     }
                 }
             }
-            
+
             return true;
         } catch (parseError) {
             return false; // 无法解析URL，不需要处理
@@ -472,52 +681,52 @@ function cleanUrl(url: string): { url: string, platformName?: string } {
         if (!url || url.length < 4) {
             return { url };
         }
-        
+
         // 确保URL有协议前缀
         const hasProtocol = url.includes('://');
         const urlWithProtocol = hasProtocol ? url : `https://${url}`;
-        
+
         // 简化特殊规则应用逻辑，避免cleanUrl和applySpecialRules的循环调用
         let platformName: string | undefined;
         for (const rule of platformRules) {
             if (rule.pattern.global) {
                 rule.pattern.lastIndex = 0;
             }
-            
+
             // 尝试匹配URL
             let match = url.match(rule.pattern);
             if (!match && !hasProtocol) {
                 match = urlWithProtocol.match(rule.pattern);
             }
-            
+
             if (match && rule.needsSpecialHandling) {
                 platformName = rule.name;
                 // 不在这里应用转换，只记录平台名称
                 break;
             }
         }
-        
+
         // 快速检查：如果URL没有参数，直接返回
         if (!urlWithProtocol.includes('?')) {
             return { url, platformName };
         }
-        
+
         try {
             const parsedUrl = new URL(urlWithProtocol);
-            
+
             // 如果URL没有参数，则不需要处理
             if (parsedUrl.search === '') {
                 return { url, platformName };
             }
-            
+
             // 生成干净的URL
             let cleanedUrl = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
-            
+
             // 如果原始URL没有协议前缀，还原为无前缀形式
             if (!hasProtocol) {
                 cleanedUrl = cleanedUrl.replace(/^https?:\/\//, '');
             }
-            
+
             return { url: cleanedUrl, platformName };
         } catch (parseError) {
             log.warn(`解析URL失败: ${url}, 错误: ${parseError}`);
@@ -540,21 +749,21 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
         // 确保URL有协议前缀用于网络请求
         const hasProtocol = shortUrl.includes('://');
         const urlWithProtocol = hasProtocol ? shortUrl : `https://${shortUrl}`;
-        
+
         // 优先匹配特殊平台规则
         for (const rule of platformRules) {
             if (rule.pattern.global) {
                 rule.pattern.lastIndex = 0;
             }
-            
+
             // 尝试匹配原始URL
             let match = shortUrl.match(rule.pattern);
-            
+
             // 如果原始URL没匹配到，并且是没有协议前缀的URL，尝试匹配带前缀的版本
             if (!match && !hasProtocol) {
                 match = urlWithProtocol.match(rule.pattern);
             }
-            
+
             // 对于YouTube短链接的特殊处理
             if (match && rule.name === "YouTube短链接") {
                 if (match[1]) {
@@ -563,24 +772,24 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                     return { url: transformedUrl, platformName: rule.name };
                 }
             }
-            
+
             if (match && rule.needsSpecialHandling) {
                 // 如果有shouldTransform函数，检查是否需要转换
                 if (rule.shouldTransform && !rule.shouldTransform(urlWithProtocol, match)) {
                     return { url: shortUrl, platformName: rule.name };
                 }
-                
+
                 // 应用转换
                 const transformedUrl = rule.transform(shortUrl, match);
                 if (transformedUrl !== shortUrl) {
                     // 如果原始URL没有协议前缀，且转换后有了前缀，则根据需求决定是否移除
-                    const finalUrl = !hasProtocol && transformedUrl.includes('://') ? 
+                    const finalUrl = !hasProtocol && transformedUrl.includes('://') ?
                         transformedUrl.replace(/^https?:\/\//, '') : transformedUrl;
-                    
+
                     return { url: finalUrl, platformName: rule.name };
                 }
             }
-            
+
             // 特殊处理通用短链接平台
             if (match && !rule.needsSpecialHandling) {
                 // 这是一个短链接平台，需要进行网络请求解析
@@ -602,16 +811,16 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                     });
 
                     clearTimeout(timeoutId);
-                    
+
                     // 获取最终URL
                     let finalUrl = response.url || urlWithProtocol;
-                    
+
                     // 如果最终URL与原始URL相同或为空，尝试GET请求
                     if (finalUrl === urlWithProtocol || !finalUrl) {
                         // 尝试GET请求作为备选方案
                         const getController = new AbortController();
                         const getTimeoutId = setTimeout(() => getController.abort(), 5000);
-                        
+
                         const getResponse = await fetch(urlWithProtocol, {
                             method: 'GET',
                             headers: {
@@ -623,25 +832,25 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                             redirect: 'follow',
                             signal: getController.signal
                         });
-                        
+
                         clearTimeout(getTimeoutId);
                         finalUrl = getResponse.url || urlWithProtocol;
                     }
-                    
+
                     // 确保finalUrl不为空并且不同于原始URL
                     if (finalUrl && finalUrl !== urlWithProtocol) {
                         // 清理URL参数
                         try {
                             const parsedUrl = new URL(finalUrl);
-                            
+
                             // 生成干净的URL
                             let cleanedUrl = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
-                            
+
                             // 如果原始URL没有协议前缀，还原为无前缀形式
                             if (!hasProtocol) {
                                 cleanedUrl = cleanedUrl.replace(/^https?:\/\//, '');
                             }
-                            
+
                             return { url: cleanedUrl, platformName: rule.name };
                         } catch (parseError) {
                             log.error(`解析最终URL失败: ${finalUrl}, 错误: ${parseError}`);
@@ -654,21 +863,21 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                 }
             }
         }
-        
+
         // 如果不是已知的短链接平台，尝试一般的链接处理
-        
+
         // 检查URL是否需要清理参数
         const needsCleaning = shouldProcessUrl(shortUrl);
         if (!needsCleaning) {
             return { url: shortUrl };
         }
-        
+
         // 清理URL参数
         const { url: cleanedUrl, platformName } = cleanUrl(shortUrl);
         if (cleanedUrl !== shortUrl) {
             return { url: cleanedUrl, platformName };
         }
-        
+
         // 如果上述处理都没有效果，尝试使用网络请求解析
         try {
             const controller = new AbortController();
@@ -691,24 +900,24 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
 
             // 获取最终URL
             let finalUrl = response.url || urlWithProtocol;
-            
+
             // 如果最终URL与原始URL相同，无需进一步处理
             if (finalUrl === urlWithProtocol) {
                 return { url: shortUrl };
             }
-            
+
             // 清理URL参数
             try {
                 const parsedUrl = new URL(finalUrl);
-                
+
                 // 生成干净的URL
                 let cleanedUrl = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
-                
+
                 // 如果原始URL没有协议前缀，还原为无前缀形式
                 if (!hasProtocol) {
                     cleanedUrl = cleanedUrl.replace(/^https?:\/\//, '');
                 }
-                
+
                 return { url: cleanedUrl };
             } catch (parseError) {
                 log.error(`解析最终URL失败: ${finalUrl}, 错误: ${parseError}`);
@@ -720,12 +929,12 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
             } else {
                 log.error(`解析URL失败 ${urlWithProtocol}: ${error}`);
             }
-            
+
             // 尝试GET请求作为备选方案
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 5000);
-                
+
                 const response = await fetch(urlWithProtocol, {
                     method: 'GET',
                     headers: {
@@ -737,22 +946,22 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                     redirect: 'follow',
                     signal: controller.signal
                 });
-                
+
                 clearTimeout(timeoutId);
                 let finalUrl = response.url || urlWithProtocol;
-                
+
                 // 清理URL参数
                 try {
                     const parsedUrl = new URL(finalUrl);
-                    
+
                     // 生成干净的URL
                     let cleanedUrl = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
-                    
+
                     // 如果原始URL没有协议前缀，还原为无前缀形式
                     if (!hasProtocol) {
                         cleanedUrl = cleanedUrl.replace(/^https?:\/\//, '');
                     }
-                    
+
                     return { url: cleanedUrl };
                 } catch (parseError) {
                     log.error(`解析GET请求URL失败: ${finalUrl}, 错误: ${parseError}`);
@@ -780,7 +989,7 @@ async function processLinksInMessage(messageText: string): Promise<{
     processedCount: number
 }> {
     let processedCount = 0;
-    
+
     // 存储链接信息的数据结构
     interface LinkInfo {
         original: string;      // 原始链接
@@ -800,18 +1009,31 @@ async function processLinksInMessage(messageText: string): Promise<{
     while ((atSignMatch = atSignLinkPattern.exec(messageText)) !== null) {
         if (atSignMatch && atSignMatch[1]) {
             const fullWithAt = atSignMatch[0]; // 完整匹配，包括@符号
-            
+
             // 清理末尾的标点符号和非URL字符
             const endPunctuationPattern = /[,.;!?，。；！？、\]）)>】》]$/;
             let actualLink = atSignMatch[1]; // 不包括@符号的URL部分
             let originalWithAt = fullWithAt;
-            
+
             // 检查并清理URL末尾的标点符号
             while (endPunctuationPattern.test(actualLink)) {
                 actualLink = actualLink.slice(0, -1);
                 originalWithAt = '@' + actualLink;
             }
-            
+
+            // 特殊处理：对于@前缀Instagram链接，特殊处理
+            const instagramMatch = actualLink.match(/https?:\/\/(?:www\.)?instagram\.com\/p\/([\w-]+)(?:\?.*)?/);
+            if (instagramMatch && instagramMatch[1]) {
+                // 提取Instagram帖子ID
+                const postId = instagramMatch[1];
+
+                // 如果URL包含查询参数，需要清理
+                if (actualLink.includes('?')) {
+                    actualLink = `https://www.instagram.com/p/${postId}`;
+                    originalWithAt = '@' + actualLink;
+                }
+            }
+
             foundLinks.push({
                 original: actualLink,
                 originalWithAt,
@@ -830,19 +1052,19 @@ async function processLinksInMessage(messageText: string): Promise<{
         // 清理末尾的标点符号和非URL字符
         const endPunctuationPattern = /[,.;!?，。；！？、\]）)>】》]$/;
         let link = fullMatch;
-        
+
         // 检查并清理URL末尾的标点符号
         while (endPunctuationPattern.test(link)) {
             link = link.slice(0, -1);
         }
-        
+
         const start = urlMatch.index;
         const end = start + link.length;
-        
+
         // 检查这个链接是否已经被包含在某个@前缀链接中
-        const isPartOfAtLink = foundLinks.some(info => 
+        const isPartOfAtLink = foundLinks.some(info =>
             info.originalWithAt && start >= info.start && end <= info.end);
-        
+
         if (!isPartOfAtLink) {
             foundLinks.push({
                 original: link,
@@ -861,11 +1083,11 @@ async function processLinksInMessage(messageText: string): Promise<{
             const link = noProtocolMatch[1]; // 获取匹配组1，即域名部分
             const start = noProtocolMatch.index;
             const end = start + link.length;
-            
+
             // 检查这个链接是否已经被包含在其他链接中
-            const isPartOfOtherLink = foundLinks.some(info => 
+            const isPartOfOtherLink = foundLinks.some(info =>
                 start >= info.start && end <= info.end);
-            
+
             if (!isPartOfOtherLink) {
                 foundLinks.push({
                     original: link,
@@ -881,10 +1103,10 @@ async function processLinksInMessage(messageText: string): Promise<{
     for (let i = 0; i < foundLinks.length; i++) {
         const link = foundLinks[i];
         if (link && link.original) {
-            debugLog(`链接 ${i+1}: ${link.original} (${link.start}-${link.end})`);
+            debugLog(`链接 ${i + 1}: ${link.original} (${link.start}-${link.end})`);
         }
     }
-    
+
     // 如果没有找到任何链接，直接返回原始文本
     if (foundLinks.length === 0) {
         return { text: messageText, foundLinks: false, processedCount };
@@ -896,22 +1118,22 @@ async function processLinksInMessage(messageText: string): Promise<{
             try {
                 // 获取实际要处理的链接
                 const link = linkInfo.original;
-                
+
                 // 跳过空链接
                 if (!link) {
                     return linkInfo;
                 }
-                
+
                 // 对于带@前缀的链接，记录原始格式
                 if (linkInfo.originalWithAt) {
                     linkInfo.resolved = link;
                 }
-                
+
                 // 优先处理特殊规则
                 try {
                     // 针对特殊平台进行处理，主要是清理参数或转换格式
                     const { url: processedUrl, platformName } = await resolveUrl(link);
-                    
+
                     // 如果处理后的链接与原始链接不同，标记为已处理
                     if (processedUrl !== link) {
                         processedCount++;
@@ -928,7 +1150,7 @@ async function processLinksInMessage(messageText: string): Promise<{
                         linkInfo.resolved = link;
                     }
                 }
-                
+
                 return linkInfo;
             } catch (error) {
                 log.error(`处理链接流程错误: ${linkInfo.original}, 错误: ${error}`);
@@ -969,10 +1191,10 @@ async function processLinksInMessage(messageText: string): Promise<{
             if (linkInfo.end < lastEnd) {
                 parts.unshift(result.substring(linkInfo.end, lastEnd));
             }
-            
+
             // 添加处理后的链接
             parts.unshift(linkInfo.resolved);
-            
+
             // 更新lastEnd为当前链接的开始位置
             lastEnd = linkInfo.start;
         }
@@ -988,9 +1210,9 @@ async function processLinksInMessage(messageText: string): Promise<{
 
     // 在结果返回前添加日志
     debugLog(`处理完成, 共处理了 ${processedCount} 个链接`);
-    
-    return { 
-        text: result.trim(), 
+
+    return {
+        text: result.trim(),
         foundLinks: true,
         processedCount
     };
@@ -1037,63 +1259,63 @@ const plugin: BotPlugin = {
             async handler(ctx: CommandContext): Promise<void> {
                 // 获取需要特殊处理的平台数量
                 const specialPlatforms = platformRules.filter(rule => rule.needsSpecialHandling);
-                
+
                 // 处理调试模式切换
                 if (ctx.args.length > 0 && (ctx.args[0] === 'debug' || ctx.args[0] === '调试')) {
                     config.debug = !config.debug;
                     await ctx.message.replyText(`调试模式已${config.debug ? '开启' : '关闭'}`);
                     return;
                 }
-                
+
                 // 检查是否有参数，如果有则测试链接处理
                 if (ctx.args.length > 0) {
                     const testUrl = ctx.args.join(' ');
                     await ctx.message.replyText(`开始测试处理链接：${testUrl}`);
-                    
+
                     // 启用调试以获取详细输出
                     const originalDebugState = config.debug;
                     config.debug = true;
                     debugLog(`测试处理链接: ${testUrl}`);
-                    
+
                     try {
                         // 测试URL正则匹配
                         const hasProtocol = testUrl.includes('://');
                         const urlWithProtocol = hasProtocol ? testUrl : `https://${testUrl}`;
-                        
+
                         // 测试链接识别
                         let identified = false;
                         for (const rule of platformRules) {
                             if (rule.pattern.global) {
                                 rule.pattern.lastIndex = 0;
                             }
-                            
+
                             let match = testUrl.match(rule.pattern);
                             if (!match && !hasProtocol) {
                                 match = urlWithProtocol.match(rule.pattern);
                             }
-                            
+
                             if (match) {
                                 identified = true;
                                 await ctx.message.replyText(`链接匹配规则: ${rule.name}\n匹配结果: ${JSON.stringify(match)}`);
                                 break;
                             }
                         }
-                        
+
                         if (!identified) {
                             await ctx.message.replyText(`链接未匹配任何已知平台规则，将使用通用处理`);
                         }
-                        
+
                         // 测试链接解析结果
                         const { url: processedUrl, platformName } = await resolveUrl(testUrl);
-                        
+
                         // 显示处理结果
                         let result = `原始链接: ${testUrl}\n处理结果: ${processedUrl}`;
                         if (platformName) {
                             result += `\n识别平台: ${platformName}`;
                         }
-                        
+
                         result += `\n链接实际变化: ${processedUrl !== testUrl ? '✅ 已修改' : '❌ 无变化'}`;
-                        
+
                         await ctx.message.replyText(result);
                     } catch (error) {
                         log.error(`测试链接处理失败: ${error}`);
@@ -1102,10 +1324,10 @@ const plugin: BotPlugin = {
                         // 恢复调试状态
                         config.debug = originalDebugState;
                     }
-                    
+
                     return;
                 }
-                
+
                 await ctx.message.replyText(html`
                     🔒 <b>隐私保护插件状态</b><br>
 <br>
@@ -1142,19 +1364,19 @@ const plugin: BotPlugin = {
             async handler(ctx: MessageEventContext): Promise<void> {
                 const messageText = ctx.message.text;
                 if (!messageText) return;
-                
+
                 // 快速检查：消息是否为空或太短
                 if (messageText.length < 5) {
                     return;
                 }
-                
+
                 // 快速检查：消息中是否包含可能的URL特征
                 // 检查常见URL特征：点号(.)、协议前缀(://)、常见域名标识(www)等
-                const containsUrlIndicators = messageText.includes('.') || 
-                                             messageText.includes('://') || 
-                                             messageText.includes('www.') ||
-                                             messageText.includes('@http');
-                                             
+                const containsUrlIndicators = messageText.includes('.') ||
+                    messageText.includes('://') ||
+                    messageText.includes('www.') ||
+                    messageText.includes('@http');
+
                 if (!containsUrlIndicators) {
                     return;
                 }
@@ -1162,19 +1384,19 @@ const plugin: BotPlugin = {
                 try {
                     // 处理消息中的所有链接
                     const startTime = Date.now();
-                    
-                    const { text: processedText, foundLinks, processedCount } = 
+
+                    const { text: processedText, foundLinks, processedCount } =
                         await processLinksInMessage(messageText);
-                        
+
                     const processingTime = Date.now() - startTime;
                     debugLog(`处理耗时: ${processingTime}ms, 是否找到链接: ${foundLinks}, 处理数量: ${processedCount}`);
-                        
+
                     // 如果找到并解析了链接，且有实际修改，则删除原消息并发送新消息
                     if (foundLinks && processedText !== messageText && processedCount > 0) {
-                        
+
                         // 格式化新消息
                         const senderName = ctx.message.sender.displayName || '用户';
-                            
+
                         const content = `${senderName} 分享内容（隐私保护，已移除跟踪参数）:\n${processedText}`;
 
                         // 发送新消息（如果存在回复消息则保持回复关系）
