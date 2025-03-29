@@ -1,6 +1,15 @@
 import type { BotPlugin, CommandContext } from "../features";
 import { log } from "../log";
 import { enableChats } from "../app";
+import WebSocket from 'ws';
+
+// 确保WebSocket常量可用
+const WebSocketStates = {
+    CONNECTING: 0,
+    OPEN: 1,
+    CLOSING: 2,
+    CLOSED: 3
+};
 
 // 区域时区映射
 const TIMEZONE_MAPPING = {
@@ -136,10 +145,19 @@ class EarthquakeService {
     private socket: WebSocket | null = null;
     private reconnectAttempts = 0;
     private webSocketPing: number = 0;
+    
+    // 事件监听器引用，用于清理
+    private listeners = {
+        open: null as ((event: any) => void) | null,
+        message: null as ((event: any) => void) | null,
+        close: null as ((event: any) => void) | null,
+        error: null as ((event: any) => void) | null
+    };
 
     // HTTP轮询
     private httpInterval: ReturnType<typeof setInterval> | null = null;
     private lastDataTimestamp: number = 0;
+    private httpController: AbortController | null = null;
 
     // 数据标识符(用于避免重复通知)
     private jmaOriginalText?: string;
@@ -185,12 +203,25 @@ class EarthquakeService {
      */
     private async fetchData() {
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), CONFIG.httpTimeout);
+            // 取消之前的请求（如果有）
+            if (this.httpController) {
+                this.httpController.abort();
+            }
+            
+            this.httpController = new AbortController();
+            const timeoutId = setTimeout(() => {
+                if (this.httpController) {
+                    this.httpController.abort();
+                }
+            }, CONFIG.httpTimeout);
 
             const startTime = Date.now();
             const response = await fetch(CONFIG.httpApi, {
-                signal: controller.signal
+                signal: this.httpController.signal,
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
             });
             const requestTime = Date.now() - startTime;
 
@@ -204,7 +235,13 @@ class EarthquakeService {
             log.debug(`HTTP数据获取成功，耗时: ${requestTime}ms`);
 
             // 获取新数据并处理
-            const responseData = await response.json() as EarthquakeData;
+            const responseData = await response.json();
+            
+            // 检查数据有效性
+            if (!responseData || typeof responseData !== 'object') {
+                throw new Error('收到的数据格式无效');
+            }
+            
             this.data = responseData;
 
             // 处理各种地震数据
@@ -215,7 +252,12 @@ class EarthquakeService {
             this.processCwaEew();
             this.processCencEqlist();
         } catch (error) {
-            log.error(`HTTP请求失败: ${error}`);
+            // 仅在非中止错误时记录
+            if (!(error instanceof DOMException && error.name === 'AbortError')) {
+                log.error(`HTTP请求失败: ${error}`);
+            }
+        } finally {
+            this.httpController = null;
         }
     }
 
@@ -224,8 +266,8 @@ class EarthquakeService {
      */
     private connectWebSocket() {
         // 检查现有连接
-        if (this.socket && (this.socket.readyState === WebSocket.OPEN ||
-            this.socket.readyState === WebSocket.CONNECTING)) {
+        if (this.socket && (this.socket.readyState === WebSocketStates.OPEN ||
+            this.socket.readyState === WebSocketStates.CONNECTING)) {
             return;
         }
 
@@ -238,13 +280,17 @@ class EarthquakeService {
         }
 
         try {
+            // 清理之前的WebSocket连接
+            this.closeAllWebSockets();
+            
             log.info(`尝试建立WebSocket连接(第${this.reconnectAttempts + 1}次)`);
             this.socket = new WebSocket(CONFIG.wsApi);
 
             // 更新重连计数
             this.reconnectAttempts++;
 
-            this.socket.addEventListener('open', () => {
+            // 定义事件处理器并保存引用，以便后续清理
+            this.listeners.open = () => {
                 log.info(`WebSocket连接已建立`);
                 this.mode = 'WebSocket';
                 this.reconnectAttempts = 0;
@@ -252,14 +298,21 @@ class EarthquakeService {
 
                 // 停止HTTP轮询
                 this.stopHttpPolling();
-            });
+            };
 
-            this.socket.addEventListener('message', (event) => {
+            this.listeners.message = (event: any) => {
                 try {
-                    const message = JSON.parse(event.data);
+                    // 安全地解析消息数据
+                    const rawData = event.data;
+                    if (!rawData) {
+                        log.warn('收到空WebSocket消息');
+                        return;
+                    }
+                    
+                    const message = JSON.parse(typeof rawData === 'string' ? rawData : rawData.toString());
 
                     // 处理心跳和延迟测量
-                    if ('type' in message && (message.type === 'heartbeat' || message.type === 'pong')) {
+                    if (message && 'type' in message && (message.type === 'heartbeat' || message.type === 'pong')) {
                         const now = Date.now();
                         this.webSocketPing = now - message.timestamp;
 
@@ -269,8 +322,15 @@ class EarthquakeService {
                         return;
                     }
 
+                    // 验证数据结构
+                    if (!message || typeof message !== 'object') {
+                        log.warn('收到的WebSocket消息格式无效');
+                        return;
+                    }
+
                     // 更新数据缓存
-                    this.data = message as EarthquakeData;
+                    this.data = message;
+                    this.lastDataTimestamp = Date.now();
 
                     // 处理各种地震数据
                     this.processJmaEew();
@@ -282,11 +342,12 @@ class EarthquakeService {
                 } catch (error) {
                     log.error(`WebSocket消息处理错误: ${error}`);
                 }
-            });
+            };
 
-            this.socket.addEventListener('close', (event) => {
-                const reason = event.reason ? `: ${event.reason}` : '';
-                log.info(`WebSocket连接已关闭，代码: ${event.code}${reason}`);
+            this.listeners.close = (event: any) => {
+                const reason = event?.reason ? `: ${event.reason}` : '';
+                const code = event?.code || 'unknown';
+                log.info(`WebSocket连接已关闭，代码: ${code}${reason}`);
 
                 // 启动HTTP轮询作为备份
                 this.startHttpPolling();
@@ -295,19 +356,41 @@ class EarthquakeService {
                 if (this.forceMode !== 'HTTP') {
                     setTimeout(() => this.connectWebSocket(), CONFIG.reconnectDelay);
                 }
-            });
+            };
 
-            this.socket.addEventListener('error', (error) => {
+            this.listeners.error = (error: any) => {
                 log.error(`WebSocket连接错误: ${error}`);
 
                 // 启动HTTP轮询作为备份
                 this.startHttpPolling();
+                
+                // 关闭错误的连接
+                this.closeAllWebSockets();
 
                 // 只有在非强制HTTP模式下才尝试重连
                 if (this.forceMode !== 'HTTP') {
                     setTimeout(() => this.connectWebSocket(), CONFIG.reconnectDelay);
                 }
-            });
+            };
+
+            // 绑定事件监听器
+            if (this.listeners.open) this.socket.addEventListener('open', this.listeners.open);
+            if (this.listeners.message) this.socket.addEventListener('message', this.listeners.message);
+            if (this.listeners.close) this.socket.addEventListener('close', this.listeners.close);
+            if (this.listeners.error) this.socket.addEventListener('error', this.listeners.error);
+            
+            // 设置连接超时
+            setTimeout(() => {
+                if (this.socket && this.socket.readyState === WebSocketStates.CONNECTING) {
+                    log.warn('WebSocket连接超时');
+                    this.closeAllWebSockets();
+                    
+                    if (this.forceMode !== 'HTTP') {
+                        setTimeout(() => this.connectWebSocket(), CONFIG.reconnectDelay);
+                    }
+                }
+            }, CONFIG.httpTimeout); // 使用相同的超时时间
+            
         } catch (error) {
             log.error(`创建WebSocket连接失败: ${error}`);
 
@@ -347,12 +430,29 @@ class EarthquakeService {
             clearInterval(this.httpInterval);
             this.httpInterval = null;
         }
+        
+        // 取消正在进行的请求
+        if (this.httpController) {
+            this.httpController.abort();
+            this.httpController = null;
+        }
     }
 
     /**
      * 向所有启用的聊天发送地震信息
      */
     private async sendEarthquakeInfo(text: string, lat: number, lon: number) {
+        if (!enableChats || enableChats.length === 0) {
+            log.warn('没有启用接收地震信息的聊天');
+            return;
+        }
+        
+        // 确保坐标有效
+        if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+            log.error(`无效的地理坐标: 纬度=${lat}, 经度=${lon}`);
+            return;
+        }
+
         for (const chatId of enableChats) {
             try {
                 // 发送位置和消息
@@ -368,20 +468,30 @@ class EarthquakeService {
 
                 // 清理旧消息
                 if (lastSendMsgs.length > 0) {
+                    const deletePromises: Promise<any>[] = [];
+                    
                     for (let i = lastSendMsgs.length - 1; i >= 0; i--) {
                         try {
                             const msg = await lastSendMsgs[i];
-                            await this.deleteMessage(chatId, msg.id);
+                            if (msg && msg.id) {
+                                deletePromises.push(this.deleteMessage(chatId, msg.id));
+                            }
                             lastSendMsgs.splice(i, 1);
                         } catch (error) {
                             log.error(`删除消息失败: ${error}`);
                             lastSendMsgs.splice(i, 1);
                         }
                     }
+                    
+                    // 并行处理所有删除请求
+                    await Promise.allSettled(deletePromises);
                 }
 
-                // 添加新消息到列表
+                // 添加新消息到列表，限制保存的消息数量，防止内存泄漏
                 lastSendMsgs.push(locMsg);
+                if (lastSendMsgs.length > 10) {
+                    lastSendMsgs.shift(); // 删除最旧的消息
+                }
             } catch (error) {
                 log.error(`向聊天 ${chatId} 发送地震信息失败: ${error}`);
             }
@@ -760,6 +870,9 @@ ${originTime} 发生
 
         // 关闭WebSocket连接
         this.closeAllWebSockets();
+        
+        // 清理消息映射
+        this.lastSendMsgsMap.clear();
 
         log.info("Wolfx防灾预警服务已停止");
     }
@@ -817,12 +930,34 @@ ${originTime} 发生
      * 关闭WebSocket连接
      */
     private closeAllWebSockets() {
-        if (this.socket && (this.socket.readyState === WebSocket.OPEN ||
-            this.socket.readyState === WebSocket.CONNECTING)) {
-            this.socket.close();
-            log.info(`关闭WebSocket连接`);
+        if (this.socket) {
+            // 移除所有事件监听器
+            if (this.listeners.open) this.socket.removeEventListener('open', this.listeners.open);
+            if (this.listeners.message) this.socket.removeEventListener('message', this.listeners.message);
+            if (this.listeners.close) this.socket.removeEventListener('close', this.listeners.close);
+            if (this.listeners.error) this.socket.removeEventListener('error', this.listeners.error);
+            
+            // 关闭连接
+            if (this.socket.readyState === WebSocketStates.OPEN ||
+                this.socket.readyState === WebSocketStates.CONNECTING) {
+                try {
+                    this.socket.close();
+                    log.info(`关闭WebSocket连接`);
+                } catch (error) {
+                    log.error(`关闭WebSocket连接出错: ${error}`);
+                }
+            }
+            
+            this.socket = null;
         }
-        this.socket = null;
+        
+        // 重置所有监听器
+        this.listeners = {
+            open: null,
+            message: null,
+            close: null,
+            error: null
+        };
     }
 }
 
