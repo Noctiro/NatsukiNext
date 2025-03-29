@@ -5,7 +5,7 @@ import { generateRandomUserAgent } from "../utils/UserAgent";
 
 // 插件配置
 const config = {
-    debug: false,  // 默认不启用调试模式
+    debug: false,  // 默认禁用调试模式
 };
 
 // 调试日志函数
@@ -537,13 +537,9 @@ function cleanUrl(url: string): { url: string, platformName?: string } {
  */
 async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName?: string }> {
     try {
-        debugLog(`开始解析链接: ${shortUrl}`);
-        
         // 确保URL有协议前缀用于网络请求
         const hasProtocol = shortUrl.includes('://');
         const urlWithProtocol = hasProtocol ? shortUrl : `https://${shortUrl}`;
-        
-        debugLog(`检查链接是否匹配特殊平台规则: ${shortUrl}`);
         
         // 优先匹配特殊平台规则
         for (const rule of platformRules) {
@@ -559,18 +555,11 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                 match = urlWithProtocol.match(rule.pattern);
             }
             
-            // 记录匹配情况
-            if (match) {
-                debugLog(`匹配到平台规则: ${rule.name}, 匹配结果: ${JSON.stringify(match)}`);
-            }
-            
             // 对于YouTube短链接的特殊处理
             if (match && rule.name === "YouTube短链接") {
-                debugLog(`识别到YouTube短链接: ${shortUrl}, 视频ID: ${match[1]}`);
                 if (match[1]) {
                     const videoId = match[1];
                     const transformedUrl = `https://www.youtube.com/watch?v=${videoId}`;
-                    debugLog(`YouTube短链接转换: ${shortUrl} -> ${transformedUrl}`);
                     return { url: transformedUrl, platformName: rule.name };
                 }
             }
@@ -578,7 +567,6 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
             if (match && rule.needsSpecialHandling) {
                 // 如果有shouldTransform函数，检查是否需要转换
                 if (rule.shouldTransform && !rule.shouldTransform(urlWithProtocol, match)) {
-                    debugLog(`匹配到规则${rule.name}但不需要转换`);
                     return { url: shortUrl, platformName: rule.name };
                 }
                 
@@ -589,27 +577,106 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                     const finalUrl = !hasProtocol && transformedUrl.includes('://') ? 
                         transformedUrl.replace(/^https?:\/\//, '') : transformedUrl;
                     
-                    debugLog(`特殊规则转换链接: ${shortUrl} -> ${finalUrl} (规则: ${rule.name})`);
                     return { url: finalUrl, platformName: rule.name };
+                }
+            }
+            
+            // 特殊处理通用短链接平台
+            if (match && !rule.needsSpecialHandling) {
+                // 这是一个短链接平台，需要进行网络请求解析
+                try {
+                    // 使用HEAD请求减少网络压力 - 必须使用带协议的URL
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
+
+                    const response = await fetch(urlWithProtocol, {
+                        method: 'HEAD',
+                        headers: {
+                            'User-Agent': generateRandomUserAgent(),
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+                            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                            'Referer': 'https://www.google.com/'
+                        },
+                        redirect: 'follow',
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeoutId);
+                    
+                    // 获取最终URL
+                    let finalUrl = response.url || urlWithProtocol;
+                    
+                    // 如果最终URL与原始URL相同或为空，尝试GET请求
+                    if (finalUrl === urlWithProtocol || !finalUrl) {
+                        // 尝试GET请求作为备选方案
+                        const getController = new AbortController();
+                        const getTimeoutId = setTimeout(() => getController.abort(), 5000);
+                        
+                        const getResponse = await fetch(urlWithProtocol, {
+                            method: 'GET',
+                            headers: {
+                                'User-Agent': generateRandomUserAgent(),
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+                                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                                'Referer': 'https://www.google.com/'
+                            },
+                            redirect: 'follow',
+                            signal: getController.signal
+                        });
+                        
+                        clearTimeout(getTimeoutId);
+                        finalUrl = getResponse.url || urlWithProtocol;
+                    }
+                    
+                    // 确保finalUrl不为空并且不同于原始URL
+                    if (finalUrl && finalUrl !== urlWithProtocol) {
+                        // 清理URL参数
+                        try {
+                            const parsedUrl = new URL(finalUrl);
+                            
+                            // 生成干净的URL
+                            let cleanedUrl = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
+                            
+                            // 如果原始URL没有协议前缀，还原为无前缀形式
+                            if (!hasProtocol) {
+                                cleanedUrl = cleanedUrl.replace(/^https?:\/\//, '');
+                            }
+                            
+                            return { url: cleanedUrl, platformName: rule.name };
+                        } catch (parseError) {
+                            log.error(`解析最终URL失败: ${finalUrl}, 错误: ${parseError}`);
+                            return { url: finalUrl, platformName: rule.name };
+                        }
+                    }
+                } catch (fetchError) {
+                    log.warn(`解析短链接失败: ${shortUrl}, 尝试继续处理`);
+                    // 继续处理，不要直接返回
                 }
             }
         }
         
-        // 检查URL是否需要处理 - 放宽条件，只要包含参数就处理
-        if (!urlWithProtocol.includes('?')) {
-            debugLog(`链接无参数，不需处理: ${shortUrl}`);
+        // 如果不是已知的短链接平台，尝试一般的链接处理
+        
+        // 检查URL是否需要清理参数
+        const needsCleaning = shouldProcessUrl(shortUrl);
+        if (!needsCleaning) {
             return { url: shortUrl };
         }
-
-        // 尝试使用HEAD请求解析短链接
+        
+        // 清理URL参数
+        const { url: cleanedUrl, platformName } = cleanUrl(shortUrl);
+        if (cleanedUrl !== shortUrl) {
+            return { url: cleanedUrl, platformName };
+        }
+        
+        // 如果上述处理都没有效果，尝试使用网络请求解析
         try {
-            debugLog(`尝试发送HEAD请求: ${urlWithProtocol}`);
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
 
             // 使用HEAD请求减少网络压力 - 必须使用带协议的URL
             const response = await fetch(urlWithProtocol, {
-                method: 'HEAD', // 改用HEAD请求
+                method: 'HEAD',
                 headers: {
                     'User-Agent': generateRandomUserAgent(),
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
@@ -621,18 +688,14 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
             });
 
             clearTimeout(timeoutId);
-            debugLog(`HEAD请求成功: ${urlWithProtocol}`);
 
             // 获取最终URL
             let finalUrl = response.url || urlWithProtocol;
             
             // 如果最终URL与原始URL相同，无需进一步处理
             if (finalUrl === urlWithProtocol) {
-                debugLog(`解析后URL未变化: ${shortUrl}`);
                 return { url: shortUrl };
             }
-            
-            debugLog(`解析链接成功: ${shortUrl} -> ${finalUrl}`);
             
             // 清理URL参数
             try {
@@ -646,7 +709,6 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                     cleanedUrl = cleanedUrl.replace(/^https?:\/\//, '');
                 }
                 
-                debugLog(`清理URL参数后: ${cleanedUrl}`);
                 return { url: cleanedUrl };
             } catch (parseError) {
                 log.error(`解析最终URL失败: ${finalUrl}, 错误: ${parseError}`);
@@ -661,7 +723,6 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
             
             // 尝试GET请求作为备选方案
             try {
-                debugLog(`尝试使用GET请求解析 ${urlWithProtocol}`);
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 5000);
                 
@@ -679,7 +740,6 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                 
                 clearTimeout(timeoutId);
                 let finalUrl = response.url || urlWithProtocol;
-                debugLog(`GET请求解析成功: ${shortUrl} -> ${finalUrl}`);
                 
                 // 清理URL参数
                 try {
@@ -693,7 +753,6 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                         cleanedUrl = cleanedUrl.replace(/^https?:\/\//, '');
                     }
                     
-                    debugLog(`GET请求后清理URL: ${cleanedUrl}`);
                     return { url: cleanedUrl };
                 } catch (parseError) {
                     log.error(`解析GET请求URL失败: ${finalUrl}, 错误: ${parseError}`);
@@ -722,8 +781,6 @@ async function processLinksInMessage(messageText: string): Promise<{
 }> {
     let processedCount = 0;
     
-    debugLog(`开始处理消息中的链接: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}`);
-
     // 存储链接信息的数据结构
     interface LinkInfo {
         original: string;      // 原始链接
@@ -835,7 +892,7 @@ async function processLinksInMessage(messageText: string): Promise<{
 
     // 对链接进行处理
     const resolveResults = await Promise.allSettled(
-        foundLinks.map(async (linkInfo, index) => {
+        foundLinks.map(async (linkInfo) => {
             try {
                 // 获取实际要处理的链接
                 const link = linkInfo.original;
@@ -845,11 +902,8 @@ async function processLinksInMessage(messageText: string): Promise<{
                     return linkInfo;
                 }
                 
-                debugLog(`开始处理链接 ${index+1}: ${link}`);
-                
                 // 对于带@前缀的链接，记录原始格式
                 if (linkInfo.originalWithAt) {
-                    debugLog(`链接带@前缀: ${linkInfo.originalWithAt}`);
                     linkInfo.resolved = link;
                 }
                 
@@ -863,14 +917,12 @@ async function processLinksInMessage(messageText: string): Promise<{
                         processedCount++;
                         linkInfo.resolved = processedUrl;
                         linkInfo.platformName = platformName;
-                        debugLog(`链接 ${index+1} 处理成功: ${link} -> ${processedUrl} ${platformName ? `(平台: ${platformName})` : ''}`);
                     } else {
                         // 如果链接没有变化但需要保留
                         linkInfo.resolved = link;
-                        debugLog(`链接 ${index+1} 无需处理: ${link}`);
                     }
                 } catch (resolveError) {
-                    log.error(`处理链接 ${index+1} 失败: ${link}, 错误: ${resolveError}`);
+                    log.error(`处理链接失败: ${link}, 错误: ${resolveError}`);
                     // 即使处理失败，也要保留带@前缀链接
                     if (!linkInfo.resolved && linkInfo.originalWithAt) {
                         linkInfo.resolved = link;
@@ -1096,8 +1148,6 @@ const plugin: BotPlugin = {
                     return;
                 }
                 
-                debugLog(`收到消息: ${messageText.substring(0, 30)}${messageText.length > 30 ? '...' : ''}`);
-                
                 // 快速检查：消息中是否包含可能的URL特征
                 // 检查常见URL特征：点号(.)、协议前缀(://)、常见域名标识(www)等
                 const containsUrlIndicators = messageText.includes('.') || 
@@ -1106,7 +1156,6 @@ const plugin: BotPlugin = {
                                              messageText.includes('@http');
                                              
                 if (!containsUrlIndicators) {
-                    debugLog('消息中不包含可能的链接特征，跳过处理');
                     return;
                 }
 
@@ -1122,16 +1171,14 @@ const plugin: BotPlugin = {
                         
                     // 如果找到并解析了链接，且有实际修改，则删除原消息并发送新消息
                     if (foundLinks && processedText !== messageText && processedCount > 0) {
-                        debugLog('找到并处理了链接，准备发送新消息');
                         
                         // 格式化新消息
                         const senderName = ctx.message.sender.displayName || '用户';
                             
-                        const content = `${senderName} 分享内容(隐私保护功能，自动去除跟踪参数):\n${processedText}`;
+                        const content = `${senderName} 分享内容（隐私保护，已移除跟踪参数）:\n${processedText}`;
 
                         // 发送新消息（如果存在回复消息则保持回复关系）
                         try {
-                            debugLog('尝试发送处理后的消息');
                             if (ctx.message.replyToMessage?.id) {
                                 await ctx.message.replyText(content, {
                                     replyTo: ctx.message.replyToMessage.id
@@ -1139,12 +1186,10 @@ const plugin: BotPlugin = {
                             } else {
                                 await ctx.message.replyText(content);
                             }
-                            debugLog('成功发送处理后的消息');
 
                             // 删除原消息
                             try {
                                 await ctx.message.delete();
-                                debugLog('成功删除原消息');
                             } catch (error) {
                                 log.error(`删除原消息失败: ${error}`);
                             }
@@ -1152,8 +1197,6 @@ const plugin: BotPlugin = {
                             log.error(`发送替换消息失败: ${sendError}`);
                             // 不删除原消息，以防消息丢失
                         }
-                    } else {
-                        debugLog(`没有处理链接或没有变化: foundLinks=${foundLinks}, textChanged=${processedText !== messageText}, processedCount=${processedCount}`);
                     }
                 } catch (error) {
                     log.error(`处理消息错误: ${error}`);
