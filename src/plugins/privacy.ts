@@ -1393,7 +1393,6 @@ const plugin: BotPlugin = {
 
                     // 如果找到并解析了链接，且有实际修改，则删除原消息并发送新消息
                     if (foundLinks && processedText !== messageText && processedCount > 0) {
-
                         // 格式化新消息
                         const senderName = ctx.message.sender.displayName || '用户';
 
@@ -1401,13 +1400,7 @@ const plugin: BotPlugin = {
 
                         // 发送新消息（如果存在回复消息则保持回复关系）
                         try {
-                            if (ctx.message.replyToMessage?.id) {
-                                await ctx.message.replyText(content, {
-                                    replyTo: ctx.message.replyToMessage.id
-                                });
-                            } else {
-                                await ctx.message.replyText(content);
-                            }
+                            await ctx.message.answerText(content);
 
                             // 删除原消息
                             try {

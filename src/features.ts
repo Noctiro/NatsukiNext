@@ -115,9 +115,6 @@ export interface BotPlugin {
     error?: string;
 }
 
-// 导出权限接口类型，直接从permissions.ts导入
-// export type { Permission, PermissionGroup } from './permissions';
-
 // 命令执行冷却记录
 interface CommandCooldown {
     userId: number;
@@ -139,6 +136,18 @@ export class Features {
     private commandCooldowns: CommandCooldown[] = [];
     // 插件配置缓存
     private pluginConfigs = new Map<string, any>();
+    // 命令处理器缓存，加速命令查找
+    private commandHandlersCache = new Map<string, { plugin: BotPlugin, cmd: PluginCommand }[]>();
+    // 缓存上次更新时间，用于定期刷新缓存
+    private commandCacheLastUpdated = 0;
+    // 缓存过期时间（毫秒）
+    private readonly COMMAND_CACHE_TTL = 30000; // 30秒
+    // 命令请求队列，防止并发处理同一用户的多个命令
+    private commandQueue = new Map<number, Promise<void>>();
+    // 最近使用的命令缓存容量
+    private readonly CACHE_MAX_SIZE = 50;
+    // 最近使用的命令
+    private recentlyUsedCommands: string[] = [];
 
     /**
      * 创建功能管理器实例
@@ -449,22 +458,71 @@ export class Features {
         const handlers = this.eventHandlers.get(type);
         if (!handlers || handlers.size === 0) return;
 
-        // 按优先级排序事件处理器（优先级高的先执行）
-        const sortedHandlers = Array.from(handlers)
-            .sort((a, b) => (b.priority || 0) - (a.priority || 0));
-
-        for (const handler of sortedHandlers) {
-            try {
-                // 检查过滤器
-                if (!handler.filter || handler.filter(context)) {
-                    await handler.handler(context);
+        try {
+            // 按优先级排序事件处理器（优先级高的先执行）
+            const sortedHandlers = Array.from(handlers)
+                .sort((a, b) => (b.priority || 0) - (a.priority || 0));
+            
+            // 将相同优先级的处理器分组，以便并行执行
+            const priorityGroups: Map<number, PluginEvent[]> = new Map();
+            
+            for (const handler of sortedHandlers) {
+                const priority = handler.priority || 0;
+                if (!priorityGroups.has(priority)) {
+                    priorityGroups.set(priority, []);
                 }
-            } catch (err) {
-                const error = err instanceof Error ? err : new Error(String(err));
-                log.error(`事件处理器错误 (${type}): ${error.message}`);
-                if (error.stack) {
-                    log.debug(`错误堆栈: ${error.stack}`);
+                priorityGroups.get(priority)!.push(handler);
+            }
+            
+            // 获取所有优先级并排序（从高到低）
+            const priorities = Array.from(priorityGroups.keys()).sort((a, b) => b - a);
+            
+            // 按优先级顺序处理，但每个优先级内部并行处理
+            for (const priority of priorities) {
+                const handlersInPriority = priorityGroups.get(priority)!;
+                
+                // 创建处理器的执行任务数组
+                const tasks = handlersInPriority.map(handler => async () => {
+                    try {
+                        // 首先快速检查过滤器
+                        if (handler.filter && !handler.filter(context)) {
+                            return;
+                        }
+                        
+                        // 使用超时保护，防止事件处理器无限阻塞
+                        const timeoutPromise = new Promise<void>((_, reject) => {
+                            setTimeout(() => {
+                                reject(new Error(`事件处理器超时 (${type})`));
+                            }, 10000); // 10秒超时
+                        });
+                        
+                        // 执行事件处理器
+                        await Promise.race([
+                            handler.handler(context),
+                            timeoutPromise
+                        ]);
+                    } catch (err) {
+                        const error = err instanceof Error ? err : new Error(String(err));
+                        log.error(`事件处理器错误 (${type}): ${error.message}`);
+                        if (error.stack) {
+                            log.debug(`错误堆栈: ${error.stack}`);
+                        }
+                    }
+                });
+                
+                // 使用Promise.all执行所有任务，但包装在try-catch中以避免单个任务失败导致整批失败
+                try {
+                    await Promise.all(tasks.map(task => task()));
+                } catch (err) {
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    log.error(`优先级${priority}的事件处理组执行错误: ${error.message}`);
                 }
+            }
+        } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err));
+            log.error(`事件分发处理错误 (${type}): ${error.message}`);
+            if (error.stack) {
+                log.debug(`错误堆栈: ${error.stack}`);
             }
         }
     }
@@ -552,6 +610,69 @@ export class Features {
      * @param ctx 消息上下文
      */
     private async processCommand(ctx: MessageContext) {
+        // 获取用户ID
+        const userId = ctx.sender?.id;
+        
+        // 如果无法获取用户ID，直接处理
+        if (!userId) {
+            await this.executeCommand(ctx);
+            return;
+        }
+        
+        // 检查该用户是否有正在处理的命令
+        if (this.commandQueue.has(userId)) {
+            try {
+                // 等待前一个命令处理完成
+                await this.commandQueue.get(userId);
+            } catch (err) {
+                // 忽略前一个命令的错误，不影响当前命令处理
+                log.debug(`前一个命令处理出错，继续处理新命令: ${err}`);
+            }
+        }
+        
+        // 创建当前命令的Promise，并添加到队列
+        let resolveFn: () => void = () => {};
+        let rejectFn: (error: Error) => void = () => {};
+        
+        const commandPromise = new Promise<void>((resolve, reject) => {
+            resolveFn = resolve;
+            rejectFn = reject;
+        });
+        
+        this.commandQueue.set(userId, commandPromise);
+        
+        try {
+            // 设置命令处理超时
+            const timeoutId = setTimeout(() => {
+                rejectFn(new Error('命令处理超时'));
+            }, 30000); // 30秒超时
+            
+            // 执行命令
+            await this.executeCommand(ctx);
+            
+            // 清除超时计时器
+            clearTimeout(timeoutId);
+            
+            // 命令处理完成
+            resolveFn();
+        } catch (err) {
+            // 命令处理出错
+            const error = err instanceof Error ? err : new Error(String(err));
+            rejectFn(error);
+            throw error; // 重新抛出以便调用者处理
+        } finally {
+            // 从队列中移除，如果当前处理的就是最新的
+            if (this.commandQueue.get(userId) === commandPromise) {
+                this.commandQueue.delete(userId);
+            }
+        }
+    }
+    
+    /**
+     * 执行命令的实际逻辑
+     * @param ctx 消息上下文
+     */
+    private async executeCommand(ctx: MessageContext) {
         try {
             const text = ctx.text;
             if (!text?.startsWith('/')) return;
@@ -589,18 +710,7 @@ export class Features {
             };
 
             // 查找命令处理器
-            const commandHandlers: { plugin: BotPlugin, cmd: PluginCommand }[] = [];
-
-            // 从所有活跃插件中查找匹配的命令
-            for (const plugin of this.plugins.values()) {
-                if (plugin.status !== PluginStatus.ACTIVE || !plugin.commands) continue;
-
-                for (const cmd of plugin.commands) {
-                    if (cmd.name === command || (cmd.aliases && cmd.aliases.includes(command))) {
-                        commandHandlers.push({ plugin, cmd });
-                    }
-                }
-            }
+            let commandHandlers = this.findCommandHandlers(command);
 
             // 如果没有找到命令处理器，直接返回
             if (commandHandlers.length === 0) {
@@ -610,14 +720,17 @@ export class Features {
 
             log.debug(`找到命令 ${command} 的处理器: ${commandHandlers.length} 个`);
 
-            // 执行第一个符合条件的命令
-            for (const { plugin, cmd } of commandHandlers) {
-                try {
+            // 并行检查权限和冷却时间
+            const checkResults = await Promise.all(
+                commandHandlers.map(async ({ plugin, cmd }, index) => {
                     // 检查权限
                     if (cmd.requiredPermission && !context.hasPermission(cmd.requiredPermission)) {
-                        log.debug(`用户 ${userId} 缺少权限执行命令 ${command}: ${cmd.requiredPermission}`);
-                        await ctx.replyText('❌ 你没有执行此命令的权限').catch(() => { });
-                        return;
+                        return { 
+                            index, 
+                            canExecute: false, 
+                            reason: 'permission',
+                            message: `用户 ${userId} 缺少权限执行命令 ${command}: ${cmd.requiredPermission}`
+                        };
                     }
 
                     // 检查冷却时间
@@ -631,38 +744,155 @@ export class Features {
                                 ? Math.ceil((cmd.cooldown - (Date.now() - lastCmd.timestamp) / 1000))
                                 : cmd.cooldown;
 
-                            log.debug(`命令 ${command} 冷却中，剩余时间: ${remainingSecs}s`);
-                            await ctx.replyText(`⏱️ 命令冷却中，请等待 ${remainingSecs} 秒后再试`).catch(() => { });
-                            return;
+                            return { 
+                                index, 
+                                canExecute: false, 
+                                reason: 'cooldown',
+                                message: `命令 ${command} 冷却中，剩余时间: ${remainingSecs}s`,
+                                remainingSecs
+                            };
                         }
                     }
 
-                    // 执行命令
-                    log.info(`执行命令: ${command} (插件: ${plugin.name}), 用户: ${userId}`);
-                    await cmd.handler(context);
+                    return { index, canExecute: true };
+                })
+            );
 
-                    // 更新冷却时间
-                    if (cmd.cooldown && userId) {
-                        this.updateCommandCooldown(userId, cmd.name);
-                    }
+            // 找到第一个可以执行的命令
+            const executableCommand = checkResults.find(result => result.canExecute);
 
-                    return;
-                } catch (err) {
-                    const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`命令 ${command} 执行出错 (插件: ${plugin.name}): ${error.message}`);
-                    if (error.stack) {
-                        log.debug(`错误堆栈: ${error.stack}`);
-                    }
-
-                    await ctx.replyText(`❌ 命令执行出错: ${error.message}`).catch(() => { });
+            if (!executableCommand) {
+                // 没有可执行的命令，检查原因并通知用户
+                const permissionDenied = checkResults.find(r => r.reason === 'permission');
+                if (permissionDenied) {
+                    log.debug(permissionDenied.message);
+                    await ctx.replyText('❌ 你没有执行此命令的权限').catch(() => { });
                     return;
                 }
+
+                const onCooldown = checkResults.find(r => r.reason === 'cooldown');
+                if (onCooldown) {
+                    log.debug(onCooldown.message);
+                    await ctx.replyText(`⏱️ 命令冷却中，请等待 ${onCooldown.remainingSecs} 秒后再试`).catch(() => { });
+                    return;
+                }
+
+                return;
+            }
+
+            // 执行命令（这里确保executableCommand存在）
+            const handler = commandHandlers[executableCommand.index];
+            if (!handler) {
+                log.error(`命令处理器索引错误: ${executableCommand.index}`);
+                return;
+            }
+            const plugin = handler.plugin;
+            const cmd = handler.cmd;
+            
+            try {
+                // 执行命令
+                log.info(`执行命令: ${command} (插件: ${plugin.name}), 用户: ${userId}`);
+                
+                // 使用Promise.race添加超时保护
+                const timeoutPromise = new Promise<void>((_, reject) => {
+                    setTimeout(() => {
+                        reject(new Error('命令执行超时'));
+                    }, 20000); // 20秒超时
+                });
+                
+                await Promise.race([
+                    cmd.handler(context),
+                    timeoutPromise
+                ]);
+
+                // 更新冷却时间
+                if (cmd.cooldown && userId) {
+                    this.updateCommandCooldown(userId, cmd.name);
+                }
+            } catch (err) {
+                const error = err instanceof Error ? err : new Error(String(err));
+                log.error(`命令 ${command} 执行出错 (插件: ${plugin.name}): ${error.message}`);
+                if (error.stack) {
+                    log.debug(`错误堆栈: ${error.stack}`);
+                }
+
+                await ctx.replyText(`❌ 命令执行出错: ${error.message}`).catch(() => { });
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
             log.error(`命令处理错误: ${error.message}`);
             if (error.stack) {
                 log.debug(`错误堆栈: ${error.stack}`);
+            }
+        }
+    }
+
+    /**
+     * 查找命令处理器
+     * @param command 命令名称
+     * @returns 命令处理器数组
+     */
+    private findCommandHandlers(command: string): { plugin: BotPlugin, cmd: PluginCommand }[] {
+        // 检查缓存是否有效
+        const now = Date.now();
+        if (
+            this.commandHandlersCache.has(command) && 
+            now - this.commandCacheLastUpdated < this.COMMAND_CACHE_TTL
+        ) {
+            // 更新最近使用命令列表（LRU缓存策略）
+            this.updateRecentlyUsedCommands(command);
+            return this.commandHandlersCache.get(command) || [];
+        }
+
+        // 如果距离上次更新超过缓存过期时间，清空整个缓存
+        if (now - this.commandCacheLastUpdated >= this.COMMAND_CACHE_TTL) {
+            this.commandHandlersCache.clear();
+            this.recentlyUsedCommands = [];
+            this.commandCacheLastUpdated = now;
+        }
+
+        const commandHandlers: { plugin: BotPlugin, cmd: PluginCommand }[] = [];
+
+        // 从所有活跃插件中查找匹配的命令
+        for (const plugin of this.plugins.values()) {
+            if (plugin.status !== PluginStatus.ACTIVE || !plugin.commands) continue;
+
+            for (const cmd of plugin.commands) {
+                try {
+                    if (cmd.name === command || (cmd.aliases && cmd.aliases.includes(command))) {
+                        commandHandlers.push({ plugin, cmd });
+                    }
+                } catch (err) {
+                    // 捕获错误避免影响循环
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    log.error(`查找命令处理器时出错: ${error.message}`);
+                    continue;
+                }
+            }
+        }
+
+        // 缓存结果
+        this.commandHandlersCache.set(command, commandHandlers);
+        this.updateRecentlyUsedCommands(command);
+
+        return commandHandlers;
+    }
+
+    /**
+     * 更新最近使用的命令列表（LRU缓存策略）
+     * @param command 命令名称
+     */
+    private updateRecentlyUsedCommands(command: string): void {
+        // 移除已存在的相同命令
+        this.recentlyUsedCommands = this.recentlyUsedCommands.filter(cmd => cmd !== command);
+        // 将命令添加到列表开头
+        this.recentlyUsedCommands.unshift(command);
+        
+        // 如果列表超过最大容量，删除最旧的命令及其缓存
+        if (this.recentlyUsedCommands.length > this.CACHE_MAX_SIZE) {
+            const oldestCommand = this.recentlyUsedCommands.pop();
+            if (oldestCommand) {
+                this.commandHandlersCache.delete(oldestCommand);
             }
         }
     }
@@ -945,19 +1175,27 @@ export class Features {
      * @private
      */
     private async loadPlugins(): Promise<void> {
-        log.info('Loading plugins...');
+        const startTime = Date.now();
+        log.info('开始加载插件...');
 
         try {
             // 获取已安装的插件文件列表
             const pluginDir = this.pluginsDir;
 
             // 读取目录内容
-            const files = await fs.readdir(pluginDir);
+            let files: string[] = [];
+            try {
+                files = await fs.readdir(pluginDir);
+            } catch (err) {
+                const error = err instanceof Error ? err : new Error(String(err));
+                log.error(`读取插件目录失败: ${error.message}`);
+                return;
+            }
 
             // 过滤出.ts文件和.js文件
             const pluginFiles = files
                 .filter((file: string) => file.endsWith('.ts') || file.endsWith('.js'))
-                .map((file: any) => {
+                .map((file: string) => {
                     const fileName = path.basename(file);
                     const ext = path.extname(file);
                     const name = path.basename(fileName, ext);
@@ -965,48 +1203,335 @@ export class Features {
                     return { name, path: pluginPath };
                 });
 
-            log.debug(`Found ${pluginFiles.length} plugin files`);
-
-            // 按依赖关系排序
-            for (const { name, path: pluginPath } of pluginFiles) {
-                try {
-                    await this.loadPlugin(name, false);
-                } catch (err) {
-                    const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`Failed to load plugin ${name}: ${error.message}`);
-                }
+            if (pluginFiles.length === 0) {
+                log.warn('未找到任何插件文件');
+                return;
             }
 
-            // 按照依赖排序启用插件
-            const sortedPluginNames = this.sortPluginsByDependencies();
-
-            for (const pluginName of sortedPluginNames) {
-                const plugin = this.plugins.get(pluginName);
-                if (plugin && plugin.status !== PluginStatus.ACTIVE) {
+            log.debug(`发现${pluginFiles.length}个插件文件`);
+            
+            // 第一阶段：并行加载所有插件
+            log.info('阶段 1/2: 加载插件...');
+            const loadStageStartTime = Date.now();
+            
+            const loadResults = await Promise.allSettled(
+                pluginFiles.map(async ({ name }) => {
+                    const pluginStartTime = Date.now();
                     try {
-                        log.info(`Enabling plugin: ${pluginName}`);
-                        await this.enablePlugin(pluginName, false);
+                        // 先加载插件但不启用，只是为了获取依赖信息
+                        const success = await this.loadPlugin(name, false);
+                        const duration = Date.now() - pluginStartTime;
+                        
+                        if (success) {
+                            log.debug(`插件 ${name} 加载用时 ${duration}ms`);
+                        } else {
+                            log.warn(`插件 ${name} 加载失败，用时 ${duration}ms`);
+                        }
+                        
+                        return success;
                     } catch (err) {
                         const error = err instanceof Error ? err : new Error(String(err));
-                        log.error(`Failed to enable plugin ${pluginName}: ${error.message}`);
-                        plugin.status = PluginStatus.ERROR;
-                        plugin.error = error.message;
+                        const duration = Date.now() - pluginStartTime;
+                        log.error(`插件 ${name} 加载出错: ${error.message}，用时 ${duration}ms`);
+                        return false;
                     }
+                })
+            );
+            
+            // 计算有多少插件成功加载
+            const loadedCount = loadResults.filter(
+                result => result.status === 'fulfilled' && result.value === true
+            ).length;
+            
+            const loadStageDuration = Date.now() - loadStageStartTime;
+            log.info(`成功加载 ${loadedCount}/${pluginFiles.length} 个插件，用时 ${loadStageDuration}ms`);
+
+            // 第二阶段：按依赖顺序并行启用插件
+            log.info('阶段 2/2: 启用插件...');
+            const enableStageStartTime = Date.now();
+            
+            const sortedPluginNames = this.sortPluginsByDependencies();
+            
+            // 根据依赖关系将插件分组
+            const enableGroups: string[][] = [];
+            const processed = new Set<string>();
+            
+            // 创建一个映射，记录每个插件的直接依赖
+            const directDependencies = new Map<string, Set<string>>();
+            
+            // 收集每个插件的直接依赖
+            for (const [name, plugin] of this.plugins.entries()) {
+                if (!name || !plugin) continue;
+                
+                if (plugin.dependencies && plugin.dependencies.length > 0) {
+                    // 只记录系统中实际存在的依赖
+                    const existingDeps = plugin.dependencies.filter(dep => dep && this.plugins.has(dep));
+                    directDependencies.set(name, new Set(existingDeps));
+                } else {
+                    directDependencies.set(name, new Set());
                 }
             }
+            
+            // 最大循环次数，防止可能的无限循环
+            const maxIterations = sortedPluginNames.length * 2;
+            let iterations = 0;
+            
+            // 分批启用插件，每批中的插件可以并行启用
+            while (processed.size < sortedPluginNames.length && iterations < maxIterations) {
+                iterations++;
+                const currentGroup: string[] = [];
+                
+                // 找出所有可以在当前批次启用的插件
+                for (const name of sortedPluginNames) {
+                    if (!name || processed.has(name)) continue;
+                    
+                    const dependencies = directDependencies.get(name) || new Set();
+                    
+                    // 检查所有依赖是否已处理
+                    let allDepsProcessed = true;
+                    for (const dep of dependencies) {
+                        if (!dep || !processed.has(dep)) {
+                            allDepsProcessed = false;
+                            break;
+                        }
+                    }
+                    
+                    if (allDepsProcessed) {
+                        currentGroup.push(name);
+                    }
+                }
+                
+                if (currentGroup.length === 0) {
+                    // 如果没有可以启用的插件，说明可能存在循环依赖
+                    // 记录日志并中断循环
+                    const remaining = sortedPluginNames.filter(name => name && !processed.has(name));
+                    log.warn(`无法启用这些插件（可能存在循环依赖）: ${remaining.join(', ')}`);
+                    break;
+                }
+                
+                // 将当前批次添加到启用组
+                enableGroups.push(currentGroup);
+                
+                // 将当前批次标记为已处理
+                for (const name of currentGroup) {
+                    if (name) processed.add(name);
+                }
+            }
+            
+            if (iterations >= maxIterations) {
+                log.warn(`插件依赖解析达到最大迭代次数 (${maxIterations})，可能存在问题`);
+            }
+            
+            // 逐批启用插件
+            let totalEnabled = 0;
+            
+            for (const [groupIndex, group] of enableGroups.entries()) {
+                log.debug(`启用插件组 ${groupIndex + 1}/${enableGroups.length}，包含 ${group.length} 个插件`);
+                
+                const groupStartTime = Date.now();
+                
+                // 并行启用当前批次的插件
+                const enableResults = await Promise.allSettled(
+                    group.map(async pluginName => {
+                        if (!pluginName) return false;
+                        
+                        const plugin = this.plugins.get(pluginName);
+                        if (!plugin || plugin.status === PluginStatus.ACTIVE) return true;
+                        
+                        const pluginStartTime = Date.now();
+                        
+                        try {
+                            log.info(`启用插件: ${pluginName}`);
+                            const success = await this.enablePlugin(pluginName, false);
+                            
+                            const duration = Date.now() - pluginStartTime;
+                            if (success) {
+                                log.debug(`插件 ${pluginName} 启用成功，用时 ${duration}ms`);
+                            } else {
+                                log.warn(`插件 ${pluginName} 启用失败，用时 ${duration}ms`);
+                            }
+                            
+                            return success;
+                        } catch (err) {
+                            const error = err instanceof Error ? err : new Error(String(err));
+                            const duration = Date.now() - pluginStartTime;
+                            log.error(`启用插件 ${pluginName} 出错: ${error.message}，用时 ${duration}ms`);
+                            
+                            if (plugin) {
+                                plugin.status = PluginStatus.ERROR;
+                                plugin.error = error.message;
+                            }
+                            
+                            return false;
+                        }
+                    })
+                );
+                
+                // 计算成功启用的插件数量
+                const enabledCount = enableResults.filter(
+                    result => result.status === 'fulfilled' && result.value === true
+                ).length;
+                
+                totalEnabled += enabledCount;
+                
+                const groupDuration = Date.now() - groupStartTime;
+                log.debug(`插件组 ${groupIndex + 1} 启用完成: ${enabledCount}/${group.length} 成功，用时 ${groupDuration}ms`);
+            }
+            
+            const enableStageDuration = Date.now() - enableStageStartTime;
+            log.info(`插件启用阶段完成，启用了 ${totalEnabled} 个插件，用时 ${enableStageDuration}ms`);
 
-            // 统计加载的插件数量
+            // 统计加载的插件数量和状态
             const loadedPlugins = this.plugins.size;
-            const activePlugins = Array.from(this.plugins.values()).filter(p => p.status === PluginStatus.ACTIVE).length;
+            const activePlugins = Array.from(this.plugins.values()).filter(p => p && p.status === PluginStatus.ACTIVE).length;
+            const errorPlugins = Array.from(this.plugins.values()).filter(p => p && p.status === PluginStatus.ERROR).length;
+            const disabledPlugins = Array.from(this.plugins.values()).filter(p => p && p.status === PluginStatus.DISABLED).length;
 
-            log.info(`Plugin loading completed. Loaded ${loadedPlugins} plugins, ${activePlugins} enabled.`);
+            const totalDuration = Date.now() - startTime;
+            log.info(`插件加载完成。共加载 ${loadedPlugins} 个插件，${activePlugins} 个启用，${errorPlugins} 个错误，${disabledPlugins} 个禁用。总用时: ${totalDuration}ms`);
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`Error loading plugins: ${error.message}`);
+            log.error(`插件加载过程错误: ${error.message}`);
             if (error.stack) {
-                log.debug(`Error stack: ${error.stack}`);
+                log.debug(`错误堆栈: ${error.stack}`);
             }
         }
+    }
+    
+    /**
+     * 获取插件加载顺序（基于依赖关系图的拓扑排序）
+     * @param dependencyGraph 依赖关系图
+     */
+    private getPluginLoadOrder(dependencyGraph: Map<string, Set<string>>): string[] {
+        const visited = new Set<string>();
+        const result: string[] = [];
+        
+        function visit(node: string) {
+            if (visited.has(node)) return;
+            visited.add(node);
+            
+            const dependencies = dependencyGraph.get(node) || new Set();
+            for (const dep of dependencies) {
+                if (dependencyGraph.has(dep)) {
+                    visit(dep);
+                }
+            }
+            
+            result.push(node);
+        }
+        
+        for (const node of dependencyGraph.keys()) {
+            if (!visited.has(node)) {
+                visit(node);
+            }
+        }
+        
+        return result;
+    }
+    
+    /**
+     * 将插件分组，以便并行加载
+     * 同一组内的插件没有相互依赖关系，可以并行加载
+     */
+    private groupPluginsForLoad(loadOrder: string[], dependencyGraph: Map<string, Set<string>>): string[][] {
+        const groups: string[][] = [];
+        const processed = new Set<string>();
+        
+        for (const plugin of loadOrder) {
+            if (processed.has(plugin)) continue;
+            
+            const currentGroup: string[] = [];
+            
+            // 检查loadOrder中的每个插件，如果它还未处理且没有未处理的依赖，加入当前组
+            for (const candidate of loadOrder) {
+                if (processed.has(candidate)) continue;
+                
+                const dependencies = dependencyGraph.get(candidate) || new Set();
+                // 检查是否所有依赖都已经处理过
+                const allDependenciesProcessed = Array.from(dependencies)
+                    .every(dep => processed.has(dep) || !dependencyGraph.has(dep));
+                    
+                if (allDependenciesProcessed) {
+                    currentGroup.push(candidate);
+                }
+            }
+            
+            if (currentGroup.length > 0) {
+                groups.push(currentGroup);
+                for (const p of currentGroup) {
+                    processed.add(p);
+                }
+            } else {
+                // 如果没有可以加入组的插件，说明有循环依赖
+                // 找一个有最少未处理依赖的插件
+                let minUnprocessedDeps = Infinity;
+                let candidateToAdd = '';
+                
+                for (const candidate of loadOrder) {
+                    if (processed.has(candidate)) continue;
+                    
+                    const dependencies = dependencyGraph.get(candidate) || new Set();
+                    const unprocessedDeps = Array.from(dependencies)
+                        .filter(dep => !processed.has(dep) && dependencyGraph.has(dep))
+                        .length;
+                        
+                    if (unprocessedDeps < minUnprocessedDeps) {
+                        minUnprocessedDeps = unprocessedDeps;
+                        candidateToAdd = candidate;
+                    }
+                }
+                
+                if (candidateToAdd) {
+                    groups.push([candidateToAdd]);
+                    processed.add(candidateToAdd);
+                } else {
+                    // 理论上不应该达到这里
+                    break;
+                }
+            }
+        }
+        
+        return groups;
+    }
+    
+    /**
+     * 将插件分组，以便并行启用
+     * 每一组中的插件可以并行启用
+     */
+    private groupPluginsForEnable(sortedPlugins: string[]): string[][] {
+        const groups: string[][] = [];
+        const processed = new Set<string>();
+        
+        for (let i = 0; i < sortedPlugins.length; i++) {
+            const pluginName = sortedPlugins[i];
+            if (!pluginName || processed.has(pluginName)) continue;
+            
+            const currentGroup: string[] = [];
+            
+            for (let j = i; j < sortedPlugins.length; j++) {
+                const plugin = sortedPlugins[j];
+                if (!plugin || processed.has(plugin)) continue;
+                
+                const pluginObj = this.plugins.get(plugin);
+                if (!pluginObj) continue;
+                
+                // 检查此插件的所有依赖是否已经处理
+                const dependencies = pluginObj.dependencies || [];
+                const allDependenciesProcessed = dependencies.every(dep => 
+                    !this.plugins.has(dep) || processed.has(dep));
+                
+                if (allDependenciesProcessed) {
+                    currentGroup.push(plugin);
+                    processed.add(plugin);
+                }
+            }
+            
+            if (currentGroup.length > 0) {
+                groups.push(currentGroup);
+            }
+        }
+        
+        return groups;
     }
 
     /**
