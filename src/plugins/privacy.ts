@@ -718,10 +718,8 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
 async function processLinksInMessage(messageText: string): Promise<{
     text: string,
     foundLinks: boolean,
-    usedSpecialRules: boolean,
     processedCount: number
 }> {
-    let usedSpecialRules = false;
     let processedCount = 0;
     
     debugLog(`开始处理消息中的链接: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}`);
@@ -832,7 +830,7 @@ async function processLinksInMessage(messageText: string): Promise<{
     
     // 如果没有找到任何链接，直接返回原始文本
     if (foundLinks.length === 0) {
-        return { text: messageText, foundLinks: false, usedSpecialRules, processedCount };
+        return { text: messageText, foundLinks: false, processedCount };
     }
 
     // 对链接进行处理
@@ -898,16 +896,9 @@ async function processLinksInMessage(messageText: string): Promise<{
         // 仅保留那些resolved字段不为空的链接信息
         .filter(info => info.resolved !== undefined);
 
-    // 检查是否使用了特殊规则
-    usedSpecialRules = processedLinks.some(item => {
-        if (!item.platformName) return false;
-        const rule = platformRules.find(r => r.name === item.platformName);
-        return rule?.needsSpecialHandling === true;
-    });
-
     // 如果没有处理任何链接，直接返回原始文本
     if (processedCount === 0) {
-        return { text: messageText, foundLinks: true, usedSpecialRules: false, processedCount: 0 };
+        return { text: messageText, foundLinks: true, processedCount: 0 };
     }
 
     // 按照位置从后往前排序，以便从后向前替换不影响前面的位置
@@ -944,12 +935,11 @@ async function processLinksInMessage(messageText: string): Promise<{
     result = parts.join('');
 
     // 在结果返回前添加日志
-    debugLog(`处理完成, 共处理了 ${processedCount} 个链接, 使用特殊规则: ${usedSpecialRules}`);
+    debugLog(`处理完成, 共处理了 ${processedCount} 个链接`);
     
     return { 
         text: result.trim(), 
         foundLinks: true,
-        usedSpecialRules,
         processedCount
     };
 }
@@ -1124,7 +1114,7 @@ const plugin: BotPlugin = {
                     // 处理消息中的所有链接
                     const startTime = Date.now();
                     
-                    const { text: processedText, foundLinks, usedSpecialRules, processedCount } = 
+                    const { text: processedText, foundLinks, processedCount } = 
                         await processLinksInMessage(messageText);
                         
                     const processingTime = Date.now() - startTime;
@@ -1136,13 +1126,8 @@ const plugin: BotPlugin = {
                         
                         // 格式化新消息
                         const senderName = ctx.message.sender.displayName || '用户';
-                        
-                        // 添加提示消息
-                        const tipMessage = usedSpecialRules
-                            ? '（已应用特殊规则转换和移除跟踪参数）' 
-                            : '（已移除全部跟踪参数）';
                             
-                        const content = `${senderName} 分享内容${tipMessage}:\n${processedText}`;
+                        const content = `${senderName} 分享内容(隐私保护功能，自动去除跟踪参数):\n${processedText}`;
 
                         // 发送新消息（如果存在回复消息则保持回复关系）
                         try {
