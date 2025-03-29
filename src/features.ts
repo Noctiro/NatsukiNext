@@ -797,7 +797,7 @@ export class Features {
                 const timeoutPromise = new Promise<void>((_, reject) => {
                     setTimeout(() => {
                         reject(new Error('命令执行超时'));
-                    }, 20000); // 20秒超时
+                    }, 200000); // 200秒超时
                 });
                 
                 await Promise.race([
