@@ -17,6 +17,7 @@ export class Game implements IGame {
     currentTurn: PieceColor;
     chatId: number;
     lastMove?: string;
+    lastMovePositions?: { from: Position, to: Position };
     history: string[];
     startTime: number;
     winner?: PieceColor;
@@ -106,6 +107,7 @@ export class Game implements IGame {
 
         // 更新游戏状态
         this.lastMove = moveNotation;
+        this.lastMovePositions = { from: [...from], to: [...to] };
         this.history.push(moveNotation);
         this.board = this.boardObj.getBoardData();
 

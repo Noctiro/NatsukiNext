@@ -5,6 +5,9 @@ import type { Position } from '../models/ChessTypes';
 import { MoveValidator } from './MoveValidator';
 import { Game } from '../models/Game';
 
+// 云库API地址
+const CLOUD_API_URL = 'http://www.chessdb.cn/chessdb.php';
+
 /**
  * 棋子价值表
  * 不同棋子的基础价值和位置价值评估
@@ -32,14 +35,17 @@ export class ChessAI {
     private moveValidator: MoveValidator;
     private difficultyLevel: number;
     private maxDepth: number;
+    private useCloudLibrary: boolean;
 
     /**
      * 创建象棋AI实例
      * @param difficultyLevel 难度等级(1-6)，默认为3（初级）
+     * @param useCloudLibrary 是否使用云库API (仅对最高难度有效)
      */
-    constructor(difficultyLevel: number = 3) {
+    constructor(difficultyLevel: number = 3, useCloudLibrary: boolean = true) {
         this.moveValidator = new MoveValidator();
         this.difficultyLevel = Math.min(Math.max(difficultyLevel, 3), 6);
+        this.useCloudLibrary = useCloudLibrary && this.difficultyLevel >= 6; // 仅最高难度时使用云库
         
         // 根据难度设置搜索深度
         switch(this.difficultyLevel) {
@@ -49,7 +55,7 @@ export class ChessAI {
             case 5: // 中级 - 9步思考
                 this.maxDepth = 9;
                 break;
-            case 6: // 高级 - 12步思考
+            case 6: // 高级 - 12步思考或使用云库
                 this.maxDepth = 12;
                 break;
             default:
@@ -62,12 +68,213 @@ export class ChessAI {
      * @param game 当前游戏实例
      * @returns 移动的起始和目标位置
      */
-    getMove(game: Game): { from: Position, to: Position } | null {
+    async getMove(game: Game): Promise<{ from: Position, to: Position } | null> {
         const board = game.getBoardObject();
         const aiColor = PieceColor.BLACK; // AI总是使用黑方
 
+        // 高级难度且启用云库时，优先使用云库API
+        if (this.useCloudLibrary && this.difficultyLevel >= 6) {
+            try {
+                const cloudMove = await this.getCloudLibraryMove(game);
+                if (cloudMove) {
+                    console.log("使用云库着法", cloudMove);
+                    return cloudMove;
+                }
+            } catch (error) {
+                console.error("云库API请求失败，回退到本地算法", error);
+                // 云库请求失败，回退到本地算法
+            }
+        }
+
         // 所有难度都使用极小化极大算法，深度不同
         return this.getMiniMaxMove(board, aiColor, this.maxDepth);
+    }
+
+    /**
+     * 从云库获取最佳着法
+     * @param game 当前游戏
+     * @returns 最佳着法，如果无法获取则返回null
+     */
+    private async getCloudLibraryMove(game: Game): Promise<{ from: Position, to: Position } | null> {
+        try {
+            // 将棋盘转换为FEN格式
+            const fen = this.convertBoardToFEN(game);
+            if (!fen) return null;
+
+            // 构建API请求URL
+            const url = `${CLOUD_API_URL}?action=querybest&board=${encodeURIComponent(fen)}`;
+            
+            // 发送请求到云库API
+            // 移除timeout选项，使用默认超时设置
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                throw new Error(`云库API请求失败: ${response.status}`);
+            }
+            
+            const data = await response.text();
+            
+            // 解析响应，格式可能是 "move:c3c4" 或 "egtb:c3c4"
+            if (data && (data.startsWith('move:') || data.startsWith('egtb:'))) {
+                const parts = data.split(':');
+                if (parts.length < 2 || !parts[1]) {
+                    console.log('云库返回的着法格式无效:', data);
+                    return null;
+                }
+                
+                const moveText = parts[1];
+                
+                // 将云库的走法文本转换为位置
+                const move = this.convertCloudMoveToPositions(moveText);
+                if (move) {
+                    return move;
+                }
+            } else if (data === 'nobestmove' || data === 'unknown') {
+                console.log('云库没有最佳着法推荐');
+            } else {
+                console.log('云库返回未知格式:', data);
+            }
+            
+            return null;
+        } catch (error) {
+            console.error('访问云库API时出错:', error);
+            return null;
+        }
+    }
+
+    /**
+     * 将棋盘转换为FEN格式
+     * FEN格式: rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w
+     */
+    private convertBoardToFEN(game: Game): string | null {
+        const board = game.getBoardObject();
+        let fen = '';
+        
+        // 生成棋盘部分
+        for (let row = 0; row < Board.ROWS; row++) {
+            let emptyCount = 0;
+            
+            for (let col = 0; col < Board.COLS; col++) {
+                const piece = board.getPiece([row, col]);
+                
+                if (piece) {
+                    // 如果前面有空格，先加上空格数
+                    if (emptyCount > 0) {
+                        fen += emptyCount;
+                        emptyCount = 0;
+                    }
+                    
+                    // 添加棋子字符
+                    fen += this.getPieceFENChar(piece);
+                } else {
+                    emptyCount++;
+                }
+            }
+            
+            // 处理每行末尾的空格
+            if (emptyCount > 0) {
+                fen += emptyCount;
+            }
+            
+            // 除了最后一行，每行加上 '/'
+            if (row < Board.ROWS - 1) {
+                fen += '/';
+            }
+        }
+        
+        // 添加当前行动方
+        // 云库中w代表红方，b代表黑方，与我们的实现相反
+        fen += game.currentTurn === PieceColor.RED ? ' w' : ' b';
+        
+        return fen;
+    }
+
+    /**
+     * 获取棋子的FEN字符表示
+     */
+    private getPieceFENChar(piece: Piece): string {
+        let char = '';
+        
+        // 根据棋子类型确定基本字符
+        switch (piece.type) {
+            case PieceType.GENERAL:
+                char = 'k'; // 将/帅
+                break;
+            case PieceType.ADVISOR:
+                char = 'a'; // 士/仕
+                break;
+            case PieceType.ELEPHANT:
+                char = 'b'; // 象/相
+                break;
+            case PieceType.HORSE:
+                char = 'n'; // 马
+                break;
+            case PieceType.CHARIOT:
+                char = 'r'; // 车
+                break;
+            case PieceType.CANNON:
+                char = 'c'; // 炮
+                break;
+            case PieceType.SOLDIER:
+                char = 'p'; // 兵/卒
+                break;
+            default:
+                return '.'; // 未知棋子
+        }
+        
+        // 根据颜色确定大小写（红方大写，黑方小写）
+        // 注意：这里的逻辑需要与云库的FEN表示保持一致
+        return piece.color === PieceColor.RED ? char.toUpperCase() : char;
+    }
+
+    /**
+     * 将云库API返回的着法转换为位置
+     * 云库格式: "c3c4" 表示从c3移动到c4
+     */
+    private convertCloudMoveToPositions(moveText: string): { from: Position, to: Position } | null {
+        if (!moveText || moveText.length !== 4) {
+            return null;
+        }
+        
+        try {
+            // 棋盘坐标系转换
+            // 云库中列(a-i)对应0-8，行(0-9)对应9-0（翻转的）
+            const fromCol = moveText.charCodeAt(0) - 'a'.charCodeAt(0);
+            
+            // 确保字符存在并是有效数字
+            const fromRowChar = moveText.charAt(1);
+            if (!/[0-9]/.test(fromRowChar)) {
+                console.error('无效的行坐标:', fromRowChar);
+                return null;
+            }
+            const fromRow = 9 - parseInt(fromRowChar, 10);
+            
+            const toCol = moveText.charCodeAt(2) - 'a'.charCodeAt(0);
+            
+            // 确保字符存在并是有效数字
+            const toRowChar = moveText.charAt(3);
+            if (!/[0-9]/.test(toRowChar)) {
+                console.error('无效的行坐标:', toRowChar);
+                return null;
+            }
+            const toRow = 9 - parseInt(toRowChar, 10);
+            
+            // 检查转换后的坐标是否有效
+            if (
+                fromCol < 0 || fromCol >= Board.COLS || fromRow < 0 || fromRow >= Board.ROWS ||
+                toCol < 0 || toCol >= Board.COLS || toRow < 0 || toRow >= Board.ROWS
+            ) {
+                return null;
+            }
+            
+            return {
+                from: [fromRow, fromCol],
+                to: [toRow, toCol]
+            };
+        } catch (e) {
+            console.error('解析着法时出错:', moveText, e);
+            return null;
+        }
     }
 
     /**
