@@ -1,5 +1,5 @@
-import fs from 'fs/promises';
-import path from 'path';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { TelegramClient } from '@mtcute/bun';
 import {
@@ -21,6 +21,81 @@ declare module '@mtcute/bun' {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/**
+ * 跨平台路径处理工具
+ * 处理不同操作系统的路径差异，确保代码在所有平台上都能正常工作
+ */
+const pathUtils = {
+    /**
+     * 标准化路径，统一使用正斜杠
+     * @param p 原始路径
+     * @returns 标准化后的路径
+     */
+    normalize(p: string): string {
+        return p?.replace(/\\/g, '/') || '';
+    },
+
+    /**
+     * 检查文件是否存在
+     * @param filePath 文件路径
+     * @returns 布尔值，表示文件是否存在
+     */
+    async fileExists(filePath: string): Promise<boolean> {
+        if (!filePath) return false;
+        try {
+            const stat = await fs.stat(filePath);
+            return stat.isFile();
+        } catch (err) {
+            return false;
+        }
+    },
+
+    /**
+     * 检查目录是否存在
+     * @param dirPath 目录路径
+     * @returns 布尔值，表示目录是否存在
+     */
+    async dirExists(dirPath: string): Promise<boolean> {
+        if (!dirPath) return false;
+        try {
+            const stat = await fs.stat(dirPath);
+            return stat.isDirectory();
+        } catch (err) {
+            return false;
+        }
+    },
+
+    /**
+     * 确保目录存在，如果不存在则创建
+     * @param dirPath 目录路径
+     */
+    async ensureDir(dirPath: string): Promise<void> {
+        if (!dirPath) {
+            throw new Error('目录路径不能为空');
+        }
+        
+        try {
+            // 先检查目录是否已存在
+            if (await this.dirExists(dirPath)) {
+                return;
+            }
+            
+            // 创建目录，包括所有不存在的父目录
+            await fs.mkdir(dirPath, { recursive: true });
+        } catch (err) {
+            // 捕获可能的错误
+            // EEXIST错误可以忽略（目录已存在）
+            const error = err instanceof Error ? err : new Error(String(err));
+            if ('code' in error && error.code === 'EEXIST') {
+                return;
+            }
+            
+            // 其他错误需要抛出
+            throw error;
+        }
+    }
+};
 
 // 基础事件上下文
 export interface BaseContext {
@@ -198,9 +273,10 @@ export class Features {
      */
     private async ensureConfigDir() {
         try {
-            await fs.mkdir(this.configDir, { recursive: true });
+            await pathUtils.ensureDir(this.configDir);
         } catch (err) {
-            log.error('Failed to create config directory:', err);
+            const error = err instanceof Error ? err : new Error(String(err));
+            log.error(`创建配置目录失败: ${error.message}`);
         }
     }
 
@@ -426,10 +502,7 @@ export class Features {
             const configPath = path.join(this.configDir, `${pluginName}.json`);
 
             // 检查文件是否存在
-            try {
-                await fs.access(configPath);
-            } catch (err) {
-                // 文件不存在，返回null
+            if (!await pathUtils.fileExists(configPath)) {
                 return null;
             }
 
@@ -1003,44 +1076,48 @@ export class Features {
         try {
             log.info(`开始加载插件: ${pluginName}`);
 
-            // 处理可能包含子目录的路径
-            const isSubdirPlugin = pluginName.includes('/') || pluginName.includes('\\');
-            let pluginPath: string;
-            let actualName: string;
-
-            if (isSubdirPlugin) {
-                // 处理子目录中的插件
-                const normalizedName = pluginName.replace(/\\/g, '/'); // 统一用斜杠作为路径分隔符
+            // 处理可能包含子目录的路径 - 统一使用正斜杠
+            const normalizedName = pathUtils.normalize(pluginName);
+            
+            // 确定实际插件名称（无扩展名）
+            let actualName = normalizedName;
+            if (actualName.endsWith('.ts') || actualName.endsWith('.js')) {
+                actualName = actualName.replace(/\.(ts|js)$/, '');
+            }
+            
+            // 查找插件文件路径
+            let pluginPath = '';
+            
+            // 尝试确定文件扩展名
+            if (!normalizedName.endsWith('.ts') && !normalizedName.endsWith('.js')) {
+                // 定义可能的扩展名列表，优先尝试.ts
+                const possibleExts = ['.ts', '.js'];
+                let found = false;
                 
-                // 确定插件文件的扩展名
-                const ext = normalizedName.endsWith('.ts') || normalizedName.endsWith('.js')
-                    ? ''
-                    : (await fs.access(path.join(this.pluginsDir, `${normalizedName}.ts`))
-                        .then(() => '.ts')
-                        .catch(() => '.js'));
+                for (const ext of possibleExts) {
+                    const testPath = path.join(this.pluginsDir, `${normalizedName}${ext}`);
+                    if (await pathUtils.fileExists(testPath)) {
+                        pluginPath = testPath;
+                        found = true;
+                        break;
+                    }
+                }
                 
-                pluginPath = path.join(this.pluginsDir, `${normalizedName}${ext}`);
-                
-                // 从路径中提取插件名称（保留子目录结构）
-                actualName = normalizedName;
-                if (ext) {
-                    actualName = normalizedName;
-                } else {
-                    // 移除扩展名
-                    actualName = normalizedName.replace(/\.(ts|js)$/, '');
+                if (!found) {
+                    log.warn(`找不到插件文件: ${normalizedName}`);
+                    return false;
                 }
             } else {
-                // 处理直接位于plugins目录下的插件
-                const ext = pluginName.endsWith('.ts') || pluginName.endsWith('.js')
-                    ? ''
-                    : (await fs.access(path.join(this.pluginsDir, `${pluginName}.ts`))
-                        .then(() => '.ts')
-                        .catch(() => '.js'));
-                
-                pluginPath = path.join(this.pluginsDir, `${pluginName}${ext}`);
-                actualName = path.basename(pluginName, ext);
+                // 已经有扩展名，直接使用
+                pluginPath = path.join(this.pluginsDir, normalizedName);
+                if (!await pathUtils.fileExists(pluginPath)) {
+                    log.warn(`找不到插件文件: ${pluginPath}`);
+                    return false;
+                }
             }
 
+            // 标准化最终路径（确保在所有平台上都使用正斜杠）
+            pluginPath = pathUtils.normalize(pluginPath);
             log.debug(`插件路径: ${pluginPath}`);
 
             // 检查文件是否是有效插件
@@ -1056,22 +1133,8 @@ export class Features {
                 this.plugins.delete(actualName);
             }
 
-            // 清除缓存以确保获取最新版本
-            try {
-                const nodeRequire = typeof require !== 'undefined' ? require : null;
-                if (nodeRequire) {
-                    delete nodeRequire.cache[nodeRequire.resolve(pluginPath)];
-                }
-            } catch (e) {
-                // 忽略未找到的模块
-                log.debug(`清除模块缓存时出错: ${e}`);
-            }
-
-            // 添加时间戳以防止缓存
-            const timestampedPath = `${pluginPath}?update=${Date.now()}`;
-
             // 加载插件
-            const success = await this.loadSinglePlugin(actualName, timestampedPath, autoEnable);
+            const success = await this.loadSinglePlugin(actualName, pluginPath, autoEnable);
 
             if (!success) {
                 log.warn(`加载插件 ${pluginName} 失败`);
@@ -1100,8 +1163,28 @@ export class Features {
         try {
             log.info(`加载插件: ${pluginPath}`);
 
+            // 处理导入路径
+            let importPath = pluginPath;
+            
+            // 添加时间戳以防止缓存，但要确保是有效URL
+            try {
+                // 尝试将路径转换为URL格式
+                if (importPath.startsWith('/')) {
+                    // 绝对路径转为文件URL
+                    importPath = `file://${importPath}`;
+                }
+                
+                // 添加时间戳查询参数
+                const fileURL = new URL(`${importPath}`);
+                fileURL.searchParams.set('update', Date.now().toString());
+                importPath = fileURL.toString();
+            } catch (err) {
+                // 如果转换失败，使用简单字符串拼接
+                importPath = `${pluginPath}?update=${Date.now()}`;
+            }
+            
             // 获取插件模块
-            const module = await import(pluginPath);
+            const module = await import(importPath);
             const plugin: BotPlugin | undefined = module.default;
 
             // 由于scanPluginsDir已经过滤过，这里仅做一次基本验证
@@ -1275,22 +1358,43 @@ export class Features {
      */
     private async isValidPluginFile(filePath: string): Promise<boolean> {
         try {
+            // 首先检查文件是否存在
+            if (!filePath || !await pathUtils.fileExists(filePath)) {
+                return false;
+            }
+            
+            // 使用URL对象处理路径，增加安全性
+            let importPath = filePath;
+            
+            // 添加时间戳以防止缓存，但要确保是有效URL
+            try {
+                // 尝试将路径转换为URL格式
+                if (importPath.startsWith('/')) {
+                    // 绝对路径转为文件URL
+                    importPath = `file://${importPath}`;
+                }
+                
+                // 添加时间戳查询参数
+                const fileURL = new URL(`${importPath}`);
+                fileURL.searchParams.set('check', Date.now().toString());
+                importPath = fileURL.toString();
+            } catch (err) {
+                // 如果转换失败，使用简单字符串拼接
+                importPath = `${filePath}?check=${Date.now()}`;
+            }
+            
             // 尝试导入文件
-            const module = await import(`${filePath}?check=${Date.now()}`);
+            const module = await import(importPath);
             
-            // 检查是否有默认导出
-            if (!module.default) {
-                return false;
-            }
-            
+            // 检查是否有默认导出和必要属性
             const plugin = module.default;
-            
-            // 检查基本结构
-            if (!plugin || typeof plugin !== 'object' || !plugin.name) {
+            if (!plugin || 
+                typeof plugin !== 'object' || 
+                !plugin.name) {
                 return false;
             }
             
-            // 检查是否包含插件必要的属性
+            // 检查是否包含插件必要的功能
             const hasPluginFeatures = 
                 (plugin.commands && Array.isArray(plugin.commands)) || 
                 (plugin.events && Array.isArray(plugin.events)) || 
@@ -1299,6 +1403,9 @@ export class Features {
             return hasPluginFeatures;
         } catch (err) {
             // 导入出错，不是有效插件
+            if (err instanceof Error && err.message) {
+                log.debug(`插件文件验证错误 (${filePath}): ${err.message}`);
+            }
             return false;
         }
     }
@@ -1312,44 +1419,64 @@ export class Features {
     private async scanPluginsDir(dir: string): Promise<{ name: string; path: string }[]> {
         const results: { name: string; path: string }[] = [];
         
+        // 检查参数有效性
+        if (!dir) {
+            log.warn('扫描目录路径不能为空');
+            return results;
+        }
+        
         try {
+            // 检查目录是否存在
+            if (!await pathUtils.dirExists(dir)) {
+                log.warn(`目录不存在: ${dir}`);
+                return results;
+            }
+            
             // 读取目录内容
             const files = await fs.readdir(dir);
             
-            // 处理所有文件和子目录
-            for (const file of files) {
+            // 并行处理所有文件和子目录，提高性能
+            const processPromises = files.map(async (file) => {
                 const fullPath = path.join(dir, file);
                 
                 try {
                     // 检查是否是目录
-                    const stat = await fs.stat(fullPath);
-                    
-                    if (stat.isDirectory()) {
+                    if (await pathUtils.dirExists(fullPath)) {
                         // 递归扫描子目录
                         const subDirPlugins = await this.scanPluginsDir(fullPath);
-                        results.push(...subDirPlugins);
-                    } else if (file.endsWith('.ts') || file.endsWith('.js')) {
+                        return subDirPlugins; // 返回子目录的结果
+                    } 
+                    // 只处理.ts和.js文件
+                    else if (file.endsWith('.ts') || file.endsWith('.js')) {
                         // 检查是否是实际的插件文件
                         if (await this.isValidPluginFile(fullPath)) {
                             // 是有效的插件文件
                             // 使用相对于插件根目录的路径作为名称
                             const relativePath = path.relative(this.pluginsDir, fullPath);
-                            const pluginName = relativePath.replace(/\\/g, '/').replace(/\.(ts|js)$/, '');
-                            
-                            results.push({ 
-                                name: pluginName,
-                                path: fullPath 
-                            });
+                            // 统一使用正斜杠，并移除扩展名
+                            const pluginName = pathUtils.normalize(relativePath).replace(/\.(ts|js)$/, '');
                             
                             log.debug(`发现有效插件: ${pluginName}`);
+                            return [{ name: pluginName, path: fullPath }];
                         } else {
                             log.debug(`跳过非插件文件: ${fullPath}`);
                         }
                     }
+                    return []; // 如果不是目录或有效插件文件，返回空数组
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.warn(`无法处理文件或目录 ${fullPath}: ${error.message}`);
-                    continue;
+                    log.warn(`处理文件或目录时出错 ${fullPath}: ${error.message}`);
+                    return []; // 出错时返回空数组
+                }
+            });
+            
+            // 等待所有处理完成
+            const resultsArrays = await Promise.all(processPromises);
+            
+            // 合并所有结果
+            for (const resultArray of resultsArrays) {
+                if (resultArray && resultArray.length) {
+                    results.push(...resultArray);
                 }
             }
         } catch (err) {
