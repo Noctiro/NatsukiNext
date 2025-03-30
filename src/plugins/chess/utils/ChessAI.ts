@@ -128,14 +128,20 @@ export class ChessAI {
                 const move = this.convertCloudMoveToPositions(moveText);
                 if (move) {
                     return move;
+                } else {
+                    // Handle cases where move parsing failed but format was initially correct
+                    console.log('无法解析云库返回的着法:', moveText);
+                    return null;
                 }
             } else if (data === 'nobestmove' || data === 'unknown') {
-                console.log('云库没有最佳着法推荐');
+                // Explicitly handle 'nobestmove' and 'unknown'
+                console.log('云库没有最佳着法推荐或局面未知:', data);
+                return null;
             } else {
+                // Log any other unexpected format
                 console.log('云库返回未知格式:', data);
+                return null;
             }
-            
-            return null;
         } catch (error) {
             console.error('访问云库API时出错:', error);
             return null;
@@ -1137,4 +1143,4 @@ export class ChessAI {
         
         return aggressionScore;
     }
-} 
+}

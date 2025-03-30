@@ -218,26 +218,26 @@ export class MoveValidator {
         
         // 红方兵
         if (piece.color === 'red') {
-            // 未过河（在己方区域）
-            if (fromRow > 4) {
-                // 只能向前（向上）走
+            // 未过河（在己方区域，行号 5-9）
+            if (fromRow >= 5) {
+                // 只能向前（向上）走一格
                 return toRow === fromRow - 1 && toCol === fromCol;
-            } else {
-                // 过河后，可以向前或左右走，但不能后退
-                // 修复：不能后退，即新行不能大于原行
-                return (toRow < fromRow || (toRow === fromRow && toCol !== fromCol));
+            } else { // 已过河（行号 0-4）
+                // 可以向前（向上）走一格，或左右平移一格
+                return (toRow === fromRow - 1 && toCol === fromCol) || // 向前
+                       (toRow === fromRow && Math.abs(toCol - fromCol) === 1); // 左右
             }
-        } 
+        }
         // 黑方卒
         else {
-            // 未过河（在己方区域）
-            if (fromRow < 5) {
-                // 只能向前（向下）走
+            // 未过河（在己方区域，行号 0-4）
+            if (fromRow <= 4) {
+                // 只能向前（向下）走一格
                 return toRow === fromRow + 1 && toCol === fromCol;
-            } else {
-                // 过河后，可以向前或左右走，但不能后退
-                // 修复：不能后退，即新行不能小于原行
-                return (toRow > fromRow || (toRow === fromRow && toCol !== fromCol));
+            } else { // 已过河（行号 5-9）
+                // 可以向前（向下）走一格，或左右平移一格
+                return (toRow === fromRow + 1 && toCol === fromCol) || // 向前
+                       (toRow === fromRow && Math.abs(toCol - fromCol) === 1); // 左右
             }
         }
     }

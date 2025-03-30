@@ -195,12 +195,12 @@ export class Board {
         const newBoard = new Board();
         for (let row = 0; row < Board.ROWS; row++) {
             if (!this.data[row]) continue;
-            
+
             // 确保目标板上的行数组存在
             if (!newBoard.data[row]) {
                 newBoard.data[row] = Array(Board.COLS).fill(null);
             }
-            
+
             for (let col = 0; col < Board.COLS; col++) {
                 const piece = this.data[row]![col];
                 if (piece) {
@@ -219,28 +219,28 @@ export class Board {
         const redGeneral = this.getPiecesByTypeAndColor(PieceType.GENERAL, PieceColor.RED)[0];
         // 找到黑方将
         const blackGeneral = this.getPiecesByTypeAndColor(PieceType.GENERAL, PieceColor.BLACK)[0];
-        
+
         if (!redGeneral || !blackGeneral) {
             return false;
         }
-        
+
         // 检查是否在同一列
         if (redGeneral.position[1] !== blackGeneral.position[1]) {
             return false;
         }
-        
+
         // 检查它们之间是否有其他棋子
         const col = redGeneral.position[1];
         const startRow = Math.min(redGeneral.position[0], blackGeneral.position[0]);
         const endRow = Math.max(redGeneral.position[0], blackGeneral.position[0]);
-        
+
         for (let row = startRow + 1; row < endRow; row++) {
             const rowData = this.data[row];
             if (rowData && rowData[col] !== null) {
                 return false;
             }
         }
-        
+
         return true;
     }
 } 

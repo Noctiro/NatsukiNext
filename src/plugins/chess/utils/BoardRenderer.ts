@@ -41,9 +41,6 @@ export class BoardRenderer {
     private static readonly LAST_MOVE_COLOR = 'rgba(255, 140, 0, 0.4)'; // 最后移动位置标记色（橙色半透明）
     private static readonly ARROW_COLOR = 'rgba(255, 60, 0, 0.75)';      // 走法箭头色
     private static readonly PIECE_TEXT_STROKE = '#F8F8FF';  // 棋子文字描边色（浅灰色）
-    private static readonly INFO_PANEL_BG = 'rgba(255, 255, 255, 0.85)'; // 信息面板背景
-    // 纵坐标汉字
-    private static readonly VERTICAL_COORDS = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
     
     /**
      * 绘制箭头的辅助方法
@@ -360,27 +357,31 @@ export class BoardRenderer {
             ctx.shadowColor = 'rgba(255, 255, 255, 0.6)';
             ctx.shadowBlur = 2;
             
-            // 列坐标绘制优化
+            // 列坐标绘制优化 (标准：下方1-9，上方9-1)
             for (let col = 0; col < Board.COLS; col++) {
                 const xPos = startX + col * this.CELL_SIZE;
-                // 上方坐标
-                ctx.fillText((col + 1).toString(), xPos, offsetY - 8);
-                // 下方坐标
-                ctx.fillText((col + 1).toString(), xPos, startY + Board.ROWS * this.CELL_SIZE + 8);
+                const yPosTop = offsetY - 8; // Y position for top coordinates
+                const yPosBottom = startY + (Board.ROWS - 1) * this.CELL_SIZE + coordOffset + 12; // Adjusted Y position further down
+
+                // 上方坐标 (黑方视角 9-1)
+                ctx.fillText((Board.COLS - col).toString(), xPos, yPosTop);
+                // 下方坐标 (红方视角 1-9)
+                ctx.fillText((col + 1).toString(), xPos, yPosBottom);
             }
-            
-            // 行坐标绘制优化
+
+            // 添加左右两侧坐标 (标准：使用红方视角 1-9)
+            ctx.textAlign = 'center'; // Ensure center alignment for vertical text
             for (let row = 0; row < Board.ROWS; row++) {
                 const yPos = startY + row * this.CELL_SIZE;
-                const coordIndex = Math.min(Board.ROWS - row - 1, this.VERTICAL_COORDS.length - 1);
-                const coordText = this.VERTICAL_COORDS[coordIndex] || '?';
+                const coordText = (row + 1).toString(); // Red's perspective (1 down to 9)
 
                 // 左侧坐标
                 ctx.fillText(coordText, offsetX - 12, yPos + 4);
-                // 修正右侧坐标位置
-                const rightCoordX = startX + (Board.COLS-1) * this.CELL_SIZE + 24; // 增加到24px间距
+                // 右侧坐标
+                const rightCoordX = startX + (Board.COLS - 1) * this.CELL_SIZE + coordOffset + 12; // Adjusted X position
                 ctx.fillText(coordText, rightCoordX, yPos + 4);
             }
+
             // 重置阴影
             ctx.shadowColor = 'transparent';
             ctx.shadowBlur = 0;
@@ -483,12 +484,16 @@ export class BoardRenderer {
             this.drawArrow(ctx, fromX, fromY, toX, toY);
         }
         
-        // 绘制游戏信息面板
-        const infoPanelHeight = 36;
-        const infoPanelY = height - this.BORDER_WIDTH - infoPanelHeight;
-        const infoPanelWidth = (Board.COLS-1) * this.CELL_SIZE - 2; // 微调宽度
+        // 绘制游戏信息面板 (调整位置避免遮挡下方坐标)
+        const infoPanelHeight = 38; // Slightly taller for more info
+        // Calculate position above the bottom coordinates and border, moving it slightly lower
+        const bottomCoordY = showCoordinates ? (startY + (Board.ROWS - 1) * this.CELL_SIZE + coordOffset + 12) : (startY + (Board.ROWS - 1) * this.CELL_SIZE + this.CELL_SIZE * 0.5); // Y of bottom coords or slightly below last line if no coords
+        const spaceBelowBoard = height - bottomCoordY - (this.BORDER_WIDTH / 2); // Space between coords/last line and bottom border edge
+        const infoPanelY = bottomCoordY + (spaceBelowBoard - infoPanelHeight) / 2 + 5; // Center vertically then shift down by 5 pixels
+
+        const infoPanelWidth = (Board.COLS - 1) * this.CELL_SIZE - 2; // 微调宽度
         const infoPanelX = startX + 1; // 精确左对齐
-        
+
         // 绘制信息面板背景
         const infoPanelGradient = ctx.createLinearGradient(infoPanelX, infoPanelY, infoPanelX, infoPanelY + infoPanelHeight);
         infoPanelGradient.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
@@ -503,19 +508,22 @@ export class BoardRenderer {
         
         // 游戏信息文本
         ctx.fillStyle = game.currentTurn === PieceColor.RED ? this.RED_PIECE_COLOR : this.BLACK_PIECE_COLOR;
-        ctx.font = `bold 16px ${fontFamily}`;
+        ctx.font = `bold 15px ${fontFamily}`; // Slightly smaller font
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        
-        // 当前回合信息
-        let infoText = `当前回合：${game.currentTurn === PieceColor.RED ? '红方' : '黑方'}`;
-        
+
+        // Calculate move number (round up for pairs of moves)
+        const moveNumber = Math.floor(game.history.length / 2) + 1; // Use game.history
+
+        // 当前回合信息 + 步数
+        let infoText = `第 ${moveNumber} 回合 - 当前：${game.currentTurn === PieceColor.RED ? '红方' : '黑方'}`;
+
         // 如果有上一步走法，显示走法信息
         if (game.lastMove) {
-            infoText += `　上一步：${game.lastMove}`;
+            infoText += ` | 上一步：${game.lastMove}`;
         }
-        
-        const textY = infoPanelY + infoPanelHeight / 2 + 2;
+
+        const textY = infoPanelY + infoPanelHeight / 2 + 1; // Adjust vertical alignment slightly
         ctx.fillText(infoText, infoPanelX + infoPanelWidth / 2, textY);
         
         try {
@@ -539,16 +547,14 @@ export class BoardRenderer {
         // 添加CSS样式，确保棋盘更美观
         result += '<div style="font-family: monospace; line-height: 1.2; white-space: pre;">';
         
-        // 列标识（阿拉伯数字1-9）- 改进对齐
-        result += '　　１　２　３　４　５　６　７　８　９<br>';
-        result += '　┌───┬───┬───┬───┬───┬───┬───┬───┬───┐<br>';
+        // 列标识（上方９-１，下方１-９）- 改进对齐
+        result += '　　 ９　８　７　６　５　４　３　２　１<br>'; // Top coordinates (Black's view)
+        result += '　 ┌───┬───┬───┬───┬───┬───┬───┬───┬───┐<br>'; // Top border
 
         for (let row = 0; row < Board.ROWS; row++) {
-            // 行号处理（汉字一到十）
-            const coordIndex = Math.min(Board.ROWS - row - 1, this.VERTICAL_COORDS.length - 1);
-            const coordText = this.VERTICAL_COORDS[coordIndex] || '?'; // 提供默认值防止undefined
-            const displayRow = coordText.padStart(2, '　');
-            result += `${displayRow}│`;
+            // Add left coordinate (Red's perspective 1-9)
+            const leftCoord = (row + 1).toString().padStart(2, ' '); // Pad with space for alignment
+            result += `${leftCoord} │`; // Add coordinate and separator
 
             // 棋盘内容
             for (let col = 0; col < Board.COLS; col++) {
@@ -580,31 +586,36 @@ export class BoardRenderer {
                 result += col < Board.COLS - 1 ? '│' : '';
             }
 
-            result += '│<br>';
+            // Add right coordinate (Red's perspective 1-9)
+            const rightCoord = (row + 1).toString();
+            result += `│ ${rightCoord}<br>`; // Add separator and coordinate
 
-            // 行分隔符
+            // 行分隔符 (Add padding for side coordinates)
             if (row < Board.ROWS - 1) {
-                if (row === 4) {
-                    // 楚河汉界处特殊处理 - 使用较粗的横线
-                    result += '　├═══┴═══┴═══┴═══┴═══┴═══┴═══┴═══┴═══┤<br>';
-                } else if (row === 3) {
-                    // 河界上方边界 - 使用较粗的横线
-                    result += '　├═══┴═══┴═══┴═══┴═══┴═══┴═══┴═══┴═══┤<br>';
-                } else {
-                    // 普通行分隔符
-                    result += '　├───┼───┼───┼───┼───┼───┼───┼───┼───┤<br>';
+                if (row === 4) { // River separator
+                    result += '　 ├═══┴═══┴═══┴═══┴═══┴═══┴═══┴═══┴═══┤<br>';
+                } else if (row === 3) { // River top border
+                    result += '　 ├═══┴═══┴═══┴═══┴═══┴═══┴═══┴═══┴═══┤<br>';
+                } else { // Normal row separator
+                    result += '　 ├───┼───┼───┼───┼───┼───┼───┼───┼───┤<br>';
                 }
             }
         }
 
-        // 底部边框
-        result += '　└───┴───┴───┴───┴───┴───┴───┴───┴───┘<br>';
+        // 底部边框 (Add padding)
+        result += '　 └───┴───┴───┴───┴───┴───┴───┴───┴───┘<br>'; // Bottom border
+        // 列标识（下方１-９） (Add padding)
+        result += '　　 １　２　３　４　５　６　７　８　９<br>'; // Bottom coordinates (Red's view)
 
-        // 游戏信息区域
-        result += `<div style="margin-top:10px;padding:8px;background:#f5f5f5;border-radius:5px;border:1px solid #ddd;">`;
-        result += `<span style="color:${game.currentTurn === PieceColor.RED ? this.RED_PIECE_COLOR : this.BLACK_PIECE_COLOR};font-weight:bold;">`;
-        result += `当前回合：${game.currentTurn === PieceColor.RED ? '红方' : '黑方'}</span><br>`;
+        // 游戏信息区域 (Add padding to center it relative to the board grid)
+        result += `<div style="margin-left: 2em; margin-top:10px;padding:8px;background:#f5f5f5;border-radius:5px;border:1px solid #ddd; display: inline-block;">`; // Use inline-block and margin for centering
         
+        // Calculate move number
+        const moveNumber = Math.floor(game.history.length / 2) + 1; // Use game.history
+        
+        result += `<span style="color:${game.currentTurn === PieceColor.RED ? this.RED_PIECE_COLOR : this.BLACK_PIECE_COLOR};font-weight:bold;">`;
+        result += `第 ${moveNumber} 回合 - 当前：${game.currentTurn === PieceColor.RED ? '红方' : '黑方'}</span><br>`;
+
         if (game.lastMove) {
             result += `上一步：${game.lastMove}<br>`;
         }
@@ -653,4 +664,4 @@ export class BoardRenderer {
         ctx.lineTo(fromX, toY);
         ctx.stroke();
     }
-} 
+}

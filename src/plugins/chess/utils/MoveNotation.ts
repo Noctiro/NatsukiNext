@@ -20,7 +20,7 @@ export class MoveNotation {
         8: '八',
         9: '九'
     };
-    
+
     // 数字转繁体中文数字映射
     private readonly NUM_TO_TRAD_CHINESE: Record<number, string> = {
         1: '壹',
@@ -33,16 +33,16 @@ export class MoveNotation {
         8: '捌',
         9: '玖'
     };
-    
+
     // 中文数字转数字映射
     private readonly CHINESE_TO_NUM: Record<string, number> = {
         '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
         '壹': 1, '贰': 2, '叁': 3, '肆': 4, '伍': 5, '陆': 6, '柒': 7, '捌': 8, '玖': 9,
         '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-        // 修正黑方数字映射（棋盘从右往左）
-        '１': 8, '２': 7, '３': 6, '４': 5, '５': 4, '６': 3, '７': 2, '８': 1, '９': 0  
+        // 标准化：所有数字表示都映射到 1-9
+        '１': 1, '２': 2, '３': 3, '４': 4, '５': 5, '６': 6, '７': 7, '８': 8, '９': 9
     };
-    
+
     // 简体到繁体字符映射
     private readonly SIMPLIFIED_TO_TRADITIONAL: Record<string, string> = {
         '车': '車',
@@ -60,7 +60,7 @@ export class MoveNotation {
         '退': '退',
         '平': '平'
     };
-    
+
     // 繁体到简体字符映射
     private readonly TRADITIONAL_TO_SIMPLIFIED: Record<string, string> = {
         '車': '车',
@@ -78,7 +78,7 @@ export class MoveNotation {
         '退': '退',
         '平': '平'
     };
-    
+
     /**
      * 解析中文走法
      * @returns 起始和目标位置
@@ -86,23 +86,23 @@ export class MoveNotation {
     parseChineseNotation(notation: string, board: Board, currentTurn: PieceColor): { from?: Position, to?: Position } {
         // 将繁体字转换为简体
         notation = this.convertToSimplified(notation);
-        
+
         // 将数字替换为中文数字
         notation = notation.replace(/([车马炮象相仕士将帅兵卒])(\d)/g, (_, piece, num) => {
             const chineseNum = this.NUM_TO_CHINESE[parseInt(num)] || '';
             return piece + chineseNum;
         });
-        
+
         // 分解走法文本
         if (notation.length < 4) {
             throw new Error('走法格式不正确，应为"炮二平五"这样的格式');
         }
-        
+
         const pieceChar = notation.charAt(0);
         const positionChar = notation.charAt(1);
         const actionChar = notation.charAt(2);
         const targetChar = notation.charAt(3);
-        
+
         // 确定棋子类型
         let pieceType: PieceType;
         switch (pieceChar) {
@@ -134,19 +134,19 @@ export class MoveNotation {
             default:
                 throw new Error(`未知的棋子类型: ${pieceChar}`);
         }
-        
+
         // 找到起始位置的棋子
         const sourcePiece = this.findPieceByNotation(board, pieceType, currentTurn, positionChar);
         if (!sourcePiece) {
             throw new Error(`找不到符合条件的${pieceChar}${positionChar}棋子`);
         }
-        
+
         const [sourceRow, sourceCol] = sourcePiece.position;
-        
+
         // 计算目标位置
         let targetRow: number | undefined = undefined;
         let targetCol: number | undefined = undefined;
-        
+
         const targetNum = this.CHINESE_TO_NUM[targetChar];
         if (!targetNum) {
             throw new Error(`无效的目标数字/列: ${targetChar}`);
@@ -156,12 +156,14 @@ export class MoveNotation {
         switch (actionChar) {
             case '平':
                 targetRow = sourceRow;
-                // 目标列根据颜色转换视角
-                targetCol = currentTurn === PieceColor.RED ? 
-                    targetNum - 1 : 
-                    8 - (targetNum - 1);
+                // 目标列根据颜色转换视角 (num 1-9 -> col 0-8)
+                // Red: col = num - 1
+                // Black: col = 9 - num
+                targetCol = currentTurn === PieceColor.RED ?
+                    targetNum - 1 :
+                    9 - targetNum;
                 break;
-            
+
             case '进':
             case '退':
                 const isForward = actionChar === '进';
@@ -176,12 +178,12 @@ export class MoveNotation {
                     } else {
                         targetRow = isForward ? sourceRow + steps : sourceRow - steps;
                     }
-                } 
+                }
                 // 非线性移动棋子 (马, 象, 士)
                 else {
-                    // 目标列根据颜色转换视角
-                    targetCol = isRed ? targetNum - 1 : 8 - (targetNum - 1);
-                    
+                    // 目标列根据颜色转换视角 (num 1-9 -> col 0-8)
+                    targetCol = isRed ? targetNum - 1 : 9 - targetNum;
+
                     // 查找唯一匹配的几何移动
                     const possibleMoves = this.getGeometricMoves(pieceType, [sourceRow, sourceCol]);
                     const matchingMoves = possibleMoves.filter(move => {
@@ -196,7 +198,7 @@ export class MoveNotation {
                     if (matchingMoves.length === 1) {
                         const theMove = matchingMoves[0];
                         // Use non-null assertion '!' as we know theMove is defined here
-                        targetRow = theMove![0]; 
+                        targetRow = theMove![0];
                     } else if (matchingMoves.length === 0) {
                         throw new Error(`找不到从 (${sourceRow},${sourceCol}) ${actionChar} 到列 ${targetNum} 的合法 ${pieceChar} 走法`);
                     } else {
@@ -211,9 +213,9 @@ export class MoveNotation {
 
         // 检查计算出的目标位置
         if (targetRow === undefined || targetCol === undefined) {
-             throw new Error('无法计算目标位置');
+            throw new Error('无法计算目标位置');
         }
-        
+
         // 检查目标位置是否在棋盘范围内 (必须在计算后检查)
         if (!board.isValidPosition(targetRow, targetCol)) {
             throw new Error('目标位置超出棋盘范围');
@@ -224,42 +226,50 @@ export class MoveNotation {
             to: [targetRow, targetCol]
         };
     }
-    
+
     /**
      * 生成走法标记
      */
     generateMoveNotation(piece: Piece, from: Position, to: Position): string {
         const [fromRow, fromCol] = from;
         const [toRow, toCol] = to;
-        
+
         // 棋子名称
         let pieceText = piece.name;
-        
+
         // 确定棋子的位置描述
-        let positionText = this.getPositionText(piece, fromCol);
-        
+        let positionText = this.getPositionText(piece, fromCol); // 列描述（考虑颜色）
+
         // 确定移动方向和距离
         let actionText: string;
-        let targetText: string;
-        
+        let targetDesc: string; // 目标列或步数描述（考虑颜色）
+
         if (fromRow === toRow) {
             // 水平移动("平")
             actionText = '平';
-            targetText = this.NUM_TO_CHINESE[toCol + 1] || '一';
-        } else if ((piece.color === PieceColor.RED && toRow < fromRow) ||
-                  (piece.color === PieceColor.BLACK && toRow > fromRow)) {
-            // 向前移动("进")
-            actionText = '进';
-            targetText = this.NUM_TO_CHINESE[Math.abs(toRow - fromRow)] || '一';
+            // 目标列描述 (col 0-8 -> num 1-9 based on color)
+            const targetColNum = piece.color === PieceColor.RED ? toCol + 1 : 9 - toCol;
+            targetDesc = this.NUM_TO_CHINESE[targetColNum] || '?';
         } else {
-            // 向后移动("退")
-            actionText = '退';
-            targetText = this.NUM_TO_CHINESE[Math.abs(toRow - fromRow)] || '一';
+            // 垂直或斜向移动 ("进" 或 "退")
+            const isForward = (piece.color === PieceColor.RED && toRow < fromRow) ||
+                (piece.color === PieceColor.BLACK && toRow > fromRow);
+            actionText = isForward ? '进' : '退';
+
+            // 线性移动棋子 (车, 炮, 兵, 将/帅) - 描述为步数
+            if ([PieceType.CHARIOT, PieceType.CANNON, PieceType.SOLDIER, PieceType.GENERAL].includes(piece.type)) {
+                targetDesc = this.NUM_TO_CHINESE[Math.abs(toRow - fromRow)] || '?';
+            }
+            // 非线性移动棋子 (马, 象, 士) - 描述为目标列
+            else {
+                const targetColNum = piece.color === PieceColor.RED ? toCol + 1 : 9 - toCol;
+                targetDesc = this.NUM_TO_CHINESE[targetColNum] || '?';
+            }
         }
-        
-        return pieceText + positionText + actionText + targetText;
+
+        return pieceText + positionText + actionText + targetDesc;
     }
-    
+
     /**
      * 生成繁体走法标记
      */
@@ -267,52 +277,56 @@ export class MoveNotation {
         const simplifiedNotation = this.generateMoveNotation(piece, from, to);
         return this.convertToTraditional(simplifiedNotation);
     }
-    
+
     /**
-     * 根据列号获取棋子位置描述
+     * 根据列号获取棋子位置描述 (考虑颜色视角)
      */
     private getPositionText(piece: Piece, col: number): string {
-        // 获取列号（基于1的索引）
-        const colNum = col + 1;
-        
-        // 对于"帅"和"将"，使用"中"表示
-        if (piece.type === PieceType.GENERAL) {
-            return '中';
-        }
-        
-        return this.NUM_TO_CHINESE[colNum] || '一';
+        // 获取列号（基于1-9的索引，根据颜色调整）
+        // Red: col 0 -> num 1, col 8 -> num 9 => num = col + 1
+        // Black: col 0 -> num 9, col 8 -> num 1 => num = 9 - col
+        const colNum = piece.color === PieceColor.RED ? col + 1 : 9 - col;
+
+        // 对于"帅"和"将"，如果有多于一个（理论上不可能，但以防万一），才需要区分
+        // 但标准记法中，将帅通常只用棋子名+动作+目标，不带起始列描述，除非需要消歧义（如双将杀）
+        // 简化处理：将/帅不加列描述符，除非需要处理特殊歧义情况（暂不处理）
+        // if (piece.type === PieceType.GENERAL) {
+        //     return ''; // 通常省略
+        // }
+
+        return this.NUM_TO_CHINESE[colNum] || '?';
     }
-    
+
     /**
      * 将繁体字转换为简体字
      */
     private convertToSimplified(text: string): string {
         return [...text].map(char => this.TRADITIONAL_TO_SIMPLIFIED[char] || char).join('');
     }
-    
+
     /**
      * 将简体字转换为繁体字
      */
     private convertToTraditional(text: string): string {
         return [...text].map(char => this.SIMPLIFIED_TO_TRADITIONAL[char] || char).join('');
     }
-    
+
     /**
      * 根据位置描述找到对应的棋子
      */
     private findPieceByNotation(board: Board, type: PieceType, color: PieceColor, positionChar: string): Piece | null {
         // 获取所有匹配类型和颜色的棋子
         const pieces = board.getPiecesByTypeAndColor(type, color);
-        
+
         if (pieces.length === 0) {
             return null;
         }
-        
+
         if (pieces.length === 1) {
             // 只有一个这种类型的棋子
             return pieces[0] || null;
         }
-        
+
         // 如果是相对位置描述（前、中、后）
         if (['前', '中', '后'].includes(positionChar)) {
             // 根据颜色不同，前后的定义不同
@@ -325,7 +339,7 @@ export class MoveNotation {
                     return b.position[0] - a.position[0];
                 }
             });
-            
+
             switch (positionChar) {
                 case '前':
                     return sortedPieces[0] || null;
@@ -336,14 +350,14 @@ export class MoveNotation {
                 default:
             }
         }
-        
+
         // 如果是数字位置描述 (一到九 / １到９)
         const colNum = this.CHINESE_TO_NUM[positionChar];
         if (colNum !== undefined) {
-            // 根据颜色转换列索引
-            // 红方: '一' (1) -> 0, '九' (9) -> 8 => colNum - 1
-            // 黑方: '１' (mapped to 8) -> 8, '９' (mapped to 0) -> 0 => colNum (map handles conversion)
-            const targetCol = color === PieceColor.RED ? colNum - 1 : colNum;
+            // 根据颜色转换列索引 (colNum is 1-9 from CHINESE_TO_NUM)
+            // Red: col = num - 1
+            // Black: col = 9 - num
+            const targetCol = color === PieceColor.RED ? colNum - 1 : 9 - colNum;
 
             // 查找指定列的棋子 (使用 find)
             const foundPiece = pieces.find(piece => piece.position[1] === targetCol);

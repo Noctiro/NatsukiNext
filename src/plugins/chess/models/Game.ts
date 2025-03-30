@@ -179,7 +179,7 @@ export class Game implements IGame {
 
         // 设置游戏结束
         this.status = GameStatus.FINISHED;
-        
+
         // 设置对方为获胜者
         if (playerId === this.redPlayer) {
             this.winner = PieceColor.BLACK;
