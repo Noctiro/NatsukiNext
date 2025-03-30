@@ -38,7 +38,7 @@ export default class OpenRouter extends BaseProvider {
         thinkingParameter: string = API_CONFIG.params.thinking_parameter as string
     ) {
         super(messages, model, chainOfThought, thinkingParameter);
-        this.apiKey = process.env.AI_OPENROUTER_API_KEY;
+        this.apiKey = process.env.AI_OPENROUTER_API_KEY?.split(',') || [];
     }
 
     private async makeRequest(streaming = false, maxRetries = 3): Promise<Response> {
@@ -47,7 +47,7 @@ export default class OpenRouter extends BaseProvider {
 
         const headers = {
             ...API_CONFIG.headers,
-            'Authorization': `Bearer ${this.apiKey}`,
+            'Authorization': `Bearer ${this.getApiKey()}`,
             ...(streaming ? { 'Accept': 'text/event-stream' } : {})
         };
 

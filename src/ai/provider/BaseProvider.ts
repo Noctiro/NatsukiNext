@@ -26,7 +26,7 @@ export const slowModeState: { isSlowMode: boolean; slowModeStart: number | null 
 export default class BaseProvider {
     protected messages: Message[];
     protected model: string;
-    protected apiKey?: string;
+    protected apiKey?: Array<string>;
     protected chainOfThought: boolean;
     protected thinkingParameter: string;
 
@@ -170,8 +170,14 @@ export default class BaseProvider {
     }
 
     protected validateApiKey(): void {
-        if (!this.apiKey) {
+        if (!this.apiKey || this.apiKey.length === 0) {
             throw new Error('API key is not configured');
+        }
+    }
+
+    protected getApiKey(): string | undefined {
+        if (this.apiKey && this.apiKey.length > 0) {
+            return this.apiKey[Math.floor(Math.random() * this.apiKey.length)];
         }
     }
 }
