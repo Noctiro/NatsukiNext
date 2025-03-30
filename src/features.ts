@@ -995,29 +995,63 @@ export class Features {
 
     /**
      * 加载插件
-     * @param pluginName 插件名称
+     * @param pluginName 插件名称或相对路径
      * @param autoEnable 是否自动启用
      * @returns 是否成功加载
      */
     async loadPlugin(pluginName: string, autoEnable: boolean = true): Promise<boolean> {
         try {
-            log.info(`Loading plugin: ${pluginName}`);
+            log.info(`开始加载插件: ${pluginName}`);
 
-            // 确定插件文件的扩展名
-            const ext = pluginName.endsWith('.ts') || pluginName.endsWith('.js')
-                ? ''
-                : (await fs.access(path.join(this.pluginsDir, `${pluginName}.ts`))
-                    .then(() => '.ts')
-                    .catch(() => '.js'));
+            // 处理可能包含子目录的路径
+            const isSubdirPlugin = pluginName.includes('/') || pluginName.includes('\\');
+            let pluginPath: string;
+            let actualName: string;
 
-            const pluginPath = path.join(this.pluginsDir, `${pluginName}${ext}`);
-            const actualName = path.basename(pluginName, ext);
+            if (isSubdirPlugin) {
+                // 处理子目录中的插件
+                const normalizedName = pluginName.replace(/\\/g, '/'); // 统一用斜杠作为路径分隔符
+                
+                // 确定插件文件的扩展名
+                const ext = normalizedName.endsWith('.ts') || normalizedName.endsWith('.js')
+                    ? ''
+                    : (await fs.access(path.join(this.pluginsDir, `${normalizedName}.ts`))
+                        .then(() => '.ts')
+                        .catch(() => '.js'));
+                
+                pluginPath = path.join(this.pluginsDir, `${normalizedName}${ext}`);
+                
+                // 从路径中提取插件名称（保留子目录结构）
+                actualName = normalizedName;
+                if (ext) {
+                    actualName = normalizedName;
+                } else {
+                    // 移除扩展名
+                    actualName = normalizedName.replace(/\.(ts|js)$/, '');
+                }
+            } else {
+                // 处理直接位于plugins目录下的插件
+                const ext = pluginName.endsWith('.ts') || pluginName.endsWith('.js')
+                    ? ''
+                    : (await fs.access(path.join(this.pluginsDir, `${pluginName}.ts`))
+                        .then(() => '.ts')
+                        .catch(() => '.js'));
+                
+                pluginPath = path.join(this.pluginsDir, `${pluginName}${ext}`);
+                actualName = path.basename(pluginName, ext);
+            }
 
-            log.debug(`Plugin path: ${pluginPath}`);
+            log.debug(`插件路径: ${pluginPath}`);
+
+            // 检查文件是否是有效插件
+            if (!await this.isValidPluginFile(pluginPath)) {
+                log.debug(`${pluginPath} 不是有效的插件文件，跳过加载`);
+                return false;
+            }
 
             // 如果已加载，先禁用
             if (this.plugins.has(actualName)) {
-                log.info(`Plugin ${actualName} already exists, disabling first`);
+                log.info(`插件 ${actualName} 已存在，先禁用`);
                 await this.disablePlugin(actualName);
                 this.plugins.delete(actualName);
             }
@@ -1030,7 +1064,7 @@ export class Features {
                 }
             } catch (e) {
                 // 忽略未找到的模块
-                log.debug(`Error clearing module cache: ${e}`);
+                log.debug(`清除模块缓存时出错: ${e}`);
             }
 
             // 添加时间戳以防止缓存
@@ -1040,16 +1074,16 @@ export class Features {
             const success = await this.loadSinglePlugin(actualName, timestampedPath, autoEnable);
 
             if (!success) {
-                log.warn(`Failed to load plugin ${pluginName}`);
+                log.warn(`加载插件 ${pluginName} 失败`);
                 return false;
             }
 
             return true;
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`Failed to load plugin ${pluginName}: ${error.message}`);
+            log.error(`加载插件 ${pluginName} 时出错: ${error.message}`);
             if (error.stack) {
-                log.debug(`Error stack: ${error.stack}`);
+                log.debug(`错误堆栈: ${error.stack}`);
             }
             return false;
         }
@@ -1057,31 +1091,32 @@ export class Features {
 
     /**
      * 加载单个插件
-     * @param name 插件名称或文件名
+     * @param name 插件名称或相对路径
      * @param pluginPath 插件路径
      * @param autoEnable 是否自动启用
      * @returns 是否成功加载
      */
     private async loadSinglePlugin(name: string, pluginPath: string, autoEnable: boolean = false): Promise<boolean> {
         try {
-            log.info(`Loading plugin from: ${pluginPath}`);
+            log.info(`加载插件: ${pluginPath}`);
 
             // 获取插件模块
             const module = await import(pluginPath);
-            const plugin: BotPlugin = module.default;
+            const plugin: BotPlugin | undefined = module.default;
 
-            // 如果没有默认导出，或者不是合法的插件对象
+            // 由于scanPluginsDir已经过滤过，这里仅做一次基本验证
             if (!plugin || !plugin.name) {
-                log.error(`Invalid plugin module: ${name}, no valid plugin object exported`);
+                log.warn(`插件文件 ${name} 未导出有效插件对象`);
                 return false;
             }
 
-            // 使用插件自己的名称而不是文件名
-            const actualName = plugin.name;
+            // 注册时使用传入的名称（可能包含子目录）作为插件的标识符
+            // 这样可以确保不同路径的插件被正确区分，即使它们的内部名称相同
+            const registeredName = name;
 
             // 检查插件名称是否已经存在
-            if (this.plugins.has(actualName)) {
-                log.warn(`Plugin ${actualName} is already loaded`);
+            if (this.plugins.has(registeredName)) {
+                log.warn(`插件 ${registeredName} 已加载，跳过`);
                 return false;
             }
 
@@ -1089,8 +1124,8 @@ export class Features {
             plugin.status = PluginStatus.DISABLED;
 
             // 注册插件
-            this.plugins.set(actualName, plugin);
-            log.info(`Loaded plugin: ${actualName} ${plugin.version || ''}`);
+            this.plugins.set(registeredName, plugin);
+            log.info(`成功加载插件: ${registeredName} (${plugin.name}) ${plugin.version || ''}`);
 
             // 注册插件的权限（如果有）
             if (plugin.permissions && plugin.permissions.length > 0) {
@@ -1098,24 +1133,24 @@ export class Features {
                     for (const permission of plugin.permissions) {
                         this.permissionManager.registerPermission(permission);
                     }
-                    log.debug(`Registered ${plugin.permissions.length} permissions for plugin ${actualName}`);
+                    log.debug(`为插件 ${registeredName} 注册了 ${plugin.permissions.length} 个权限`);
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.warn(`Failed to register permissions for plugin ${actualName}: ${error.message}`);
+                    log.warn(`为插件 ${registeredName} 注册权限失败: ${error.message}`);
                 }
             }
 
             // 自动启用插件(如果指定)
             if (autoEnable) {
-                return await this.enablePlugin(actualName, true);
+                return await this.enablePlugin(registeredName, true);
             }
 
             return true;
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`Failed to load plugin ${name}: ${error.message}`);
+            log.error(`加载插件 ${name} 失败: ${error.message}`);
             if (error.stack) {
-                log.debug(`Error stack: ${error.stack}`);
+                log.debug(`错误堆栈: ${error.stack}`);
             }
             return false;
         }
@@ -1233,6 +1268,99 @@ export class Features {
     }
 
     /**
+     * 检查文件是否是有效的插件文件
+     * @param filePath 文件路径
+     * @returns 是否为有效插件文件
+     * @private
+     */
+    private async isValidPluginFile(filePath: string): Promise<boolean> {
+        try {
+            // 尝试导入文件
+            const module = await import(`${filePath}?check=${Date.now()}`);
+            
+            // 检查是否有默认导出
+            if (!module.default) {
+                return false;
+            }
+            
+            const plugin = module.default;
+            
+            // 检查基本结构
+            if (!plugin || typeof plugin !== 'object' || !plugin.name) {
+                return false;
+            }
+            
+            // 检查是否包含插件必要的属性
+            const hasPluginFeatures = 
+                (plugin.commands && Array.isArray(plugin.commands)) || 
+                (plugin.events && Array.isArray(plugin.events)) || 
+                typeof plugin.onLoad === 'function';
+                
+            return hasPluginFeatures;
+        } catch (err) {
+            // 导入出错，不是有效插件
+            return false;
+        }
+    }
+
+    /**
+     * 递归扫描目录，查找所有插件文件
+     * @param dir 要扫描的目录
+     * @returns 插件文件数组
+     * @private
+     */
+    private async scanPluginsDir(dir: string): Promise<{ name: string; path: string }[]> {
+        const results: { name: string; path: string }[] = [];
+        
+        try {
+            // 读取目录内容
+            const files = await fs.readdir(dir);
+            
+            // 处理所有文件和子目录
+            for (const file of files) {
+                const fullPath = path.join(dir, file);
+                
+                try {
+                    // 检查是否是目录
+                    const stat = await fs.stat(fullPath);
+                    
+                    if (stat.isDirectory()) {
+                        // 递归扫描子目录
+                        const subDirPlugins = await this.scanPluginsDir(fullPath);
+                        results.push(...subDirPlugins);
+                    } else if (file.endsWith('.ts') || file.endsWith('.js')) {
+                        // 检查是否是实际的插件文件
+                        if (await this.isValidPluginFile(fullPath)) {
+                            // 是有效的插件文件
+                            // 使用相对于插件根目录的路径作为名称
+                            const relativePath = path.relative(this.pluginsDir, fullPath);
+                            const pluginName = relativePath.replace(/\\/g, '/').replace(/\.(ts|js)$/, '');
+                            
+                            results.push({ 
+                                name: pluginName,
+                                path: fullPath 
+                            });
+                            
+                            log.debug(`发现有效插件: ${pluginName}`);
+                        } else {
+                            log.debug(`跳过非插件文件: ${fullPath}`);
+                        }
+                    }
+                } catch (err) {
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    log.warn(`无法处理文件或目录 ${fullPath}: ${error.message}`);
+                    continue;
+                }
+            }
+        } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err));
+            log.error(`读取目录 ${dir} 失败: ${error.message}`);
+        }
+        
+        return results;
+    }
+
+    /**
      * 加载所有插件
      * @private
      */
@@ -1241,29 +1369,11 @@ export class Features {
         log.info('开始加载插件...');
 
         try {
-            // 获取已安装的插件文件列表
+            // 获取已安装的插件文件列表（包括子目录中的）
             const pluginDir = this.pluginsDir;
-
-            // 读取目录内容
-            let files: string[] = [];
-            try {
-                files = await fs.readdir(pluginDir);
-            } catch (err) {
-                const error = err instanceof Error ? err : new Error(String(err));
-                log.error(`读取插件目录失败: ${error.message}`);
-                return;
-            }
-
-            // 过滤出.ts文件和.js文件
-            const pluginFiles = files
-                .filter((file: string) => file.endsWith('.ts') || file.endsWith('.js'))
-                .map((file: string) => {
-                    const fileName = path.basename(file);
-                    const ext = path.extname(file);
-                    const name = path.basename(fileName, ext);
-                    const pluginPath = path.join(pluginDir, file);
-                    return { name, path: pluginPath };
-                });
+            
+            // 扫描插件目录及其子目录
+            const pluginFiles = await this.scanPluginsDir(pluginDir);
 
             if (pluginFiles.length === 0) {
                 log.warn('未找到任何插件文件');

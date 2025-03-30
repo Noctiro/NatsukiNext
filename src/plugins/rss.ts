@@ -1485,7 +1485,7 @@ const plugin: BotPlugin = {
         serviceInstance = new NewsService();
         await serviceInstance.init();
 
-        cycleSendJob = new Cron("0,30 * * * *", () => {
+        cycleSendJob = new Cron("0 * * * *", () => {
             for (const chatId of enableChats) {
                 serviceInstance?.fetchAndSendNews(client, chatId, null, false);
             }

@@ -2164,8 +2164,6 @@ const plugin: BotPlugin = {
             log.info('执行定时任务：重置所有用户的AI使用次数');
             aiPluginInstance.checkAndResetUserLimits();
         });
-
-        log.info('AI插件已加载：用户次数每日重置计划任务已创建（每天0:00执行）');
     },
 
     async onUnload() {

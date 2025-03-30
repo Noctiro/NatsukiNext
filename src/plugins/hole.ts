@@ -47,7 +47,7 @@ export function getTextFromAPI(retry = 3): Promise<string> {
             const response = data as HitokotoResponse;
             const { hitokoto, from, from_who } = response;
             const by = (`—— ${from_who || ''}「${!!from ? from : "无名氏"}」`);
-            return `**${hitokoto}**\n${repeat(' ', (Math.min(16, hitokoto.length) - by.length + 2) * 3)}${by}`;
+            return `<b>${hitokoto}</b><br>${repeat(' ', (Math.min(16, hitokoto.length) - by.length + 2) * 3)}${by}`;
         })
         .catch((e) => {
             if (retry) return getTextFromAPI(--retry);
