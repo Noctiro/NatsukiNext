@@ -12,6 +12,12 @@ export class MoveValidator {
      * 验证走法是否合法
      */
     isValidMove(board: Board, from: Position, to: Position): boolean {
+        // 检查位置有效性（棋盘范围：0-9行，0-8列）
+        if (from[0] < 0 || from[0] > 9 || from[1] < 0 || from[1] > 8 ||
+            to[0] < 0 || to[0] > 9 || to[1] < 0 || to[1] > 8) {
+            return false;
+        }
+
         const piece = board.getPiece(from);
         
         // 没有棋子可移动
@@ -106,9 +112,9 @@ export class MoveValidator {
             return false;
         }
         
-        // 检查象眼是否被塞住（蹩象腿）
-        const eyeRow = (fromRow + toRow) / 2;
-        const eyeCol = (fromCol + toCol) / 2;
+        // 检查象眼是否被塞住（蹩象腿）- 修复：使用整数计算象眼位置
+        const eyeRow = Math.floor((fromRow + toRow) / 2);
+        const eyeCol = Math.floor((fromCol + toCol) / 2);
         return board.getPiece([eyeRow, eyeCol]) === null;
     }
     
@@ -135,12 +141,21 @@ export class MoveValidator {
         if (rowDiff === 2) {
             // 沿行走，检查垂直马腿
             legRow = fromRow + (toRow > fromRow ? 1 : -1);
+            // 马腿在与起点同列的位置
+            legCol = fromCol;
         } else {
             // 沿列走，检查水平马腿
             legCol = fromCol + (toCol > fromCol ? 1 : -1);
+            legRow = fromRow;
         }
-        
-        return board.getPiece([legRow, legCol]) === null;
+
+        // 只在马腿位置有效时检查是否有棋子
+        if (legRow >= 0 && legRow <= 9 && legCol >= 0 && legCol <= 8) {
+            if (board.getPiece([legRow, legCol])) {
+                return false;
+            }
+        }
+        return true;
     }
     
     /**
@@ -195,8 +210,9 @@ export class MoveValidator {
         const [fromRow, fromCol] = from;
         const [toRow, toCol] = to;
         
-        // 每次只能走一格
-        if (Math.abs(toRow - fromRow) + Math.abs(toCol - fromCol) !== 1) {
+        // 每次只能走一格且不能超出棋盘范围
+        if ((Math.abs(toRow - fromRow) + Math.abs(toCol - fromCol)) !== 1 ||
+            toCol < 0 || toCol > 8) {
             return false;
         }
         
@@ -208,7 +224,8 @@ export class MoveValidator {
                 return toRow === fromRow - 1 && toCol === fromCol;
             } else {
                 // 过河后，可以向前或左右走，但不能后退
-                return toRow <= fromRow && (toRow === fromRow || toCol !== fromCol);
+                // 修复：不能后退，即新行不能大于原行
+                return (toRow < fromRow || (toRow === fromRow && toCol !== fromCol));
             }
         } 
         // 黑方卒
@@ -219,7 +236,8 @@ export class MoveValidator {
                 return toRow === fromRow + 1 && toCol === fromCol;
             } else {
                 // 过河后，可以向前或左右走，但不能后退
-                return toRow >= fromRow && (toRow === fromRow || toCol !== fromCol);
+                // 修复：不能后退，即新行不能小于原行
+                return (toRow > fromRow || (toRow === fromRow && toCol !== fromCol));
             }
         }
     }
@@ -277,4 +295,4 @@ export class MoveValidator {
         
         return count;
     }
-} 
+}

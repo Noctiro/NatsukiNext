@@ -1,7 +1,6 @@
 import { GameStatus, PieceColor, PieceType } from './ChessTypes';
 import type { IGame, IPiece, Position, IMoveResult } from './ChessTypes';
 import { Board } from './Board';
-import { Piece } from './Piece';
 import { MoveValidator } from '../utils/MoveValidator.js';
 import { MoveNotation } from '../utils/MoveNotation.js';
 

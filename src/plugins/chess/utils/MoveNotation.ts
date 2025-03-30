@@ -39,7 +39,8 @@ export class MoveNotation {
         '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
         '壹': 1, '贰': 2, '叁': 3, '肆': 4, '伍': 5, '陆': 6, '柒': 7, '捌': 8, '玖': 9,
         '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-        '１': 9, '２': 8, '３': 7, '４': 6, '５': 5, '６': 4, '７': 3, '８': 2, '９': 1  // 黑方数字
+        // 修正黑方数字映射（棋盘从右往左）
+        '１': 8, '２': 7, '３': 6, '４': 5, '５': 4, '６': 3, '７': 2, '８': 1, '９': 0  
     };
     
     // 简体到繁体字符映射
@@ -143,47 +144,81 @@ export class MoveNotation {
         const [sourceRow, sourceCol] = sourcePiece.position;
         
         // 计算目标位置
-        let targetRow = sourceRow;
-        let targetCol = sourceCol;
+        let targetRow: number | undefined = undefined;
+        let targetCol: number | undefined = undefined;
         
+        const targetNum = this.CHINESE_TO_NUM[targetChar];
+        if (!targetNum) {
+            throw new Error(`无效的目标数字/列: ${targetChar}`);
+        }
+
         // 根据动作计算目标位置
         switch (actionChar) {
-            case '进':
-                // 红方向上进，黑方向下进
-                const num1 = this.CHINESE_TO_NUM[targetChar] || 1;
-                if (currentTurn === PieceColor.RED) {
-                    targetRow = sourceRow - num1;
-                } else {
-                    targetRow = sourceRow + num1;
-                }
-                break;
-            case '退':
-                // 红方向下退，黑方向上退
-                const num2 = this.CHINESE_TO_NUM[targetChar] || 1;
-                if (currentTurn === PieceColor.RED) {
-                    targetRow = sourceRow + num2;
-                } else {
-                    targetRow = sourceRow - num2;
-                }
-                break;
             case '平':
-                // 水平移动
-                const targetColIndex = this.CHINESE_TO_NUM[targetChar];
-                if (!targetColIndex) {
-                    throw new Error(`无效的目标列: ${targetChar}`);
-                }
-                // 列索引从0开始，所以要减1
-                targetCol = targetColIndex - 1;
+                targetRow = sourceRow;
+                // 目标列根据颜色转换视角
+                targetCol = currentTurn === PieceColor.RED ? 
+                    targetNum - 1 : 
+                    8 - (targetNum - 1);
                 break;
+            
+            case '进':
+            case '退':
+                const isForward = actionChar === '进';
+                const isRed = currentTurn === PieceColor.RED;
+
+                // 线性移动棋子 (车, 炮, 兵, 将/帅)
+                if ([PieceType.CHARIOT, PieceType.CANNON, PieceType.SOLDIER, PieceType.GENERAL].includes(pieceType)) {
+                    targetCol = sourceCol; // 列不变
+                    const steps = targetNum;
+                    if (isRed) {
+                        targetRow = isForward ? sourceRow - steps : sourceRow + steps;
+                    } else {
+                        targetRow = isForward ? sourceRow + steps : sourceRow - steps;
+                    }
+                } 
+                // 非线性移动棋子 (马, 象, 士)
+                else {
+                    // 目标列根据颜色转换视角
+                    targetCol = isRed ? targetNum - 1 : 8 - (targetNum - 1);
+                    
+                    // 查找唯一匹配的几何移动
+                    const possibleMoves = this.getGeometricMoves(pieceType, [sourceRow, sourceCol]);
+                    const matchingMoves = possibleMoves.filter(move => {
+                        const [tRow, tCol] = move;
+                        // 检查目标列是否匹配
+                        if (tCol !== targetCol) return false;
+                        // 检查方向是否匹配
+                        const movingForward = isRed ? tRow < sourceRow : tRow > sourceRow;
+                        return movingForward === isForward;
+                    });
+
+                    if (matchingMoves.length === 1) {
+                        const theMove = matchingMoves[0];
+                        // Use non-null assertion '!' as we know theMove is defined here
+                        targetRow = theMove![0]; 
+                    } else if (matchingMoves.length === 0) {
+                        throw new Error(`找不到从 (${sourceRow},${sourceCol}) ${actionChar} 到列 ${targetNum} 的合法 ${pieceChar} 走法`);
+                    } else {
+                        throw new Error(`从 (${sourceRow},${sourceCol}) ${actionChar} 到列 ${targetNum} 的 ${pieceChar} 走法不明确`);
+                    }
+                }
+                break;
+
             default:
                 throw new Error(`无效的动作: ${actionChar}`);
         }
+
+        // 检查计算出的目标位置
+        if (targetRow === undefined || targetCol === undefined) {
+             throw new Error('无法计算目标位置');
+        }
         
-        // 检查目标位置是否在棋盘范围内
+        // 检查目标位置是否在棋盘范围内 (必须在计算后检查)
         if (!board.isValidPosition(targetRow, targetCol)) {
             throw new Error('目标位置超出棋盘范围');
         }
-        
+
         return {
             from: [sourceRow, sourceCol],
             to: [targetRow, targetCol]
@@ -299,23 +334,54 @@ export class MoveNotation {
                 case '后':
                     return sortedPieces[sortedPieces.length - 1] || null;
                 default:
-                    return null;
             }
         }
         
-        // 如果是数字或中文数字定位
+        // 如果是数字位置描述 (一到九 / １到９)
         const colNum = this.CHINESE_TO_NUM[positionChar];
-        if (!colNum) {
-            return null;
+        if (colNum !== undefined) {
+            // 根据颜色转换列索引
+            // 红方: '一' (1) -> 0, '九' (9) -> 8 => colNum - 1
+            // 黑方: '１' (mapped to 8) -> 8, '９' (mapped to 0) -> 0 => colNum (map handles conversion)
+            const targetCol = color === PieceColor.RED ? colNum - 1 : colNum;
+
+            // 查找指定列的棋子 (使用 find)
+            const foundPiece = pieces.find(piece => piece.position[1] === targetCol);
+            return foundPiece || null; // Return the found piece or null if none in that column
         }
-        
-        // 查找在指定列的棋子
-        for (const piece of pieces) {
-            if (piece.position[1] + 1 === colNum) { // 转换为1开始的列号
-                return piece;
-            }
-        }
-        
+
+        // 如果 positionChar 不是 前/中/后 也不是有效数字
         return null;
     }
-} 
+
+    /**
+     * 获取指定棋子类型从某位置出发的所有几何可能移动（不考虑棋盘状态）
+     */
+    private getGeometricMoves(type: PieceType, from: Position): Position[] {
+        const [r, c] = from;
+        const moves: Position[] = [];
+
+        switch (type) {
+            case PieceType.HORSE: // 马
+                moves.push(
+                    [r - 2, c - 1], [r - 2, c + 1], [r - 1, c - 2], [r - 1, c + 2],
+                    [r + 1, c - 2], [r + 1, c + 2], [r + 2, c - 1], [r + 2, c + 1]
+                );
+                break;
+            case PieceType.ELEPHANT: // 象/相
+                moves.push(
+                    [r - 2, c - 2], [r - 2, c + 2], [r + 2, c - 2], [r + 2, c + 2]
+                );
+                break;
+            case PieceType.ADVISOR: // 士/仕
+                moves.push(
+                    [r - 1, c - 1], [r - 1, c + 1], [r + 1, c - 1], [r + 1, c + 1]
+                );
+                break;
+            // 其他棋子类型在此方法中不处理，因为它们的进/退是线性的
+        }
+
+        // 过滤掉棋盘外的坐标 (简单过滤，更严格的验证在isValidMove中)
+        return moves.filter(([tr, tc]) => tr >= 0 && tr <= 9 && tc >= 0 && tc <= 8);
+    }
+}
