@@ -4,6 +4,8 @@
  * 优化点：类型安全、HTML清理、日期解析优化、多格式支持、CDATA处理
  */
 
+import { log } from '../log';
+
 // 预编译正则表达式
 const RSS_VERSION_REGEX = /<(?:rss|rdf:RDF|feed)[^>]+(?:version=["']([^"']+)["']|xmlns=["']http:\/\/www\.w3\.org\/2005\/Atom["'])/i;
 // 频道/摘要提取 - 增强模式支持不规范的XML
@@ -469,7 +471,7 @@ function parseRSS(xmlContent: string): RSSFeed {
                 }
         }
     } catch (error) {
-        console.error("解析RSS失败:", error);
+        log.error("解析RSS失败:", error);
         
         // 出错时返回最基本的Feed对象
         const channel: RSSChannel = {
@@ -1178,7 +1180,7 @@ function decodeXMLEntities(text: string): string {
         });
     } catch (error) {
         // 如果解码过程中出现任何错误，返回原始文本
-        console.error("解码XML实体出错:", error);
+        log.error("解码XML实体出错:", error);
         return text;
     }
 }
@@ -1394,7 +1396,7 @@ function parseDate(dateStr?: string): Date | undefined {
         // 如果都失败，返回undefined
         return undefined;
     } catch (error) {
-        console.error("日期解析错误:", error);
+        log.error("日期解析错误:", error);
         return undefined;
     }
 }
@@ -1497,17 +1499,17 @@ async function fetchRSS(url: string, options: FetchRSSOptions = {}): Promise<RSS
             lastError = error instanceof Error ? error : new Error(String(error));
             const errorMessage = lastError.message;
             
-            console.error(`尝试 ${i + 1}/${retries} 失败:`, errorMessage);
+            log.error(`尝试 ${i + 1}/${retries} 失败:`, errorMessage);
             
             // 处理特定错误类型
             if (errorMessage.includes('certificate') && typeof process !== 'undefined' && process.env) {
                 // 在 Node.js 环境下，提示用户设置环境变量
-                console.warn('遇到证书错误。如果您信任该网站，可以尝试设置 NODE_TLS_REJECT_UNAUTHORIZED=0 环境变量');
+                log.warn('遇到证书错误。如果您信任该网站，可以尝试设置 NODE_TLS_REJECT_UNAUTHORIZED=0 环境变量');
             }
             
             // 超时错误特殊处理
             if (errorMessage.includes('abort') || errorMessage.includes('timeout')) {
-                console.warn(`请求超时，将在尝试 ${i + 2}/${retries} 时使用更长的超时时间`);
+                log.warn(`请求超时，将在尝试 ${i + 2}/${retries} 时使用更长的超时时间`);
                 timeout = timeout * 1.5; // 下次尝试增加50%的超时时间
             }
             
@@ -1578,14 +1580,14 @@ async function main() {
 
         return feed;
     } catch (error) {
-        console.error("Error:", error instanceof Error ? error.message : error);
+        log.error("Error:", error instanceof Error ? error.message : error);
         throw error;
     }
 }
 
 // 仅在直接运行时执行示例
 if (require.main === module) {
-    main().catch(console.error);
+    main().catch(log.error);
 }
 
 // 导出接口和函数

@@ -229,4 +229,4 @@ export default class DuckDuckGo extends BaseProvider {
     }
 }
 
-(new DuckDuckGo).stream((content, done) => console.log(content), "早上好");
+// (new DuckDuckGo).stream((content, done) => console.log(content), "早上好");

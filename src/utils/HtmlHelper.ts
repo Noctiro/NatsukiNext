@@ -280,11 +280,3 @@ function sanitizeUrl(url: string): string {
     return '#';
   }
 }
-
-function test() {
-  const input = '<blockquote collapsible><b>Title</b></blockquote><br><br>Content<br>📎 详情 <a href="https://www.baidu.com">name</a>';
-  const output = cleanHTML(input);
-  console.log(output);
-}
-
-test();

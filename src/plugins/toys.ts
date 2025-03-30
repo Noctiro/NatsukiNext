@@ -1,5 +1,6 @@
 import { getFastAI } from "../ai/AiManager";
 import type { BotPlugin, CommandContext } from "../features";
+import { log } from "../log";
 
 // ASCII 艺术图集合
 const asciiArts: Record<string, string> = {
@@ -445,7 +446,7 @@ const plugin: BotPlugin = {
                         text: result
                     });
                 } catch (error) {
-                    console.error('Emoji转换错误:', error);
+                    log.error('Emoji转换错误:', error);
                     ctx.client.editMessage({
                         chatId: ctx.chatId,
                         message: (await waitMsg).id,

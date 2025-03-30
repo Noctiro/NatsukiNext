@@ -80,6 +80,29 @@ const plugin: BotPlugin = {
                         await ctx.message.replyText(`未知命令：${subCommand}\n请使用 /chess help 查看帮助。`);
                 }
             }
+        },
+        {
+            name: 'm',
+            description: '移动棋子 (游戏内快捷方式)',
+            async handler(ctx: CommandContext) {
+                const userId = ctx.message.sender.id;
+                const game = gameManager.getPlayerActiveGame(userId); // Check if user is in *any* active game
+
+                if (game) {
+                    // User is in a game, proceed with move logic
+                    // Adjust args for moveCommand: remove the '/m' part
+                    const moveArgs = ctx.args.slice(0); // Create a copy of args
+                    // Prepend 'move' so moveCommand knows what action to take
+                    const adjustedCtx: CommandContext = {
+                        ...ctx,
+                        args: ['move', ...moveArgs] // Pass 'move' and the actual move notation
+                    };
+                    await moveCommand(adjustedCtx);
+                } else {
+                    // User is not in a game, do nothing as requested
+                    log.debug(`User ${userId} tried /m outside of a game.`);
+                }
+            }
         }
     ]
 };
@@ -100,7 +123,7 @@ async function showHelp(ctx: CommandContext) {
 • /chess status - 显示当前游戏状态<br>
 <br>
 <b>行棋命令:</b><br>
-• /chess move <走法> - 移动棋子，如"炮二平五"或"马3进4"<br>
+• /chess move <走法> 或者 /m [走法] - 移动棋子，如"炮二平五"或"马3进4"<br>
 <br>
 <b>走法规则:</b><br>
 走法使用传统中文表示法，例如:<br>
@@ -225,17 +248,17 @@ async function startAiGame(ctx: CommandContext) {
                 fileName: `chess_${game.id}.png`
             },
             {
-                caption: html`第 1 回合 - 红方（您）VS ${difficultyText}AI<br>请输入您的走法，例如：/chess move 炮二平五`
+                caption: html`第 1 回合 - 红方（您）VS ${difficultyText}AI<br>请输入您的走法，例如：/m 炮二平五`
             }
         );
     } catch (error) {
         // 如果图片渲染失败，fallback到HTML渲染
-        console.error('棋盘图片渲染失败:', error);
+        log.error('棋盘图片渲染失败:', error);
 
         // 使用HTML作为备用
         const boardHtml = BoardRenderer.renderBoardHTML(game);
         await ctx.message.replyText(
-            html`${html(boardHtml)}<br>红方（您）VS ${difficultyText}AI<br>请输入您的走法，例如：/chess move 炮二平五`
+            html`${html(boardHtml)}<br>红方（您）VS ${difficultyText}AI<br>请输入您的走法，例如：/m 炮二平五`
         );
     }
 }
@@ -278,17 +301,17 @@ async function acceptChallenge(ctx: CommandContext) {
                 fileName: `chess_${game.id}.png`
             },
             {
-                caption: html`第 1 回合 - 游戏开始！红方先行，请输入您的走法，例如：/chess move 炮二平五`
+                caption: html`第 1 回合 - 游戏开始！红方先行，请输入您的走法，例如：/m 炮二平五`
             }
         );
     } catch (error) {
         // 如果图片渲染失败，fallback到HTML渲染
-        console.error('棋盘图片渲染失败:', error);
+        log.error('棋盘图片渲染失败:', error);
 
         // 使用HTML作为备用
         const boardHtml = BoardRenderer.renderBoardHTML(game);
         await ctx.message.replyText(
-            html`${html(boardHtml)}<br>游戏开始！红方先行，请输入您的走法，例如：/chess move 炮二平五`
+            html`${html(boardHtml)}<br>游戏开始！红方先行，请输入您的走法，例如：/m 炮二平五`
         );
     }
 }
@@ -395,7 +418,7 @@ async function updateGameBoard(game: Game, ctx: CommandContext) {
         );
     } catch (error) {
         // 如果图片渲染失败，fallback到HTML渲染
-        console.error('棋盘图片渲染失败:', error);
+        log.error('棋盘图片渲染失败:', error);
 
         // 使用HTML作为备用
         const boardHtml = BoardRenderer.renderBoardHTML(game);
@@ -454,7 +477,7 @@ async function processAIMove(game: Game, ctx: CommandContext) {
                 );
             } catch (error) {
                 // 如果图片渲染失败，fallback到HTML渲染
-                console.error('棋盘图片渲染失败:', error);
+                log.error('棋盘图片渲染失败:', error);
 
                 // 使用HTML作为备用
                 const boardHtml = BoardRenderer.renderBoardHTML(game);
@@ -495,7 +518,7 @@ async function processAIMove(game: Game, ctx: CommandContext) {
             );
         } catch (error) {
             // 如果图片渲染失败，fallback到HTML渲染
-            console.error('棋盘图片渲染失败:', error);
+            log.error('棋盘图片渲染失败:', error);
 
             // 使用HTML作为备用
             const boardHtml = BoardRenderer.renderBoardHTML(game);
@@ -585,7 +608,7 @@ async function resignGame(ctx: CommandContext) {
         );
     } catch (error) {
         // 如果图片渲染失败，fallback到HTML渲染
-        console.error('棋盘图片渲染失败:', error);
+        log.error('棋盘图片渲染失败:', error);
 
         // 使用HTML作为备用
         const boardHtml = BoardRenderer.renderBoardHTML(game);
@@ -630,7 +653,7 @@ async function showGameStatus(ctx: CommandContext) {
         );
     } catch (error) {
         // 如果图片渲染失败，fallback到HTML渲染
-        console.error('棋盘图片渲染失败:', error);
+        log.error('棋盘图片渲染失败:', error);
 
         // 使用HTML作为备用
         const boardHtml = BoardRenderer.renderBoardHTML(game);
