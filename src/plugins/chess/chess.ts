@@ -33,25 +33,11 @@ const plugin: BotPlugin = {
     description: '中国象棋游戏，支持玩家对战和AI对战',
     version: '1.0.0',
     
-    permissions: [
-        {
-            name: 'chess.play',
-            description: '允许玩家进行象棋游戏',
-            isSystem: false
-        }
-    ],
-    
     commands: [
         {
             name: 'chess',
             description: '开始一局中国象棋游戏',
             async handler(ctx: CommandContext) {
-                // 检查权限
-                if (!ctx.hasPermission('chess.play')) {
-                    await ctx.message.replyText('抱歉，您没有权限使用象棋游戏功能。');
-                    return;
-                }
-                
                 // 根据参数处理不同的子命令
                 const subCommand = ctx.args[0]?.toLowerCase();
                 
