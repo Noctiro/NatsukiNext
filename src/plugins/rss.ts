@@ -1105,7 +1105,7 @@ class NewsService {
 
         // 统一换行符 - 只在必要时处理
         if (content.includes('\r')) {
-            content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            content = content.replace(/\r\n/g, '<br>').replace(/\r/g, '<br>');
         }
 
         // 使用更高效的方式过滤无效内容
@@ -1122,12 +1122,12 @@ class NewsService {
         }
         
         // 重新组合内容
-        content = validLines.join('\n\n');
+        content = validLines.join('<br><br>');
 
         // 处理超长内容
         if (content.length > NEWS_CONFIG.LONG_NEWS_THRESHOLD) {
             const cutLength = NEWS_CONFIG.LONG_NEWS_THRESHOLD - 100;
-            return `${content.slice(0, cutLength)}......\n(字数过多 剩余${content.length - cutLength}字请看详情)`;
+            return `${content.slice(0, cutLength)}......<br>(字数过多 剩余${content.length - cutLength}字请看详情)`;
         }
 
         return content;

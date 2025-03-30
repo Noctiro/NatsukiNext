@@ -5,6 +5,7 @@ import type { Position } from '../models/ChessTypes';
 import { MoveValidator } from './MoveValidator';
 import { Game } from '../models/Game';
 import { log } from '../../../log';
+import { ZobristHash } from './ZobristHash';
 
 // 云库API地址
 const CLOUD_API_URL = 'http://www.chessdb.cn/chessdb.php';
@@ -13,14 +14,15 @@ const CLOUD_API_URL = 'http://www.chessdb.cn/chessdb.php';
  * 棋子价值表
  * 不同棋子的基础价值和位置价值评估
  */
+// 中国象棋棋子价值表（根据《象棋入门》调整）
 const PIECE_VALUES = {
-    [PieceType.GENERAL]: 10000,  // 将/帅价值最高
-    [PieceType.CHARIOT]: 900,    // 车价值很高
-    [PieceType.CANNON]: 450,     // 炮价值中等偏上
-    [PieceType.HORSE]: 400,      // 马价值中等偏上
-    [PieceType.ELEPHANT]: 250,   // 象/相价值中等
-    [PieceType.ADVISOR]: 250,    // 士/仕价值中等
-    [PieceType.SOLDIER]: 100,    // 兵/卒基础价值最低
+    [PieceType.GENERAL]: 100000, // 将/帅（不可丢失）
+    [PieceType.CHARIOT]: 1000,   // 车（最强进攻棋子）
+    [PieceType.CANNON]: 500,     // 炮（需要炮架发挥威力）
+    [PieceType.HORSE]: 450,      // 马（盘面越开阔价值越高）
+    [PieceType.ELEPHANT]: 200,   // 象（防守型棋子）
+    [PieceType.ADVISOR]: 200,    // 士（贴身防守）
+    [PieceType.SOLDIER]: 150,    // 兵（过河后价值提升）
 };
 
 /**
@@ -37,6 +39,8 @@ export class ChessAI {
     private difficultyLevel: number;
     private maxDepth: number;
     private useCloudLibrary: boolean;
+    private zobristHash: ZobristHash;
+    private transpositionTable: Map<bigint, { depth: number; score: number; }>;
 
     /**
      * 创建象棋AI实例
@@ -47,6 +51,8 @@ export class ChessAI {
         this.moveValidator = new MoveValidator();
         this.difficultyLevel = Math.min(Math.max(difficultyLevel, 3), 6);
         this.useCloudLibrary = useCloudLibrary && this.difficultyLevel >= 6; // 仅最高难度时使用云库
+        this.zobristHash = new ZobristHash();
+        this.transpositionTable = new Map(); // 初始化置换表
 
         // 根据难度设置搜索深度
         switch (this.difficultyLevel) {
@@ -371,9 +377,21 @@ export class ChessAI {
      * 极小化极大搜索算法（带Alpha-Beta剪枝）
      */
     private minimax(board: Board, depth: number, alpha: number, beta: number, isMaximizing: boolean, aiColor: PieceColor): number {
+        // 生成当前局面的Zobrist哈希
+        const currentHash = this.zobristHash.calculateHash(board);
+        
+        // 检查置换表是否有相同哈希且深度足够的记录
+        const entry = this.transpositionTable.get(currentHash);
+        if (entry && entry.depth >= depth) {
+            return entry.score;
+        }
+
         // 如果达到搜索深度或游戏结束，评估当前局面
         if (depth === 0) {
-            return this.evaluateBoard(board, aiColor);
+            const score = this.evaluateBoard(board, aiColor);
+            // 将评估结果存入置换表
+            this.transpositionTable.set(currentHash, { depth, score });
+            return score;
         }
 
         const opponentColor = aiColor === PieceColor.BLACK ? PieceColor.RED : PieceColor.BLACK;
@@ -492,81 +510,44 @@ export class ChessAI {
     private evaluateBoard(board: Board, aiColor: PieceColor): number {
         const opponentColor = aiColor === PieceColor.BLACK ? PieceColor.RED : PieceColor.BLACK;
 
-        // 计算双方棋子的总价值
-        const aiPieces = board.getPiecesByColor(aiColor);
-        const opponentPieces = board.getPiecesByColor(opponentColor);
+        // 获取双方棋子并检查将帅存在性
+        const [aiPieces, opponentPieces] = [board.getPiecesByColor(aiColor), board.getPiecesByColor(opponentColor)];
+        if (!opponentPieces.some(p => p.type === PieceType.GENERAL)) return 9999;
+        if (!aiPieces.some(p => p.type === PieceType.GENERAL)) return -9999;
 
-        let aiScore = 0;
-        let opponentScore = 0;
-
-        // 如果对方的将/帅被吃，直接返回最高分
-        if (!opponentPieces.some(p => p.type === PieceType.GENERAL)) {
-            return 9999;
-        }
-
-        // 如果己方的将/帅被吃，直接返回最低分
-        if (!aiPieces.some(p => p.type === PieceType.GENERAL)) {
-            return -9999;
-        }
-
-        // 计算AI棋子价值
-        for (const piece of aiPieces) {
-            // 基础棋子价值
-            aiScore += PIECE_VALUES[piece.type];
-
-            // 兵/卒过河加分，并且越接近对方将/帅越加分
-            if (piece.type === PieceType.SOLDIER) {
-                if ((aiColor === PieceColor.RED && piece.position[0] < 5) ||
-                    (aiColor === PieceColor.BLACK && piece.position[0] > 4)) {
-                    aiScore += SOLDIER_CROSS_RIVER_BONUS;
-
-                    // 接近将/帅的兵价值更高
-                    const generalPieces = board.getPiecesByTypeAndColor(PieceType.GENERAL, opponentColor);
-                    if (generalPieces.length > 0 && generalPieces[0]) {
-                        const generalPos = generalPieces[0].position;
-                        const distance = Math.abs(generalPos[0] - piece.position[0]) +
-                            Math.abs(generalPos[1] - piece.position[1]);
-                        aiScore += Math.max(0, (10 - distance) * 15); // 提高接近将军的奖励
+        // 统一评估双方棋子价值
+        const evaluateSide = (pieces: Piece[], color: PieceColor) => {
+            let total = 0;
+            for (const piece of pieces) {
+                total += PIECE_VALUES[piece.type];
+                
+                // 兵过河奖励
+                if (piece.type === PieceType.SOLDIER) {
+                    const isCrossed = (color === PieceColor.RED && piece.position[0] < 5) || 
+                                    (color === PieceColor.BLACK && piece.position[0] > 4);
+                    if (isCrossed) {
+                        total += SOLDIER_CROSS_RIVER_BONUS;
+                        // 距离对方将帅奖励
+                        const generalPos = board.getPiecesByTypeAndColor(PieceType.GENERAL, 
+                            color === aiColor ? opponentColor : aiColor)[0]?.position;
+                        if (generalPos) {
+                            const distance = Math.abs(generalPos[0] - piece.position[0]) + 
+                                          Math.abs(generalPos[1] - piece.position[1]);
+                            total += Math.max(0, (10 - distance) * 15);
+                        }
                     }
                 }
+                
+                total += this.getPositionValue(piece, color, board) * 1.5;
+                total += this.countPossibleMoves(board, piece.position) * 8;
+                total += this.evaluateCoordination(board, piece.position, color);
             }
+            return total;
+        };
 
-            // 考虑棋子的位置价值
-            aiScore += this.getPositionValue(piece, aiColor) * 1.5; // 提高位置价值权重
-
-            // 考虑棋子的灵活性（可移动的位置数量）
-            const moveCount = this.countPossibleMoves(board, piece.position);
-            aiScore += moveCount * 8; // 提高棋子灵活性的权重
-
-            // 子力统筹（不宜过于集中）
-            aiScore += this.evaluateCoordination(board, piece.position, aiColor);
-        }
-
-        // 计算对手棋子价值
-        for (const piece of opponentPieces) {
-            opponentScore += PIECE_VALUES[piece.type];
-
-            if (piece.type === PieceType.SOLDIER) {
-                if ((opponentColor === PieceColor.RED && piece.position[0] < 5) ||
-                    (opponentColor === PieceColor.BLACK && piece.position[0] > 4)) {
-                    opponentScore += SOLDIER_CROSS_RIVER_BONUS;
-
-                    const generalPieces = board.getPiecesByTypeAndColor(PieceType.GENERAL, aiColor);
-                    if (generalPieces.length > 0 && generalPieces[0]) {
-                        const generalPos = generalPieces[0].position;
-                        const distance = Math.abs(generalPos[0] - piece.position[0]) +
-                            Math.abs(generalPos[1] - piece.position[1]);
-                        opponentScore += Math.max(0, (10 - distance) * 15);
-                    }
-                }
-            }
-
-            opponentScore += this.getPositionValue(piece, opponentColor) * 1.5;
-            const moveCount = this.countPossibleMoves(board, piece.position);
-            opponentScore += moveCount * 8;
-
-            opponentScore += this.evaluateCoordination(board, piece.position, opponentColor);
-        }
+        // 计算双方得分
+        let aiScore = evaluateSide(aiPieces, aiColor);
+        let opponentScore = evaluateSide(opponentPieces, opponentColor);
 
         // 检查将军状态（进攻性评分）
         aiScore += this.checkAttackBonus(board, aiColor, opponentColor) * 1.5; // 提高进攻奖励
@@ -647,54 +628,76 @@ export class ChessAI {
     /**
      * 评估棋子位置价值
      */
-    private getPositionValue(piece: Piece, color: PieceColor): number {
+    private getPositionValue(piece: Piece, color: PieceColor, board: Board): number {
         const [row, col] = piece.position;
         let positionBonus = 0;
 
         switch (piece.type) {
             case PieceType.GENERAL:
-                // 将/帅在九宫格中央更安全
-                if ((color === PieceColor.RED && row === 9 && col === 4) ||
-                    (color === PieceColor.BLACK && row === 0 && col === 4)) {
-                    positionBonus += 50;
+                // 将帅安全评估：位于九宫中心+50，边缘+30
+                if ((color === PieceColor.RED && row === 9) || (color === PieceColor.BLACK && row === 0)) {
+                    if (col === 4) positionBonus += 50;
+                    else if (col >= 3 && col <= 5) positionBonus += 30;
                 }
                 break;
 
             case PieceType.SOLDIER:
-                // 兵/卒越靠近对方越有价值
-                if (color === PieceColor.RED) {
-                    positionBonus += (Board.ROWS - 1 - row) * 10;
-                } else {
-                    positionBonus += row * 10;
+                // 过河兵价值提升，并根据位置给予奖励
+                if ((color === PieceColor.RED && row < 5) || (color === PieceColor.BLACK && row > 4)) {
+                    positionBonus += SOLDIER_CROSS_RIVER_BONUS;
+                    // 兵临九宫奖励
+                    if ((color === PieceColor.RED && row < 3) || (color === PieceColor.BLACK && row > 6)) {
+                        positionBonus += 50;
+                    }
                 }
-
-                // 中间列的兵/卒略有优势
-                positionBonus += (4 - Math.abs(col - 4)) * 5;
+                // 控制敌方肋道奖励
+                if (col === 3 || col === 5) positionBonus += 20;
                 break;
 
             case PieceType.CANNON:
-                // 炮在中间位置有优势
-                positionBonus += (4 - Math.abs(col - 4)) * 7;
+                // 炮在中线奖励，且有炮架时额外奖励
+                if (col === 4) positionBonus += 30;
+                // 检查炮架数量
+                const screenCount = this.countScreens(board, [row, col], color);
+                positionBonus += screenCount * 15;
                 break;
 
             case PieceType.HORSE:
-                // 马在中间位置有优势
-                positionBonus += (4 - Math.abs(col - 4)) * 5;
+                // 马腿限制评估，计算活跃位置数量
+                const activePositions = this.countHorseActivePositions(board, [row, col]);
+                positionBonus += activePositions * 20;
+                // 控制中心区域奖励
+                if (row >= 3 && row <= 6 && col >= 2 && col <= 6) {
+                    positionBonus += 30;
+                }
                 break;
 
             case PieceType.CHARIOT:
-                // 车控制中间列和边列有优势
-                if (col === 0 || col === 8 || col === 4) {
-                    positionBonus += 10;
+                // 车占要道奖励：巡河车+50，霸王车+80
+                if ((color === PieceColor.RED && row === 7) || (color === PieceColor.BLACK && row === 2)) {
+                    positionBonus += 50; // 巡河车
+                }
+                if ((color === PieceColor.RED && row === 8) || (color === PieceColor.BLACK && row === 1)) {
+                    positionBonus += 80; // 霸王车
+                }
+                // 控制敌方卒林奖励
+                if ((color === PieceColor.RED && row === 4) || (color === PieceColor.BLACK && row === 5)) {
+                    positionBonus += 40;
                 }
                 break;
 
             case PieceType.ADVISOR:
-                // 士/仕在对角线位置更有价值（保护将/帅）
-                if ((color === PieceColor.RED &&
-                    ((row === 9 && col === 3) || (row === 9 && col === 5) || (row === 8 && col === 4))) ||
-                    (color === PieceColor.BLACK &&
-                        ((row === 0 && col === 3) || (row === 0 && col === 5) || (row === 1 && col === 4)))) {
+                // 士的贴身保护奖励
+                const generals = board.getPiecesByTypeAndColor(PieceType.GENERAL, color);
+                const general = generals.length > 0 ? generals[0] : null;
+                if (general && Math.abs(row - general.position[0]) <= 1 && Math.abs(col - general.position[1]) <= 1) {
+                    positionBonus += 50;
+                }
+                break;
+
+            case PieceType.ELEPHANT:
+                // 象的联防奖励
+                if (this.checkElephantConnection(board, [row, col], color)) {
                     positionBonus += 30;
                 }
                 break;
@@ -707,31 +710,73 @@ export class ChessAI {
      * 评估防守奖励
      * 避免将我方重要棋子置于危险之中
      */
-    private evaluateDefensiveBonus(board: Board, aiColor: PieceColor, moveToPos: Position): number {
-        const opponentColor = aiColor === PieceColor.BLACK ? PieceColor.RED : PieceColor.BLACK;
-        let bonus = 0;
+    // 新增炮架检测方法
+    private countScreens(board: Board, position: Position, color: PieceColor): number {
+        const [row, col] = position;
+        let screenCount = 0;
 
-        // 检查此走法是否能保护我方重要棋子
-        const aiPieces = board.getPiecesByColor(aiColor);
-
-        for (const piece of aiPieces) {
-            if (piece.type === PieceType.GENERAL || piece.type === PieceType.CHARIOT) {
-                // 如果重要棋子周围有我方棋子保护，加分
-                const [row, col] = piece.position;
-                const adjacentPositions: Position[] = [
-                    [row - 1, col], [row + 1, col], [row, col - 1], [row, col + 1]
-                ];
-
-                for (const pos of adjacentPositions) {
-                    if (pos[0] === moveToPos[0] && pos[1] === moveToPos[1]) {
-                        bonus += 50; // 保护重要棋子
-                        break;
-                    }
+        // 检测四个方向的炮架
+        const directions: Array<[number, number]> = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+        for (const [dx, dy] of directions) {
+            let x = row + dx;
+            let y = col + dy;
+            while (board.isValidPosition(x, y)) {
+                const piece = board.getPiece([x, y]);
+                if (piece) {
+                    if (piece.color !== color) break;
+                    screenCount++;
                 }
+                x += dx;
+                y += dy;
             }
         }
+        return screenCount;
+    }
 
-        return bonus;
+    // 新增马腿检测方法
+    private countHorseActivePositions(board: Board, position: Position): number {
+        const [row, col] = position;
+        let activeCount = 0;
+        const moves: Array<[number, number]> = [
+            [-2, -1], [-2, 1],
+            [-1, -2], [-1, 2],
+            [1, -2], [1, 2],
+            [2, -1], [2, 1]
+        ];
+
+        for (const [dx, dy] of moves) {
+            const targetRow = row + dx;
+            const targetCol = col + dy;
+            const legRow = row + Math.sign(dx) * (Math.abs(dx) > 1 ? 1 : 0);
+            const legCol = col + Math.sign(dy) * (Math.abs(dy) > 1 ? 1 : 0);
+
+            // Add bounds checking for board positions
+            if (isNaN(targetRow) || isNaN(targetCol) || isNaN(legRow) || isNaN(legCol)) {
+                continue;
+            }
+
+            if (board.isValidPosition(targetRow, targetCol) &&
+                !board.getPiece([legRow, legCol])) {
+                activeCount++;
+            }
+        }
+        return activeCount;
+    }
+
+    // 新增象眼检测方法
+    private checkElephantConnection(board: Board, position: Position, color: PieceColor): boolean {
+        const [row, col] = position;
+        const directions: Array<[number, number]> = [[-2, -2], [-2, 2], [2, -2], [2, 2]];
+
+        for (const [dx, dy] of directions) {
+            const midRow = row + Math.floor(dx / 2);
+            const midCol = col + Math.floor(dy / 2);
+            if (board.isValidPosition(midRow, midCol) &&
+                !board.getPiece([midRow, midCol])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

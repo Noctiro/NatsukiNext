@@ -5,7 +5,6 @@ import { log } from '../../log';
 // 导入类型和类
 import { GameStatus, PieceColor } from './models/ChessTypes';
 import { Game } from './models/Game';
-import { Board } from './models/Board';
 import { GameManager } from './utils/GameManager';
 import { ChessAI } from './utils/ChessAI';
 import { BoardRenderer } from './utils/BoardRenderer';
