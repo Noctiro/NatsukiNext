@@ -1,4 +1,4 @@
-import { md } from '@mtcute/bun';
+import { html } from '@mtcute/bun';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext, PluginEvent } from '../features';
 import { log } from '../log';
 
@@ -14,7 +14,7 @@ const plugin: BotPlugin = {
             description: '树洞',
             cooldown: 10,
             async handler(ctx: CommandContext) {
-                const text = md(await getTextFromAPI());
+                const text = html(await getTextFromAPI());
                 await ctx.message.replyText(text);
             }
         }
@@ -27,7 +27,7 @@ const plugin: BotPlugin = {
                 return Math.random() <= 0.002;
             },
             handler: async (ctx: MessageEventContext) => {
-                const text = md(await getTextFromAPI());
+                const text = html(await getTextFromAPI());
                 await ctx.message.answerText(text);
             }
         } as PluginEvent<MessageEventContext>

@@ -149,7 +149,7 @@ export class BoardRenderer {
             try {
                 // 尝试按优先级查找字体
                 // 1. 项目内置字体
-                const fontPath = join(__dirname, '..', '..', '..', 'assets', 'fonts', 'SimSun.ttf');
+                const fontPath = join(__dirname, '..', '..', '..', 'assets', 'fonts', 'MiSans-Regular.ttf');
                 
                 // 2. 系统字体目录（Windows）
                 const winFontPath = process.platform === 'win32' 
@@ -163,8 +163,8 @@ export class BoardRenderer {
                 
                 // 按优先级尝试注册字体
                 if (fs.existsSync(fontPath)) {
-                    registerFont(fontPath, { family: 'SimSun' });
-                    log.info('使用项目内置 SimSun 字体');
+                    registerFont(fontPath, { family: 'MiSans-Regular' });
+                    log.info('使用项目内置 MiSans-Regular 字体');
                 } else if (process.platform === 'win32' && fs.existsSync(winFontPath)) {
                     registerFont(winFontPath, { family: 'SimSun' });
                     log.info('使用系统 SimSun 字体');
@@ -222,7 +222,7 @@ export class BoardRenderer {
         const startY = offsetY + (showCoordinates ? this.COORDINATE_WIDTH : 0);
 
         // 设置中文字体，如果SimSun不可用，回退到其他字体
-        const fontFamily = '"SimSun", "宋体", "Microsoft YaHei", "微软雅黑", sans-serif';
+        const fontFamily = '"MiSans-Regular", "SimSun", "宋体", "Microsoft YaHei", "微软雅黑", sans-serif';
         
         // 绘制棋盘背景 - 添加木纹质感
         const bgGradient = ctx.createLinearGradient(0, 0, width, height);
