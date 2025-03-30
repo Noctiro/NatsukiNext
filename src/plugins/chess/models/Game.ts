@@ -16,7 +16,6 @@ export class Game implements IGame {
     board: (IPiece | null)[][];
     currentTurn: PieceColor;
     chatId: number;
-    messageId?: number;
     lastMove?: string;
     history: string[];
     startTime: number;

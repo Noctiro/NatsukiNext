@@ -186,9 +186,9 @@ async function challengePlayer(ctx: CommandContext) {
         // 创建邀请
         const gameId = gameManager.addInvite(targetUserId, ctx.message.sender.id);
 
-        // 发送邀请消息
+        // 发送邀请消息，使用正确的用户链接格式
         await ctx.message.replyText(
-            `${ctx.message.sender.displayName || '玩家'} 邀请您下象棋！\n使用 /chess accept 接受挑战，或 /chess decline 拒绝挑战。`
+            html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName || '玩家'}</a> 邀请您下象棋！\n使用 /chess accept 接受挑战，或 /chess decline 拒绝挑战。`
         );
     } else {
         await ctx.message.replyText('无法获取有效的用户ID');
@@ -237,12 +237,9 @@ async function startAiGame(ctx: CommandContext) {
     const difficultyText = getDifficultyText(aiDifficulty);
 
     // 发送游戏消息
-    const message = await ctx.message.replyText(
+    await ctx.message.replyText(
         html`${html(boardText)}<br>红方（您）VS ${difficultyText}AI<br>请输入您的走法，例如：/chess move 炮二平五`
     );
-
-    // 保存消息ID以便后续更新
-    game.messageId = message.id;
 }
 
 /**
@@ -275,12 +272,9 @@ async function acceptChallenge(ctx: CommandContext) {
     const boardText = renderBoard(game);
 
     // 发送游戏消息
-    const message = await ctx.message.replyText(
+    await ctx.message.replyText(
         html`${html(boardText)}<br>游戏开始！红方先行，请输入您的走法，例如：/chess move 炮二平五`
     );
-
-    // 保存消息ID以便后续更新
-    game.messageId = message.id;
 }
 
 /**
@@ -365,18 +359,18 @@ async function updateGameBoard(game: Game, ctx: CommandContext) {
     // 处理显示当前玩家
     let currentPlayer: string;
     if (game.currentTurn === PieceColor.RED) {
-        currentPlayer = `<@${game.redPlayer}>`;
+        // 红方玩家显示：使用ID作为链接但显示玩家名
+        currentPlayer = `<a href="tg://user?id=${game.redPlayer}">红方玩家</a>`;
     } else {
         currentPlayer = game.blackPlayer === 'AI'
             ? 'AI' 
-            : `<@${game.blackPlayer}>`;
+            : `<a href="tg://user?id=${game.blackPlayer}">黑方玩家</a>`;
     }
 
-    // 发送新的消息
-    const message = await ctx.message.replyText(
+    // 发送新的消息，不再保存消息ID
+    await ctx.message.replyText(
         html`${html(boardText)}<br>轮到${html(currentPlayer)}行动`
     );
-    game.messageId = message.id;
 }
 
 /**
@@ -419,11 +413,10 @@ async function processAIMove(game: Game, ctx: CommandContext) {
         statusMessage = '轮到您行动';
     }
     
-    // 发送消息
-    const message = await ctx.message.replyText(
+    // 发送消息，不再保存消息ID
+    await ctx.message.replyText(
         html`${html(boardText)}<br>${statusMessage}`
     );
-    game.messageId = message.id;
 }
 
 /**
@@ -472,11 +465,11 @@ async function resignGame(ctx: CommandContext) {
     if (game.winner === PieceColor.RED) {
         winner = typeof game.redPlayer === 'string' && game.redPlayer === 'AI'
             ? 'AI'
-            : `<@${game.redPlayer}>`;
+            : `<a href="tg://user?id=${game.redPlayer}">红方玩家</a>`;
     } else {
         winner = typeof game.blackPlayer === 'string' && game.blackPlayer === 'AI'
             ? 'AI'
-            : `<@${game.blackPlayer}>`;
+            : `<a href="tg://user?id=${game.blackPlayer}">黑方玩家</a>`;
     }
 
     await ctx.message.replyText(html`${html(boardText)}<br>游戏结束，${winner}获胜！`);

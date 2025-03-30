@@ -46,7 +46,6 @@ export interface IGame {
     board: (IPiece | null)[][]; // 9x10的棋盘
     currentTurn: PieceColor;
     chatId: number; // 对局所在的聊天ID
-    messageId?: number; // 当前棋盘消息的ID
     lastMove?: string; // 上一步的走法描述
     history: string[]; // 历史走法
     startTime: number; // 游戏开始时间
