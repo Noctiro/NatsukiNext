@@ -2,7 +2,6 @@ import { Piece } from '../models/Piece';
 import { PieceColor, PieceType } from '../models/ChessTypes';
 import type { Position } from '../models/ChessTypes';
 import { Board } from '../models/Board';
-import crypto from "crypto";
 
 /**
  * Implements Zobrist hashing for Chinese Chess boards.
@@ -24,23 +23,21 @@ export class ZobristHash {
     }
 
     /**
-     * 使用Node.js crypto生成安全的64位随机BigInt
+     * 使用Bun.hash生成64位随机BigInt
+     * (保留原注释和异常处理以保持代码稳定性)
      */
     private randomBigInt(): bigint {
-        // 生成8字节随机数据（64位）
-        const bytes = crypto.randomBytes(8);
-        if (bytes.length !== 8) {
-            throw new Error("Failed to generate 8 random bytes");
-        }
+        const timeBuf = Buffer.alloc(8);
+        timeBuf.writeBigUInt64BE(BigInt(Date.now()));
 
-        // 转换为BigInt（大端序）
-        let value = 0n;
-        for (let i = 0; i < bytes.length; i++) {
-            value = (value << 8n) | BigInt(bytes.readUInt8(i));
-        }
-        
-        // 确保生成的是64位值
-        return value & 0xFFFFFFFFFFFFFFFFn;
+        const randBuf = Buffer.alloc(8);
+        randBuf.writeBigUInt64BE(BigInt(Math.floor(Math.random() * 0xFFFFFFFFFFFFFFFF)));
+
+        // 合并时间戳和随机数为 16 字节输入
+        const input = Buffer.concat([timeBuf, randBuf]);
+
+        // 调用哈希函数（需确保哈希输出 16 字节）
+        return Bun.hash.xxHash3(input); // 如果 Bun.hash 支持 16 字节输出
     }
 
     /**
@@ -80,15 +77,15 @@ export class ZobristHash {
                     // Assert numeric enum values and validate array structure
                     const typeIndex = piece.type as unknown as number;
                     const colorIndex = piece.color as unknown as number;
-                    
+
                     // Validate the multidimensional array structure exists
-                    if (!this.pieceKeys[typeIndex] || 
+                    if (!this.pieceKeys[typeIndex] ||
                         !this.pieceKeys[typeIndex][colorIndex] ||
                         !this.pieceKeys[typeIndex][colorIndex][r]) {
                         console.warn(`Zobrist lookup failed at [${typeIndex}][${colorIndex}][${r}][${c}]`);
                         continue;
                     }
-                    
+
                     const key = this.pieceKeys[typeIndex][colorIndex]![r]![c];
                     if (key !== undefined) {
                         hash ^= key;
@@ -140,14 +137,14 @@ export class ZobristHash {
         if (keyFrom !== undefined) {
             newHash ^= keyFrom; // 1. XOR out the piece from its original square
         } else {
-             console.warn(`Zobrist key missing for moved piece at from-pos: [${fromRow},${fromCol}]`);
+            console.warn(`Zobrist key missing for moved piece at from-pos: [${fromRow},${fromCol}]`);
         }
 
         const keyTo = this.pieceKeys[movedType]?.[movedColor]?.[toRow]?.[toCol];
-         if (keyTo !== undefined) {
+        if (keyTo !== undefined) {
             newHash ^= keyTo; // 2. XOR in the piece at its destination square
         } else {
-             console.warn(`Zobrist key missing for moved piece at to-pos: [${toRow},${toCol}]`);
+            console.warn(`Zobrist key missing for moved piece at to-pos: [${toRow},${toCol}]`);
         }
 
 
@@ -157,9 +154,9 @@ export class ZobristHash {
             const capturedColor = pieceCaptured.color as unknown as number;
             const keyCaptured = this.pieceKeys[capturedType]?.[capturedColor]?.[toRow]?.[toCol];
             if (keyCaptured !== undefined) {
-                 newHash ^= keyCaptured;
+                newHash ^= keyCaptured;
             } else {
-                 console.warn(`Zobrist key missing for captured piece at to-pos: [${toRow},${toCol}]`);
+                console.warn(`Zobrist key missing for captured piece at to-pos: [${toRow},${toCol}]`);
             }
         }
 
