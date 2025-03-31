@@ -131,10 +131,10 @@ async function showHelp(ctx: CommandContext) {
 • 炮二平五 (平移)<br>
 • 相七退五 (斜线移动)<br>
 <br>
-<b>AI难度说明:</b><br>
-• easy - 初级模式，思考5步后的局势<br>
-• normal - 中级模式，思考9步后的局势，具有更强的战略分析能力<br>
-• hard - 高级模式，思考12步后的局势，有极其强大的攻防策略，优先使用象棋云库
+<b>对局使用:</b><br>
+• AI人机对局: /chess ai [难度] - 与AI对战（难度可选：easy, normal, hard） 例如: /chess ai hard<br>
+• 玩家对战: /chess challenge @用户名 - 挑战其他玩家 例如: /chess challenge @user<br>
+    • 接受挑战: /chess accept - 接受挑战<br>
 `);
 }
 

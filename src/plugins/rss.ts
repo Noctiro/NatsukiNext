@@ -468,6 +468,12 @@ class AiNewsSelector extends NewsSelector {
             if (!isNaN(selectedIndex) && selectedIndex >= 1 && selectedIndex <= news.length) {
                 return news[selectedIndex - 1] ?? null;
             }
+
+            // AI如果返回的不按照Prompt的格式，则尝试从返回中提取数字
+            const tryNumber = this.findMostFrequentNumber(response);
+            if (tryNumber) {
+                return news[tryNumber - 1] ?? null;
+            }
             
             // 索引无效时随机选择
             log.warn(`AI返回的不是有效数字: ${response}`);
@@ -477,6 +483,38 @@ class AiNewsSelector extends NewsSelector {
             // 错误情况下随机选择
             return news[Math.floor(Math.random() * news.length)] ?? null;
         }
+    }
+
+    /**
+     * AI如果返回的不按照Prompt的格式，则尝试从返回中提取数字
+     * 从输入中提取最频繁的数字
+     * @param input - 输入字符串
+     * @returns 最频繁的数字或undefined
+     */
+    private findMostFrequentNumber(input: string): number | undefined {
+        const numbers = input.match(/\d+/g);
+        if (!numbers) return undefined;
+    
+        const frequencyMap = new Map<number, number>();
+        let currentMax: number | undefined;
+        let maxCount = 0;
+        let hasCollision = false;
+    
+        for (const numStr of numbers) {
+            const num = parseInt(numStr, 10);
+            const newCount = (frequencyMap.get(num) || 0) + 1;
+            frequencyMap.set(num, newCount);
+    
+            if (newCount > maxCount) {
+                maxCount = newCount;
+                currentMax = num;
+                hasCollision = false;
+            } else if (newCount === maxCount && num !== currentMax) {
+                hasCollision = true;
+            }
+        }
+    
+        return maxCount >= 2 && !hasCollision ? currentMax : undefined;
     }
 
     /**
@@ -1091,18 +1129,16 @@ class NewsService {
         // 获取内容，优先使用description，因为通常更简洁
         let content = news.description || news.content || '';
         
-        // 简单性能优化：只在必要时进行替换
-        if (content.includes('null')) {
-            content = content.replace(/null/g, '').trim();
-        } else {
-            content = content.trim();
-        }
-
         // 避免标题重复，通常发生在某些RSS源
         if (news.title && content.startsWith(news.title)) {
             content = content.slice(news.title.length).trim();
         }
 
+        content = content.replace(/阅读全文/g, '<br>');
+
+        if (content.includes('null')) {
+            content = content.replace(/null/g, '');
+        }
         // 统一换行符 - 只在必要时处理
         if (content.includes('\r')) {
             content = content.replace(/\r\n/g, '<br>').replace(/\r/g, '<br>');
