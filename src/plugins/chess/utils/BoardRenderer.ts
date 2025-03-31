@@ -42,6 +42,20 @@ export class BoardRenderer {
     private static readonly ARROW_COLOR = 'rgba(255, 60, 0, 0.75)';      // 走法箭头色
     private static readonly PIECE_TEXT_STROKE = '#F8F8FF';  // 棋子文字描边色（浅灰色）
     
+    // 信息栏样式常量
+    private static readonly INFO_PANEL_BG_START = 'rgba(252, 252, 252, 0.94)';   // 信息栏背景渐变开始色（更亮）
+    private static readonly INFO_PANEL_BG_END = 'rgba(246, 246, 246, 0.94)';     // 信息栏背景渐变结束色
+    private static readonly INFO_PANEL_BORDER = 'rgba(210, 210, 210, 0.6)';      // 信息栏边框色（更亮）
+    private static readonly INFO_PANEL_SHADOW = 'rgba(0, 0, 0, 0.15)';           // 信息栏阴影色
+    private static readonly INFO_RED_BADGE_BG = 'rgba(205, 0, 0, 0.05)';         // 红方标记背景（更淡）
+    private static readonly INFO_BLACK_BADGE_BG = 'rgba(0, 0, 0, 0.04)';         // 黑方标记背景（更淡）
+    private static readonly INFO_RED_BADGE_GLOW = 'rgba(205, 0, 0, 0.15)';       // 红方徽章光晕（减弱）
+    private static readonly INFO_BLACK_BADGE_GLOW = 'rgba(0, 0, 0, 0.1)';        // 黑方徽章光晕（减弱）
+    private static readonly INFO_TEXT_COLOR = '#444444';                         // 信息文本颜色（更深）
+    private static readonly INFO_MOVE_TEXT_COLOR = '#505050';                    // 走法文本颜色
+    private static readonly INFO_LABEL_BG = 'rgba(230, 230, 230, 0.5)';          // 标签背景色
+    private static readonly INFO_DIVIDER_COLOR = 'rgba(200, 200, 200, 0.5)';     // 分隔线颜色
+    
     /**
      * 绘制箭头的辅助方法
      * @param ctx Canvas上下文
@@ -242,15 +256,13 @@ export class BoardRenderer {
         }
         ctx.restore();
         
-        // 绘制边框 - 使用圆角边框
+        // 绘制边框 - 使用直角边框（不再使用圆角）
         ctx.fillStyle = this.BOARD_BORDER_COLOR;
         
-        // 绘制圆角边框
-        const borderRadius = 10;
-        this.roundRect(ctx, 0, 0, width, height, borderRadius);
-        ctx.fill();
+        // 使用普通矩形替代圆角矩形
+        ctx.fillRect(0, 0, width, height);
         
-        // 绘制内部棋盘区域（浅色背景）
+        // 绘制内部棋盘区域（浅色背景，保留圆角）
         ctx.fillStyle = this.BOARD_BG_COLOR;
         const innerBorderRadius = 5;
         this.roundRect(
@@ -369,19 +381,6 @@ export class BoardRenderer {
                 ctx.fillText((col + 1).toString(), xPos, yPosBottom);
             }
 
-            // 添加左右两侧坐标 (标准：使用红方视角 1-9)
-            ctx.textAlign = 'center'; // Ensure center alignment for vertical text
-            for (let row = 0; row < Board.ROWS; row++) {
-                const yPos = startY + row * this.CELL_SIZE;
-                const coordText = (row + 1).toString(); // Red's perspective (1 down to 9)
-
-                // 左侧坐标
-                ctx.fillText(coordText, offsetX - 12, yPos + 4);
-                // 右侧坐标
-                const rightCoordX = startX + (Board.COLS - 1) * this.CELL_SIZE + coordOffset + 12; // Adjusted X position
-                ctx.fillText(coordText, rightCoordX, yPos + 4);
-            }
-
             // 重置阴影
             ctx.shadowColor = 'transparent';
             ctx.shadowBlur = 0;
@@ -484,47 +483,286 @@ export class BoardRenderer {
             this.drawArrow(ctx, fromX, fromY, toX, toY);
         }
         
-        // 绘制游戏信息面板 (调整位置避免遮挡下方坐标)
-        const infoPanelHeight = 38; // Slightly taller for more info
-        // Calculate position above the bottom coordinates and border, moving it slightly lower
-        const bottomCoordY = showCoordinates ? (startY + (Board.ROWS - 1) * this.CELL_SIZE + coordOffset + 12) : (startY + (Board.ROWS - 1) * this.CELL_SIZE + this.CELL_SIZE * 0.5); // Y of bottom coords or slightly below last line if no coords
-        const spaceBelowBoard = height - bottomCoordY - (this.BORDER_WIDTH / 2); // Space between coords/last line and bottom border edge
-        const infoPanelY = bottomCoordY + (spaceBelowBoard - infoPanelHeight) / 2 + 5; // Center vertically then shift down by 5 pixels
-
-        const infoPanelWidth = (Board.COLS - 1) * this.CELL_SIZE - 2; // 微调宽度
-        const infoPanelX = startX + 1; // 精确左对齐
-
-        // 绘制信息面板背景
-        const infoPanelGradient = ctx.createLinearGradient(infoPanelX, infoPanelY, infoPanelX, infoPanelY + infoPanelHeight);
-        infoPanelGradient.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
-        infoPanelGradient.addColorStop(1, 'rgba(245, 245, 245, 0.95)');
-
+        // 绘制游戏信息面板 - 单行布局，主体居中
+        const infoPanelHeight = 36; // 更紧凑的单行高度（从40改为36）
+        // 计算底部坐标位置
+        const bottomCoordY = showCoordinates ? 
+            (startY + (Board.ROWS - 1) * this.CELL_SIZE + coordOffset + 12) : 
+            (startY + (Board.ROWS - 1) * this.CELL_SIZE + this.CELL_SIZE * 0.5);
+        
+        // 计算信息栏位置（更靠近棋盘底部但留有间距）
+        const spaceBelowBoard = height - bottomCoordY - (this.BORDER_WIDTH / 2);
+        const infoPanelY = bottomCoordY + (spaceBelowBoard - infoPanelHeight) / 2 + 8; // 增加下移到8
+        
+        // 信息栏宽度和X坐标（略窄于棋盘，更居中）
+        const infoPanelWidth = (Board.COLS - 1) * this.CELL_SIZE - 20;
+        const infoPanelX = startX + 10; // 左右各缩进10像素，增加留白
+        
+        // 保存当前绘图状态
+        ctx.save();
+        
+        // 设置阴影效果 - 更精致的阴影
+        ctx.shadowColor = this.INFO_PANEL_SHADOW;
+        ctx.shadowBlur = 12;
+        ctx.shadowOffsetY = 3;
+        
+        // 绘制信息栏背景 - 使用更大的圆角和柔和的渐变
+        const infoPanelGradient = ctx.createLinearGradient(
+            infoPanelX, 
+            infoPanelY, 
+            infoPanelX, 
+            infoPanelY + infoPanelHeight
+        );
+        infoPanelGradient.addColorStop(0, this.INFO_PANEL_BG_START);
+        infoPanelGradient.addColorStop(1, this.INFO_PANEL_BG_END);
+        
         ctx.fillStyle = infoPanelGradient;
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.15)';
-        ctx.shadowBlur = 8;
-        ctx.shadowOffsetY = 2;
-        this.roundRect(ctx, infoPanelX, infoPanelY, infoPanelWidth, infoPanelHeight, 6);
+        this.roundRect(ctx, infoPanelX, infoPanelY, infoPanelWidth, infoPanelHeight, 12);
         ctx.fill();
         
-        // 游戏信息文本
-        ctx.fillStyle = game.currentTurn === PieceColor.RED ? this.RED_PIECE_COLOR : this.BLACK_PIECE_COLOR;
-        ctx.font = `bold 15px ${fontFamily}`; // Slightly smaller font
+        // 绘制信息栏边框 - 更精致的边框（半透明）
+        ctx.strokeStyle = this.INFO_PANEL_BORDER;
+        ctx.lineWidth = 1;
+        this.roundRect(ctx, infoPanelX, infoPanelY, infoPanelWidth, infoPanelHeight, 12);
+        ctx.stroke();
+        
+        // 重置阴影
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetY = 0;
+        
+        // 添加微妙的面板纹理（点状纹理）
+        ctx.save();
+        ctx.globalAlpha = 0.03;
+        ctx.fillStyle = '#000000';
+        for (let x = infoPanelX + 5; x < infoPanelX + infoPanelWidth - 5; x += 4) {
+            for (let y = infoPanelY + 5; y < infoPanelY + infoPanelHeight - 5; y += 4) {
+                ctx.beginPath();
+                ctx.arc(x, y, 0.5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        ctx.restore();
+        
+        // 计算移动数（成对的走法）
+        const moveNumber = Math.floor(game.history.length / 2) + 1;
+        
+        // 计算面板中心点（垂直方向）
+        const panelCenterY = infoPanelY + infoPanelHeight / 2;
+        
+        // 单行布局 - 均匀分布三个主要元素
+        // 计算整个面板的可用宽度
+        const usableWidth = infoPanelWidth - 40; // 左右各留20px边距
+        
+        // 三个元素的实际宽度
+        const badgeElementWidth = 65;  // 回合徽章元素宽度（从60增加到65）
+        const playerElementWidth = 85; // 当前方元素宽度（从80增加到85）
+        const moveElementWidth = game.lastMove ? 95 : 0; // 上一步元素宽度（从90增加到95）
+        
+        // 总元素宽度
+        const totalElementsWidth = badgeElementWidth + playerElementWidth + moveElementWidth;
+        
+        // 计算元素之间的间距 (总可用宽度减去元素宽度，然后在n-1个间隙中平均分配)
+        // 如果有上一步，则有2个间隙；如果没有上一步，则有1个间隙
+        const elementsCount = game.lastMove ? 3 : 2;
+        const elementSpacing = (usableWidth - totalElementsWidth) / (elementsCount - 1);
+        
+        // 计算各元素的起始X坐标
+        const startPaddingX = (infoPanelWidth - (totalElementsWidth + (elementsCount - 1) * elementSpacing)) / 2;
+        const badgeElementX = infoPanelX + startPaddingX;
+        const playerElementX = badgeElementX + badgeElementWidth + elementSpacing;
+        const moveElementX = playerElementX + playerElementWidth + elementSpacing;
+        
+        // ===== 左侧：回合显示 =====
+        // 绘制回合数徽章 - 更精致的设计
+        const badgeRadius = 13; // 从14减小到13
+        const badgeX = badgeElementX + badgeElementWidth / 2 + 3; // 向右偏移3像素
+        const badgeY = panelCenterY;
+        
+        // 绘制徽章光晕效果
+        const badgeGlowColor = game.currentTurn === PieceColor.RED ? 
+            this.INFO_RED_BADGE_GLOW : this.INFO_BLACK_BADGE_GLOW;
+            
+        ctx.save();
+        ctx.shadowColor = badgeGlowColor;
+        ctx.shadowBlur = 4;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+        
+        // 徽章背景（主体）
+        ctx.fillStyle = game.currentTurn === PieceColor.RED ? 
+            this.INFO_RED_BADGE_BG : this.INFO_BLACK_BADGE_BG;
+        ctx.beginPath();
+        ctx.arc(badgeX, badgeY, badgeRadius, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 徽章边框
+        ctx.strokeStyle = game.currentTurn === PieceColor.RED ? 
+            this.RED_PIECE_COLOR : this.BLACK_PIECE_COLOR;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(badgeX, badgeY, badgeRadius, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        ctx.restore(); // 结束光晕效果
+        
+        // 徽章内部高光效果
+        ctx.save();
+        ctx.globalAlpha = 0.3;
+        const highlightGradient = ctx.createRadialGradient(
+            badgeX - 3, badgeY - 3, 2,
+            badgeX, badgeY, badgeRadius
+        );
+        highlightGradient.addColorStop(0, 'rgba(255,255,255,0.8)');
+        highlightGradient.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = highlightGradient;
+        ctx.beginPath();
+        ctx.arc(badgeX, badgeY, badgeRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        
+        // 绘制回合数
+        ctx.font = `bold 15px ${fontFamily}`;
+        ctx.fillStyle = game.currentTurn === PieceColor.RED ? 
+            this.RED_PIECE_COLOR : this.BLACK_PIECE_COLOR;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-
-        // Calculate move number (round up for pairs of moves)
-        const moveNumber = Math.floor(game.history.length / 2) + 1; // Use game.history
-
-        // 当前回合信息 + 步数
-        let infoText = `第 ${moveNumber} 回合 - 当前：${game.currentTurn === PieceColor.RED ? '红方' : '黑方'}`;
-
-        // 如果有上一步走法，显示走法信息
-        if (game.lastMove) {
-            infoText += ` | 上一步：${game.lastMove}`;
+        ctx.fillText(moveNumber.toString(), badgeX, badgeY);
+        
+        // 绘制"回合"文本 - 放在左侧，增加与边框的距离
+        ctx.fillStyle = this.INFO_TEXT_COLOR;
+        ctx.font = `bold 13px ${fontFamily}`;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('回合', badgeX - badgeRadius - 8, badgeY); // 从-12改为-8更靠右
+        
+        // 只有当有多个元素时才绘制分隔线
+        if (elementsCount > 1) {
+            // 绘制垂直分隔线1（在左侧元素和中间元素之间）
+            const dividerX1 = badgeX + badgeElementWidth / 2 - 8; // 左移8像素
+            ctx.strokeStyle = this.INFO_DIVIDER_COLOR;
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]); // 设置虚线样式
+            ctx.beginPath();
+            ctx.moveTo(dividerX1, infoPanelY + 8); // 从12改为8
+            ctx.lineTo(dividerX1, infoPanelY + infoPanelHeight - 8); // 从12改为8
+            ctx.stroke();
         }
-
-        const textY = infoPanelY + infoPanelHeight / 2 + 1; // Adjust vertical alignment slightly
-        ctx.fillText(infoText, infoPanelX + infoPanelWidth / 2, textY);
+        
+        // ===== 中间：当前方显示 =====
+        const currentTurnText = game.currentTurn === PieceColor.RED ? '红方' : '黑方';
+        const playerBadgeX = playerElementX;
+        const playerBadgeY = panelCenterY;
+        const playerBadgeWidth = 70;
+        const playerBadgeHeight = 28; // 从32减小为28
+        
+        // 绘制"当前"文本 - 放在左侧，增加与边框的距离
+        ctx.fillStyle = this.INFO_TEXT_COLOR;
+        ctx.font = `bold 13px ${fontFamily}`;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('当前', playerBadgeX - 8, playerBadgeY); // 从-12改为-8更靠右
+        
+        // 绘制当前方徽章背景
+        ctx.save();
+        ctx.shadowColor = badgeGlowColor;
+        ctx.shadowBlur = 3;
+        ctx.fillStyle = game.currentTurn === PieceColor.RED ? 
+            this.INFO_RED_BADGE_BG : this.INFO_BLACK_BADGE_BG;
+        this.roundRect(
+            ctx, 
+            playerBadgeX, 
+            playerBadgeY - playerBadgeHeight/2, 
+            playerBadgeWidth, 
+            playerBadgeHeight, 
+            8
+        );
+        ctx.fill();
+        
+        // 徽章边框
+        ctx.strokeStyle = game.currentTurn === PieceColor.RED ? 
+            this.RED_PIECE_COLOR : this.BLACK_PIECE_COLOR;
+        ctx.lineWidth = 1;
+        this.roundRect(
+            ctx, 
+            playerBadgeX, 
+            playerBadgeY - playerBadgeHeight/2, 
+            playerBadgeWidth, 
+            playerBadgeHeight, 
+            8
+        );
+        ctx.stroke();
+        ctx.restore();
+        
+        // 绘制当前方文本
+        ctx.fillStyle = game.currentTurn === PieceColor.RED ? 
+            this.RED_PIECE_COLOR : this.BLACK_PIECE_COLOR;
+        ctx.font = `bold 15px ${fontFamily}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(currentTurnText, playerBadgeX + playerBadgeWidth/2, playerBadgeY);
+        
+        if (game.lastMove) {
+            // 绘制垂直分隔线2（在中间元素和右侧元素之间）
+            const dividerX2 = playerBadgeX + playerBadgeWidth + elementSpacing / 2;
+            ctx.setLineDash([3, 3]); // 设置虚线样式
+            ctx.beginPath();
+            ctx.moveTo(dividerX2, infoPanelY + 8); // 从12改为8
+            ctx.lineTo(dividerX2, infoPanelY + infoPanelHeight - 8); // 从12改为8
+            ctx.stroke();
+            ctx.setLineDash([]); // 重置为实线
+            
+            // ===== 右侧：上一步显示 =====
+            const moveBgWidth = 90;
+            const moveBgHeight = 28; // 从32减小为28
+            
+            // 绘制"上一步"文本 - 放在左侧，增加与边框的距离
+            ctx.fillStyle = this.INFO_TEXT_COLOR;
+            ctx.font = `bold 13px ${fontFamily}`;
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('上一步', moveElementX - 8, playerBadgeY); // 从-12改为-8更靠右
+            
+            // 绘制走法背景
+            ctx.fillStyle = this.INFO_LABEL_BG;
+            this.roundRect(
+                ctx,
+                moveElementX,
+                playerBadgeY - moveBgHeight/2,
+                moveBgWidth,
+                moveBgHeight,
+                6
+            );
+            ctx.fill();
+            
+            // 走法边框 - 半透明
+            ctx.strokeStyle = 'rgba(180, 180, 180, 0.3)';
+            ctx.lineWidth = 1;
+            this.roundRect(
+                ctx,
+                moveElementX,
+                playerBadgeY - moveBgHeight/2,
+                moveBgWidth,
+                moveBgHeight,
+                6
+            );
+            ctx.stroke();
+            
+            // 绘制走法文本 - 使用对方颜色
+            ctx.fillStyle = game.currentTurn === PieceColor.RED ? 
+                this.BLACK_PIECE_COLOR : this.RED_PIECE_COLOR;
+            ctx.font = `bold 15px ${fontFamily}`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(
+                game.lastMove, 
+                moveElementX + moveBgWidth/2, 
+                playerBadgeY
+            );
+        }
+        
+        // 恢复绘图状态
+        ctx.restore();
         
         try {
             // 将画布转换为Buffer
