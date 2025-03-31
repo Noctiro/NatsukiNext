@@ -102,7 +102,7 @@ export class Game implements IGame {
         }
 
         // 生成走法记号
-        const moveNotation = this.moveNotation.generateMoveNotation(piece, from, to);
+        const moveNotation = this.moveNotation.generateMoveNotation(piece, from, to, this.boardObj);
 
         // 更新游戏状态
         this.lastMove = moveNotation;

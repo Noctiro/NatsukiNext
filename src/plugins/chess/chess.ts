@@ -125,7 +125,7 @@ async function showHelp(ctx: CommandContext) {
 • /chess move <走法> 或者 /m [走法] - 移动棋子，如"炮二平五"或"马3进4"<br>
 <br>
 <b>走法规则:</b><br>
-走法使用传统中文表示法，例如:<br>
+走法使用传统中文(支持简体繁体阿拉伯数字)表示法，例如:<br>
 • 车九进一 (直线移动)<br>
 • 马八进七 (马的移动)<br>
 • 炮二平五 (平移)<br>
@@ -134,7 +134,7 @@ async function showHelp(ctx: CommandContext) {
 <b>对局使用:</b><br>
 • AI人机对局: /chess ai [难度] - 与AI对战（难度可选：easy, normal, hard） 例如: /chess ai hard<br>
 • 玩家对战: /chess challenge @用户名 - 挑战其他玩家 例如: /chess challenge @user<br>
-    • 接受挑战: /chess accept - 接受挑战<br>
+( 接受挑战: /chess accept - 接受挑战 )<br>
 `);
 }
 

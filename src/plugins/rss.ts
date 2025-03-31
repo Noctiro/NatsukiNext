@@ -53,7 +53,7 @@ const RSS_SOURCES = [
     "https://news.pts.org.tw/xml/newsfeed.xml",     // 公视新闻
     "http://www.bbc.co.uk/zhongwen/simp/index.xml", // bbc中文
     "https://feedx.net/rss/zhihudaily.xml",         // 知乎日报
-    
+
     // 科技类
     "http://www.ithome.com/rss/",                   // IT之家
     "https://www.solidot.org/index.rss",             // 奇客Solidot
@@ -315,7 +315,7 @@ abstract class NewsSelector {
         try {
             // 直接使用fetchRSS，它已经内置了超时和重试处理
             const feed = await fetchRSS(source);
-            
+
             // 使用可空链操作符和默认空字符串处理
             const sourceName = feed.channel.title || source.split('/').pop() || '';
 
@@ -362,48 +362,48 @@ class AiNewsSelector extends NewsSelector {
         const totalMaxItems = this.MAX_ITEMS_PER_BATCH;
         const sourcesCount = RSS_SOURCES.length;
         const itemsPerSource = Math.max(2, Math.min(10, Math.ceil(totalMaxItems / sourcesCount)));
-        
+
         // 按最后更新时间排序源，优先获取久未更新的
         const sortedSources = [...RSS_SOURCES].sort((a, b) => {
             const timeA = this.lastUpdate.get(a) || 0;
             const timeB = this.lastUpdate.get(b) || 0;
             return timeA - timeB;
         });
-        
+
         // 只选择部分源进行请求，减少网络负载
         const selectedSources = sortedSources.slice(0, Math.ceil(sourcesCount / 2));
-        
+
         // 并发获取所有源的新闻，带统一超时控制
-        const sourcePromises = selectedSources.map(source => 
+        const sourcePromises = selectedSources.map(source =>
             this.fetchNewsWithLimit(source, itemsPerSource)
                 .catch(error => {
                     log.warn(`获取新闻失败 ${source}: ${error}`);
                     return [];
                 })
         );
-        
+
         // 等待所有源完成，允许部分失败
         const results = await Promise.allSettled(sourcePromises);
-        
+
         // 收集成功结果，合并新闻
         const allNews = results
-            .filter((result): result is PromiseFulfilledResult<NewsItem[]> => 
+            .filter((result): result is PromiseFulfilledResult<NewsItem[]> =>
                 result.status === 'fulfilled')
             .map(result => result.value)
             .flat();
-        
+
         // 合并并过滤新闻
         const filteredNews = this.mergeAndFilterNews(allNews);
-        
+
         if (filteredNews.length === 0) return null;
         if (filteredNews.length === 1) return filteredNews[0] ?? null;
-        
+
         // 限制AI处理的新闻数量
         const MAX_NEWS_FOR_AI = 15;
         const newsForAI = filteredNews.length > MAX_NEWS_FOR_AI
             ? filteredNews.slice(0, MAX_NEWS_FOR_AI)
             : filteredNews;
-        
+
         // 使用AI选择最佳新闻
         return await this.selectBestNewsWithAI(newsForAI);
     }
@@ -460,7 +460,7 @@ class AiNewsSelector extends NewsSelector {
             // 使用内置的超时控制
             const ai = getFastAI();
             const response = await ai.get(prompt, false);
-            
+
             // 提取数字
             const selectedIndex = parseInt(response.trim(), 10);
 
@@ -474,7 +474,7 @@ class AiNewsSelector extends NewsSelector {
             if (tryNumber) {
                 return news[tryNumber - 1] ?? null;
             }
-            
+
             // 索引无效时随机选择
             log.warn(`AI返回的不是有效数字: ${response}`);
             return news[Math.floor(Math.random() * news.length)] ?? null;
@@ -494,17 +494,17 @@ class AiNewsSelector extends NewsSelector {
     private findMostFrequentNumber(input: string): number | undefined {
         const numbers = input.match(/\d+/g);
         if (!numbers) return undefined;
-    
+
         const frequencyMap = new Map<number, number>();
         let currentMax: number | undefined;
         let maxCount = 0;
         let hasCollision = false;
-    
+
         for (const numStr of numbers) {
             const num = parseInt(numStr, 10);
             const newCount = (frequencyMap.get(num) || 0) + 1;
             frequencyMap.set(num, newCount);
-    
+
             if (newCount > maxCount) {
                 maxCount = newCount;
                 currentMax = num;
@@ -513,7 +513,7 @@ class AiNewsSelector extends NewsSelector {
                 hasCollision = true;
             }
         }
-    
+
         return maxCount >= 2 && !hasCollision ? currentMax : undefined;
     }
 
@@ -526,26 +526,26 @@ class AiNewsSelector extends NewsSelector {
     private buildAIPrompt(news: NewsItem[]): string {
         // 减少标题长度，节省tokens
         const MAX_TITLE_LENGTH = 30;
-        
+
         // 简化源统计，只统计总数
         const sourceTypes = new Set(news.map(item => item.sourceName.split('.')[0]));
         const sourceStats = `${sourceTypes.size}个来源，共${news.length}条`;
-        
+
         // 高效生成新闻列表
         const newsItems = news.map((n, i) => {
             // 截断标题
             const title = n.title.length > MAX_TITLE_LENGTH
                 ? n.title.substring(0, MAX_TITLE_LENGTH) + '...'
                 : n.title;
-                
+
             // 简化日期，只显示月日
-            const date = n.pubDate 
-                ? new Date(n.pubDate).toLocaleDateString('zh-CN', {month: 'numeric', day: 'numeric'})
+            const date = n.pubDate
+                ? new Date(n.pubDate).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
                 : '';
-                
+
             return `${i + 1}. ${title}${date ? ` (${date})` : ''}`;
         }).join('\n');
-        
+
         // 更简洁的提示词
         return `从下列新闻中选择最重要的一条 (${sourceStats})
 优先：重大时政>突发事件>科技动态>一般资讯
@@ -613,10 +613,10 @@ class AlgorithmNewsSelector extends NewsSelector {
             const timeoutPromise = new Promise<NewsItem[]>((resolve) => {
                 setTimeout(() => resolve([]), 4000); // 4秒超时
             });
-            
+
             const newsPromise = this.fetchNewsFromSource(source);
             const news = await Promise.race([newsPromise, timeoutPromise]);
-            
+
             // 为每个新闻项评分，使用默认优先级为1
             // 使用更高效的map方法，避免不必要的对象复制
             return news.map(item => {
@@ -659,9 +659,9 @@ class AlgorithmNewsSelector extends NewsSelector {
 
         // 使用预定义权重直接计算加权和
         const { relevance, timeliness, quality, source } = AlgorithmNewsSelector.SCORE_WEIGHTS;
-        const totalScore = 
-            relevanceScore * relevance + 
-            timelinessScore * timeliness + 
+        const totalScore =
+            relevanceScore * relevance +
+            timelinessScore * timeliness +
             qualityScore * quality +
             sourceScore * source;
 
@@ -806,7 +806,7 @@ class AlgorithmNewsSelector extends NewsSelector {
      */
     private calculateImageScore(content: string): number {
         const imageCount = (content.match(/<img/g) || []).length;
-        
+
         if (imageCount >= 3) return 0.3;
         if (imageCount >= 1) return 0.2;
         return 0;
@@ -865,9 +865,9 @@ class NewsService {
      */
     async fetchAndSendNews(client: TelegramClient, chatId: number, messageToReply: Message | null, isCommand: boolean = false): Promise<void> {
         // 创建等待消息（命令触发或提供了回复消息时）
-        const waitMsgPromise = isCommand 
-            ? (messageToReply 
-                ? client.replyText(messageToReply, "📰 正在获取新闻...") 
+        const waitMsgPromise = isCommand
+            ? (messageToReply
+                ? client.replyText(messageToReply, "📰 正在获取新闻...")
                 : client.sendText(chatId, "📰 正在获取新闻..."))
             : null;
 
@@ -895,7 +895,7 @@ class NewsService {
 
             // 处理新闻内容
             const formattedContent = await this.processNewsContent(news);
-            
+
             // 从结果中提取文本和图片
             const { text, images } = formattedContent;
 
@@ -917,7 +917,7 @@ class NewsService {
             // 如果有等待消息，需要在后续发送媒体前删除它
             const shouldDeleteWaitMsg = waitMsgPromise !== null;
             let waitMsgId: number | undefined;
-            
+
             if (shouldDeleteWaitMsg) {
                 waitMsgId = (await waitMsgPromise!).id;
             }
@@ -930,7 +930,7 @@ class NewsService {
                 } else {
                     await client.sendMedia(chatId, firstImage, { caption: text });
                 }
-                
+
                 // 删除等待消息
                 if (shouldDeleteWaitMsg && waitMsgId) {
                     await client.deleteMessagesById(chatId, [waitMsgId]);
@@ -959,7 +959,7 @@ class NewsService {
             }
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            
+
             if (waitMsgPromise) {
                 // 只在有等待消息时才编辑更新错误
                 await client.editMessage({
@@ -970,7 +970,7 @@ class NewsService {
                 // 定时任务出错时发送新消息
                 await client.sendText(chatId, `获取新闻失败: ${errorMessage}`);
             }
-            
+
             log.error('News fetch error:', error);
         }
     }
@@ -995,7 +995,7 @@ class NewsService {
         // 并行收集各分类的状态
         const sourcePromises = RSS_SOURCES.map(url => this.checkSourceStatus(url));
         const sources = await Promise.all(sourcePromises);
-        
+
         status.sources = sources;
 
         return status;
@@ -1012,22 +1012,22 @@ class NewsService {
     }> {
         // 提前提取图片，减少重复处理
         const images = this.extractImages(news.content || news.contentEncoded || news.description || '');
-        
+
         // 准备原始内容，优先使用contentEncoded，然后是description
         const rawContent = (news.content || news.contentEncoded || news.description || '')
             .replace(/null/g, '')
             .trim();
-        
+
         // 判断内容长度决定是否需要AI摘要
         const needsAiSummary = rawContent.length > NEWS_CONFIG.LONG_NEWS_THRESHOLD;
-        
+
         // 优化并行处理
         const [contentText, aiComment] = await Promise.all([
             // 条件性地获取AI摘要
-            needsAiSummary 
+            needsAiSummary
                 ? this.getAiSummary(news).then(summary => summary || this.formatContent(news))
                 : this.formatContent(news),
-            
+
             // 对于较长的新闻才获取AI评论，避免对短新闻浪费API调用
             rawContent.length > 300 && !news.title.includes('天气') && !news.title.includes('预报')
                 ? this.getAiComment(news)
@@ -1036,7 +1036,7 @@ class NewsService {
 
         // 构建更高效的链接文本
         const detailsText = news.link ? `📎 详情 <a href="${news.link}">${news.sourceName}</a>` : '';
-        
+
         // 组装最终内容
         return {
             text: html`<b>${news.title}</b><br><br>${html(cleanHTML(contentText))}<br><br>${html(cleanHTML(aiComment))}${html(detailsText)}`,
@@ -1053,11 +1053,11 @@ class NewsService {
         // 如果内容太短，不需要摘要
         const content = news.content || news.description || '';
         if (content.length < 200) return '';
-        
+
         try {
             // 构建更简洁的提示词，减少token用量
             const prompt = `${AI_SUMMARY_PROMPT}\n标题: ${news.title}\n内容: ${this.truncateContent(content, 1500)}`;
-            
+
             // 添加超时处理
             const timeoutPromise = new Promise<string>((_, reject) => {
                 setTimeout(() => reject(new Error('AI摘要生成超时')), 40000); // 超时时间
@@ -1065,9 +1065,9 @@ class NewsService {
 
             const aiPromise = getHighQualityAI().get(prompt, false);
             const comment = await Promise.race([aiPromise, timeoutPromise]);
-            
+
             if (!comment || comment === '[CANCEL]') return '';
-            
+
             // 使用HtmlHelper一站式处理HTML
             return comment.trim();
         } catch (error) {
@@ -1085,10 +1085,9 @@ class NewsService {
         try {
             // 构建更简洁的提示词，减少token用量
             const titleOnly = news.title.length < 100;
-            const prompt = `${AI_COMMENT_PROMPT}\n标题: ${news.title}${
-                titleOnly ? '' : `\n内容: ${this.truncateContent(news.description || '', 600)}`
-            }`;
-            
+            const prompt = `${AI_COMMENT_PROMPT}\n标题: ${news.title}${titleOnly ? '' : `\n内容: ${this.truncateContent(news.description || '', 600)}`
+                }`;
+
             // 添加超时处理
             const timeoutPromise = new Promise<string>((_, reject) => {
                 setTimeout(() => reject(new Error('AI评论生成超时')), 40000); // 超时时间
@@ -1096,12 +1095,12 @@ class NewsService {
 
             const aiPromise = getHighQualityAI().get(prompt, false);
             const comment = await Promise.race([aiPromise, timeoutPromise]);
-            
+
             if (!comment || comment === '[CANCEL]' || comment.length > 150) return '';
-            
+
             // 使用HtmlHelper一站式处理HTML
             const commentText = comment.trim();
-            
+
             return commentText ? `🤖 ${commentText}<br>` : '';
         } catch (error) {
             log.error(`AI comment generation failed: ${error}`);
@@ -1128,26 +1127,20 @@ class NewsService {
     private formatContent(news: NewsItem): string {
         // 获取内容，优先使用description，因为通常更简洁
         let content = news.description || news.content || '';
-        
+
         // 避免标题重复，通常发生在某些RSS源
         if (news.title && content.startsWith(news.title)) {
             content = content.slice(news.title.length).trim();
         }
 
         content = content.replace(/阅读全文/g, '<br>');
-
-        if (content.includes('null')) {
-            content = content.replace(/null/g, '');
-        }
-        // 统一换行符 - 只在必要时处理
-        if (content.includes('\r')) {
-            content = content.replace(/\r\n/g, '<br>').replace(/\r/g, '<br>');
-        }
+        content = content.replace(/null/g, '');
 
         // 使用更高效的方式过滤无效内容
+        content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         const lines = content.split('\n');
         const validLines = [];
-        
+
         // 单次循环处理所有行，避免多次遍历
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i].trim();
@@ -1156,7 +1149,7 @@ class NewsService {
                 validLines.push(line);
             }
         }
-        
+
         // 重新组合内容
         content = validLines.join('<br><br>');
 
@@ -1176,14 +1169,14 @@ class NewsService {
      */
     private extractImages(content: string): string[] {
         if (!content || content.length < 10) return [];
-        
+
         // 使用缓存的正则表达式
         const imgRegex = /<img[^>]+src=["'](https?:\/\/[^'"]+)["'][^>]*>/gi;
-        
+
         // 使用Set去重，更高效
         const uniqueUrls = new Set<string>();
         const maxImages = 3; // 减少图片数量，提高性能
-        
+
         let match;
         // 使用正则表达式迭代方式，避免创建数组
         while ((match = imgRegex.exec(content)) !== null && uniqueUrls.size < maxImages) {
@@ -1192,7 +1185,7 @@ class NewsService {
                 uniqueUrls.add(url);
             }
         }
-        
+
         return Array.from(uniqueUrls);
     }
 
@@ -1205,19 +1198,19 @@ class NewsService {
         // 排除无效图片关键词 - 整合为一次检查
         const invalidKeywords = ['icon', 'logo', 'pixel', 'tracker', 'analytics', 'avatar', 'emoji'];
         const urlLower = url.toLowerCase();
-        
+
         if (invalidKeywords.some(keyword => urlLower.includes(keyword))) {
             return false;
         }
-        
+
         // 检查常见图片扩展名 - 合并为一次检查
         const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'];
         const hasImageExtension = imageExtensions.some(ext => urlLower.includes(ext));
-        
+
         // 检查大小参数 - 通常有尺寸的是正常图片
-        const hasSizeInfo = urlLower.includes('width=') || urlLower.includes('height=') || 
-                           urlLower.includes('size=') || urlLower.includes('=s');
-        
+        const hasSizeInfo = urlLower.includes('width=') || urlLower.includes('height=') ||
+            urlLower.includes('size=') || urlLower.includes('=s');
+
         return hasImageExtension || hasSizeInfo;
     }
 
@@ -1290,22 +1283,22 @@ class NewsService {
 
             // 首先尝试使用AI选择器从所有源获取新闻
             const aiSelectorPromise = this.aiSelector.selectNewsFromAllSources();
-            
+
             // 使用Promise.race让两个Promise竞争，谁先完成就用谁的结果
             let selectedNews = await Promise.race([aiSelectorPromise, timeoutPromise]);
 
             // 如果AI筛选失败，回退到算法选择器
             if (!selectedNews) {
                 log.info('RSS: AI选择器未返回结果，回退到算法选择器');
-                
+
                 // 使用更短的二级超时
                 const algorithmTimeoutPromise = new Promise<NewsItem | null>((resolve) => {
-                    setTimeout(() => resolve(null), 8000); 
+                    setTimeout(() => resolve(null), 8000);
                 });
-                
+
                 const algorithmPromise = this.algorithmSelector.selectNewsFromAllSources();
                 selectedNews = await Promise.race([algorithmPromise, algorithmTimeoutPromise]);
-                
+
                 if (!selectedNews) {
                     log.warn('RSS: 两种选择器均未返回结果');
                 }
@@ -1341,35 +1334,35 @@ class NewsService {
         try {
             // 记录开始时间
             const startTime = Date.now();
-            
+
             // 添加超时保护
             const timeoutPromise = new Promise<never>((_, reject) => {
                 setTimeout(() => reject(new Error(`获取${url}超时`)), 5000);
             });
-            
+
             // 并行获取RSS源数据
             const feedPromise = this.fetchFeed(url);
             const feed = await Promise.race([feedPromise, timeoutPromise]);
-            
+
             // 计算响应时间
             const responseTime = Date.now() - startTime;
-            
+
             // 简化源名称处理
             const sourceName = feed?.channel?.title || url.split('/').pop() || "未知源";
-            
+
             // 简化条目数据处理 - 使用可选链和默认值
             const items = feed?.channel?.items || [];
-            
+
             // 安全处理日期 - 避免多次调用Date构造函数
             let oldestItem = 'N/A';
             let newestItem = 'N/A';
-            
+
             // 只在有条目时处理日期信息
             if (items.length > 0) {
                 // 使用可选链和空值合并，减少潜在错误
                 const firstPubDate = items[0]?.pubDate;
                 const lastPubDate = items[items.length - 1]?.pubDate;
-                
+
                 if (firstPubDate) {
                     try {
                         // 使用更简洁的日期格式
@@ -1383,7 +1376,7 @@ class NewsService {
                         newestItem = 'Invalid Date';
                     }
                 }
-                
+
                 if (lastPubDate) {
                     try {
                         oldestItem = new Date(lastPubDate).toLocaleString('zh-CN', {
@@ -1397,7 +1390,7 @@ class NewsService {
                     }
                 }
             }
-            
+
             return {
                 status: 'ok',
                 url,
@@ -1409,12 +1402,12 @@ class NewsService {
             };
         } catch (error) {
             // 更详细的错误信息
-            const errorMessage = error instanceof Error 
-                ? `${error.name}: ${error.message}` 
+            const errorMessage = error instanceof Error
+                ? `${error.name}: ${error.message}`
                 : String(error);
-                
+
             log.warn(`RSS源状态检查失败: ${url} - ${errorMessage}`);
-            
+
             return {
                 status: 'error',
                 url,
@@ -1462,7 +1455,7 @@ const plugin: BotPlugin = {
                     await ctx.message.replyText("RSS服务未初始化");
                     return;
                 }
-                
+
                 // 传递isCommand=true，表示由命令触发
                 await serviceInstance.fetchAndSendNews(ctx.client, ctx.chatId, ctx.message, true);
             }
