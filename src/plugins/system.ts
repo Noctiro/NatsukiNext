@@ -3,6 +3,7 @@ import { PluginStatus } from '../features';
 import { log } from '../log';
 import { html } from '@mtcute/bun';
 import { md } from '@mtcute/markdown-parser';
+import { managerIds } from '../app';
 import os from 'os';
 import fs from 'fs/promises';
 import path from 'path';
@@ -243,6 +244,12 @@ const plugin: BotPlugin = {
         {
             name: 'system.info',
             description: 'Permission to view system information',
+            isSystem: true,
+            parent: 'admin'
+        },
+        {
+            name: 'system.stop',
+            description: '停止机器人的权限',
             isSystem: true,
             parent: 'admin'
         }
@@ -505,6 +512,29 @@ const plugin: BotPlugin = {
                 }
 
                 await ctx.message.replyText(html(message));
+            }
+        },
+        {
+            name: 'stop',
+            description: '停止机器人',
+            requiredPermission: 'system.stop',
+            async handler(ctx: CommandContext) {
+                // 只允许管理员执行此命令
+                if (!managerIds.includes(ctx.message.sender.id)) {
+                    await ctx.message.replyText(html`❌ 只有管理员才能停止机器人`);
+                    return;
+                }
+                
+                await ctx.message.replyText(html`⚠️ <b>正在停止机器人...</b><br>机器人即将关闭，需要手动重新启动。`);
+                
+                // 记录关闭信息
+                log.info(`管理员 ${ctx.message.sender.displayName}(${ctx.message.sender.id}) 触发了机器人停止命令`, { remote: true });
+                
+                // 延迟关闭以确保消息发送完成
+                setTimeout(() => {
+                    log.info('正在停止机器人...', { remote: true });
+                    process.exit(0);
+                }, 2000);
             }
         },
         {
