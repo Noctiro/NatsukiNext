@@ -74,13 +74,13 @@ const pathUtils = {
         if (!dirPath) {
             throw new Error('目录路径不能为空');
         }
-        
+
         try {
             // 先检查目录是否已存在
             if (await this.dirExists(dirPath)) {
                 return;
             }
-            
+
             // 创建目录，包括所有不存在的父目录
             await fs.mkdir(dirPath, { recursive: true });
         } catch (err) {
@@ -90,7 +90,7 @@ const pathUtils = {
             if ('code' in error && error.code === 'EEXIST') {
                 return;
             }
-            
+
             // 其他错误需要抛出
             throw error;
         }
@@ -488,36 +488,57 @@ export class Features {
     }
 
     /**
-     * 获取插件配置
+     * 获取插件配置。
+     * 会合并传入的默认配置、插件定义的默认配置（如果未传入）以及用户保存的配置。
+     * 优先级：用户保存配置 > 传入的默认配置 > 插件定义的默认配置 > 空对象。
      * @param pluginName 插件名称
-     * @returns 插件配置对象
+     * @param providedDefaultConfig (可选) 调用时传入的默认配置对象。
+     * @returns 合并后的插件配置对象。如果无法读取或解析配置，会尽量返回基于默认值的配置。
      */
-    async getPluginConfig<T>(pluginName: string): Promise<T | null> {
+    async getPluginConfig<T extends Record<string, any>>(
+        pluginName: string,
+        providedDefaultConfig?: Partial<T> // 添加可选的默认配置参数
+    ): Promise<T> { // 返回值改为 T，因为总会返回一个配置（至少是默认的）
         // 如果配置已缓存，直接返回
         if (this.pluginConfigs.has(pluginName)) {
+            // 确保缓存的类型是正确的，虽然理论上应该是
             return this.pluginConfigs.get(pluginName) as T;
         }
+
+        // 确定基础默认配置：优先使用传入的，否则为空对象
+        const baseDefaultConfig = providedDefaultConfig ?? {};
+
+        let savedConfig: Partial<T> = {};
 
         try {
             const configPath = path.join(this.configDir, `${pluginName}.json`);
 
             // 检查文件是否存在
-            if (!await pathUtils.fileExists(configPath)) {
-                return null;
+            if (await pathUtils.fileExists(configPath)) {
+                const content = await fs.readFile(configPath, 'utf-8');
+                try {
+                    savedConfig = JSON.parse(content) as Partial<T>;
+                } catch (parseError) {
+                    const pError = parseError instanceof Error ? parseError : new Error(String(parseError));
+                    log.warn(`解析插件 ${pluginName} 配置文件失败: ${pError.message}。将使用默认配置。`);
+                    // 如果解析失败，savedConfig 保持为空对象，后续会使用 defaultConfig
+                }
             }
-
-            const content = await fs.readFile(configPath, 'utf-8');
-            const config = JSON.parse(content) as T;
-
-            // 缓存配置
-            this.pluginConfigs.set(pluginName, config);
-
-            return config;
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`读取插件 ${pluginName} 配置失败: ${error.message}`);
-            return null;
+            log.error(`读取插件 ${pluginName} 配置文件时出错: ${error.message}`);
+            // 出错时，savedConfig 保持为空对象，后续合并时会基于 baseDefaultConfig
         }
+
+        // 合并默认配置和保存的配置 (保存的配置覆盖默认配置)
+        // 使用 structuredClone 来确保深拷贝，避免意外修改默认配置源对象
+        const finalConfig = { ...structuredClone(baseDefaultConfig), ...savedConfig } as T;
+
+        // 缓存最终配置
+        this.pluginConfigs.set(pluginName, finalConfig);
+
+        // 保证总能返回一个配置对象
+        return finalConfig;
     }
 
     /**
@@ -536,10 +557,10 @@ export class Features {
 
             await fs.writeFile(configPath, configJson, 'utf-8');
 
-            // 更新缓存
+            // 更新缓存为当前保存的完整配置
             this.pluginConfigs.set(pluginName, config);
 
-            log.debug(`插件 ${pluginName} 配置已保存`);
+            log.info(`插件 ${pluginName} 配置已保存`);
             return true;
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
@@ -568,10 +589,10 @@ export class Features {
             // 按优先级排序事件处理器（优先级高的先执行）
             const sortedHandlers = Array.from(handlers)
                 .sort((a, b) => (b.priority || 0) - (a.priority || 0));
-            
+
             // 将相同优先级的处理器分组，以便并行执行
             const priorityGroups: Map<number, PluginEvent[]> = new Map();
-            
+
             for (const handler of sortedHandlers) {
                 const priority = handler.priority || 0;
                 if (!priorityGroups.has(priority)) {
@@ -579,14 +600,14 @@ export class Features {
                 }
                 priorityGroups.get(priority)!.push(handler);
             }
-            
+
             // 获取所有优先级并排序（从高到低）
             const priorities = Array.from(priorityGroups.keys()).sort((a, b) => b - a);
-            
+
             // 按优先级顺序处理，但每个优先级内部并行处理
             for (const priority of priorities) {
                 const handlersInPriority = priorityGroups.get(priority)!;
-                
+
                 // 创建处理器的执行任务数组
                 const tasks = handlersInPriority.map(handler => async () => {
                     try {
@@ -594,14 +615,14 @@ export class Features {
                         if (handler.filter && !handler.filter(context)) {
                             return;
                         }
-                        
+
                         // 使用超时保护，防止事件处理器无限阻塞
                         const timeoutPromise = new Promise<void>((_, reject) => {
                             setTimeout(() => {
                                 reject(new Error(`事件处理器超时 (${type})`));
                             }, 10000); // 10秒超时
                         });
-                        
+
                         // 执行事件处理器
                         await Promise.race([
                             handler.handler(context),
@@ -615,7 +636,7 @@ export class Features {
                         }
                     }
                 });
-                
+
                 // 使用Promise.all执行所有任务，但包装在try-catch中以避免单个任务失败导致整批失败
                 try {
                     await Promise.all(tasks.map(task => task()));
@@ -725,13 +746,13 @@ export class Features {
     private async processCommand(ctx: MessageContext) {
         // 获取用户ID
         const userId = ctx.sender?.id;
-        
+
         // 如果无法获取用户ID，直接处理
         if (!userId) {
             await this.executeCommandLogic(ctx);
             return;
         }
-        
+
         // 检查该用户是否有正在处理的命令
         if (this.commandQueue.has(userId)) {
             try {
@@ -742,30 +763,30 @@ export class Features {
                 log.debug(`前一个命令处理出错，继续处理新命令: ${err}`);
             }
         }
-        
+
         // 创建当前命令的Promise，并添加到队列
-        let resolveFn: () => void = () => {};
-        let rejectFn: (error: Error) => void = () => {};
-        
+        let resolveFn: () => void = () => { };
+        let rejectFn: (error: Error) => void = () => { };
+
         const commandPromise = new Promise<void>((resolve, reject) => {
             resolveFn = resolve;
             rejectFn = reject;
         });
-        
+
         this.commandQueue.set(userId, commandPromise);
-        
+
         try {
             // 设置命令处理超时
             const timeoutId = setTimeout(() => {
                 rejectFn(new Error('命令处理超时'));
             }, this.COMMAND_TIMEOUT);
-            
+
             // 执行命令逻辑
             await this.executeCommandLogic(ctx);
-            
+
             // 清除超时计时器
             clearTimeout(timeoutId);
-            
+
             // 命令处理完成
             resolveFn();
         } catch (err) {
@@ -780,7 +801,7 @@ export class Features {
             }
         }
     }
-    
+
     /**
      * 命令处理流程 - 第二层：命令解析与执行
      * 该方法负责:
@@ -846,9 +867,9 @@ export class Features {
                 commandHandlers.map(async ({ plugin, cmd }, index) => {
                     // 检查权限
                     if (cmd.requiredPermission && !context.hasPermission(cmd.requiredPermission)) {
-                        return { 
-                            index, 
-                            canExecute: false, 
+                        return {
+                            index,
+                            canExecute: false,
                             reason: 'permission',
                             message: `用户 ${userId} 缺少权限执行命令 ${command}: ${cmd.requiredPermission}`
                         };
@@ -865,9 +886,9 @@ export class Features {
                                 ? Math.ceil((cmd.cooldown - (Date.now() - lastCmd.timestamp) / 1000))
                                 : cmd.cooldown;
 
-                            return { 
-                                index, 
-                                canExecute: false, 
+                            return {
+                                index,
+                                canExecute: false,
                                 reason: 'cooldown',
                                 message: `命令 ${command} 冷却中，剩余时间: ${remainingSecs}s`,
                                 remainingSecs
@@ -909,18 +930,18 @@ export class Features {
             }
             const plugin = handler.plugin;
             const cmd = handler.cmd;
-            
+
             try {
                 // 执行命令
                 log.info(`执行命令: ${command} (插件: ${plugin.name}), 用户: ${userId}`);
-                
+
                 // 使用Promise.race添加超时保护
                 const timeoutPromise = new Promise<void>((_, reject) => {
                     setTimeout(() => {
                         reject(new Error('命令执行超时'));
                     }, this.COMMAND_TIMEOUT);
                 });
-                
+
                 await Promise.race([
                     cmd.handler(context),
                     timeoutPromise
@@ -960,7 +981,7 @@ export class Features {
         // 检查缓存是否有效
         const now = Date.now();
         if (
-            this.commandHandlersCache.has(command) && 
+            this.commandHandlersCache.has(command) &&
             now - this.commandCacheLastUpdated < this.COMMAND_CACHE_TTL
         ) {
             // 更新最近使用命令列表（LRU缓存策略）
@@ -1013,10 +1034,10 @@ export class Features {
     private updateRecentlyUsedCommands(command: string): void {
         // 移除已存在的相同命令（如果存在）
         this.recentlyUsedCommands = this.recentlyUsedCommands.filter(cmd => cmd !== command);
-        
+
         // 将命令添加到列表开头，表示最近使用
         this.recentlyUsedCommands.unshift(command);
-        
+
         // 如果列表超过最大容量，删除最旧的命令及其缓存
         if (this.recentlyUsedCommands.length > this.CACHE_MAX_SIZE) {
             const oldestCommand = this.recentlyUsedCommands.pop();
@@ -1081,22 +1102,22 @@ export class Features {
 
             // 处理可能包含子目录的路径 - 统一使用正斜杠
             const normalizedName = pathUtils.normalize(pluginName);
-            
+
             // 确定实际插件名称（无扩展名）
             let actualName = normalizedName;
             if (actualName.endsWith('.ts') || actualName.endsWith('.js')) {
                 actualName = actualName.replace(/\.(ts|js)$/, '');
             }
-            
+
             // 查找插件文件路径
             let pluginPath = '';
-            
+
             // 尝试确定文件扩展名
             if (!normalizedName.endsWith('.ts') && !normalizedName.endsWith('.js')) {
                 // 定义可能的扩展名列表，优先尝试.ts
                 const possibleExts = ['.ts', '.js'];
                 let found = false;
-                
+
                 for (const ext of possibleExts) {
                     const testPath = path.join(this.pluginsDir, `${normalizedName}${ext}`);
                     if (await pathUtils.fileExists(testPath)) {
@@ -1105,7 +1126,7 @@ export class Features {
                         break;
                     }
                 }
-                
+
                 if (!found) {
                     log.warn(`找不到插件文件: ${normalizedName}`);
                     return false;
@@ -1169,7 +1190,7 @@ export class Features {
             // Use dynamic import with a timestamp to bypass cache
             // Node's import() generally handles file paths correctly across OS
             const importPathWithCacheBust = `${pluginPath}?update=${Date.now()}`;
-            
+
             // 获取插件模块
             const module = await import(importPathWithCacheBust);
             const plugin: BotPlugin | undefined = module.default;
@@ -1349,27 +1370,27 @@ export class Features {
             if (!filePath || !await pathUtils.fileExists(filePath)) {
                 return false;
             }
-            
+
             // Use dynamic import with a timestamp to bypass cache for checking
             const importPathWithCacheBust = `${filePath}?check=${Date.now()}`;
-            
+
             // 尝试导入文件
             const module = await import(importPathWithCacheBust);
-            
+
             // 检查是否有默认导出和必要属性
             const plugin = module.default;
-            if (!plugin || 
-                typeof plugin !== 'object' || 
+            if (!plugin ||
+                typeof plugin !== 'object' ||
                 !plugin.name) {
                 return false;
             }
-            
+
             // 检查是否包含插件必要的功能
-            const hasPluginFeatures = 
-                (plugin.commands && Array.isArray(plugin.commands)) || 
-                (plugin.events && Array.isArray(plugin.events)) || 
+            const hasPluginFeatures =
+                (plugin.commands && Array.isArray(plugin.commands)) ||
+                (plugin.events && Array.isArray(plugin.events)) ||
                 typeof plugin.onLoad === 'function';
-                
+
             return hasPluginFeatures;
         } catch (err) {
             // 导入出错，不是有效插件
@@ -1388,34 +1409,34 @@ export class Features {
      */
     private async scanPluginsDir(dir: string): Promise<{ name: string; path: string }[]> {
         const results: { name: string; path: string }[] = [];
-        
+
         // 检查参数有效性
         if (!dir) {
             log.warn('扫描目录路径不能为空');
             return results;
         }
-        
+
         try {
             // 检查目录是否存在
             if (!await pathUtils.dirExists(dir)) {
                 log.warn(`目录不存在: ${dir}`);
                 return results;
             }
-            
+
             // 读取目录内容
             const files = await fs.readdir(dir);
-            
+
             // 并行处理所有文件和子目录，提高性能
             const processPromises = files.map(async (file) => {
                 const fullPath = path.join(dir, file);
-                
+
                 try {
                     // 检查是否是目录
                     if (await pathUtils.dirExists(fullPath)) {
                         // 递归扫描子目录
                         const subDirPlugins = await this.scanPluginsDir(fullPath);
                         return subDirPlugins; // 返回子目录的结果
-                    } 
+                    }
                     // 只处理.ts和.js文件
                     else if (file.endsWith('.ts') || file.endsWith('.js')) {
                         // 检查是否是实际的插件文件
@@ -1425,7 +1446,7 @@ export class Features {
                             const relativePath = path.relative(this.pluginsDir, fullPath);
                             // 统一使用正斜杠，并移除扩展名
                             const pluginName = pathUtils.normalize(relativePath).replace(/\.(ts|js)$/, '');
-                            
+
                             log.debug(`发现有效插件: ${pluginName}`);
                             return [{ name: pluginName, path: fullPath }];
                         } else {
@@ -1439,10 +1460,10 @@ export class Features {
                     return []; // 出错时返回空数组
                 }
             });
-            
+
             // 等待所有处理完成
             const resultsArrays = await Promise.all(processPromises);
-            
+
             // 合并所有结果
             for (const resultArray of resultsArrays) {
                 if (resultArray && resultArray.length) {
@@ -1453,7 +1474,7 @@ export class Features {
             const error = err instanceof Error ? err : new Error(String(err));
             log.error(`读取目录 ${dir} 失败: ${error.message}`);
         }
-        
+
         return results;
     }
 
@@ -1468,7 +1489,7 @@ export class Features {
         try {
             // 获取已安装的插件文件列表（包括子目录中的）
             const pluginDir = this.pluginsDir;
-            
+
             // 扫描插件目录及其子目录
             const pluginFiles = await this.scanPluginsDir(pluginDir);
 
@@ -1478,11 +1499,11 @@ export class Features {
             }
 
             log.debug(`发现${pluginFiles.length}个插件文件`);
-            
+
             // 第一阶段：并行加载所有插件
             log.info('阶段 1/2: 加载插件...');
             const loadStageStartTime = Date.now();
-            
+
             const loadResults = await Promise.allSettled(
                 pluginFiles.map(async ({ name }) => {
                     const pluginStartTime = Date.now();
@@ -1490,13 +1511,13 @@ export class Features {
                         // 先加载插件但不启用，只是为了获取依赖信息
                         const success = await this.loadPlugin(name, false);
                         const duration = Date.now() - pluginStartTime;
-                        
+
                         if (success) {
                             log.debug(`插件 ${name} 加载用时 ${duration}ms`);
                         } else {
                             log.warn(`插件 ${name} 加载失败，用时 ${duration}ms`);
                         }
-                        
+
                         return success;
                     } catch (err) {
                         const error = err instanceof Error ? err : new Error(String(err));
@@ -1506,32 +1527,32 @@ export class Features {
                     }
                 })
             );
-            
+
             // 计算有多少插件成功加载
             const loadedCount = loadResults.filter(
                 result => result.status === 'fulfilled' && result.value === true
             ).length;
-            
+
             const loadStageDuration = Date.now() - loadStageStartTime;
             log.info(`成功加载 ${loadedCount}/${pluginFiles.length} 个插件，用时 ${loadStageDuration}ms`);
 
             // 第二阶段：按依赖顺序并行启用插件
             log.info('阶段 2/2: 启用插件...');
             const enableStageStartTime = Date.now();
-            
+
             const sortedPluginNames = this.sortPluginsByDependencies();
-            
+
             // 根据依赖关系将插件分组
             const enableGroups: string[][] = [];
             const processed = new Set<string>();
-            
+
             // 创建一个映射，记录每个插件的直接依赖
             const directDependencies = new Map<string, Set<string>>();
-            
+
             // 收集每个插件的直接依赖
             for (const [name, plugin] of this.plugins.entries()) {
                 if (!name || !plugin) continue;
-                
+
                 if (plugin.dependencies && plugin.dependencies.length > 0) {
                     // 只记录系统中实际存在的依赖
                     const existingDeps = plugin.dependencies.filter(dep => dep && this.plugins.has(dep));
@@ -1540,22 +1561,22 @@ export class Features {
                     directDependencies.set(name, new Set());
                 }
             }
-            
+
             // 最大循环次数，防止可能的无限循环
             const maxIterations = sortedPluginNames.length * 2;
             let iterations = 0;
-            
+
             // 分批启用插件，每批中的插件可以并行启用
             while (processed.size < sortedPluginNames.length && iterations < maxIterations) {
                 iterations++;
                 const currentGroup: string[] = [];
-                
+
                 // 找出所有可以在当前批次启用的插件
                 for (const name of sortedPluginNames) {
                     if (!name || processed.has(name)) continue;
-                    
+
                     const dependencies = directDependencies.get(name) || new Set();
-                    
+
                     // 检查所有依赖是否已处理
                     let allDepsProcessed = true;
                     for (const dep of dependencies) {
@@ -1564,12 +1585,12 @@ export class Features {
                             break;
                         }
                     }
-                    
+
                     if (allDepsProcessed) {
                         currentGroup.push(name);
                     }
                 }
-                
+
                 if (currentGroup.length === 0) {
                     // 如果没有可以启用的插件，说明可能存在循环依赖
                     // 记录日志并中断循环
@@ -1577,76 +1598,76 @@ export class Features {
                     log.warn(`无法启用这些插件（可能存在循环依赖）: ${remaining.join(', ')}`);
                     break;
                 }
-                
+
                 // 将当前批次添加到启用组
                 enableGroups.push(currentGroup);
-                
+
                 // 将当前批次标记为已处理
                 for (const name of currentGroup) {
                     if (name) processed.add(name);
                 }
             }
-            
+
             if (iterations >= maxIterations) {
                 log.warn(`插件依赖解析达到最大迭代次数 (${maxIterations})，可能存在问题`);
             }
-            
+
             // 逐批启用插件
             let totalEnabled = 0;
-            
+
             for (const [groupIndex, group] of enableGroups.entries()) {
                 log.debug(`启用插件组 ${groupIndex + 1}/${enableGroups.length}，包含 ${group.length} 个插件`);
-                
+
                 const groupStartTime = Date.now();
-                
+
                 // 并行启用当前批次的插件
                 const enableResults = await Promise.allSettled(
                     group.map(async pluginName => {
                         if (!pluginName) return false;
-                        
+
                         const plugin = this.plugins.get(pluginName);
                         if (!plugin || plugin.status === PluginStatus.ACTIVE) return true;
-                        
+
                         const pluginStartTime = Date.now();
-                        
+
                         try {
                             log.info(`启用插件: ${pluginName}`);
                             const success = await this.enablePlugin(pluginName, false);
-                            
+
                             const duration = Date.now() - pluginStartTime;
                             if (success) {
                                 log.debug(`插件 ${pluginName} 启用成功，用时 ${duration}ms`);
                             } else {
                                 log.warn(`插件 ${pluginName} 启用失败，用时 ${duration}ms`);
                             }
-                            
+
                             return success;
                         } catch (err) {
                             const error = err instanceof Error ? err : new Error(String(err));
                             const duration = Date.now() - pluginStartTime;
                             log.error(`启用插件 ${pluginName} 出错: ${error.message}，用时 ${duration}ms`);
-                            
+
                             if (plugin) {
                                 plugin.status = PluginStatus.ERROR;
                                 plugin.error = error.message;
                             }
-                            
+
                             return false;
                         }
                     })
                 );
-                
+
                 // 计算成功启用的插件数量
                 const enabledCount = enableResults.filter(
                     result => result.status === 'fulfilled' && result.value === true
                 ).length;
-                
+
                 totalEnabled += enabledCount;
-                
+
                 const groupDuration = Date.now() - groupStartTime;
                 log.debug(`插件组 ${groupIndex + 1} 启用完成: ${enabledCount}/${group.length} 成功，用时 ${groupDuration}ms`);
             }
-            
+
             const enableStageDuration = Date.now() - enableStageStartTime;
             log.info(`插件启用阶段完成，启用了 ${totalEnabled} 个插件，用时 ${enableStageDuration}ms`);
 
@@ -1666,7 +1687,7 @@ export class Features {
             }
         }
     }
-    
+
     /**
      * 获取插件加载顺序（基于依赖关系图的拓扑排序）
      * @param dependencyGraph 依赖关系图
@@ -1674,30 +1695,30 @@ export class Features {
     private getPluginLoadOrder(dependencyGraph: Map<string, Set<string>>): string[] {
         const visited = new Set<string>();
         const result: string[] = [];
-        
+
         function visit(node: string) {
             if (visited.has(node)) return;
             visited.add(node);
-            
+
             const dependencies = dependencyGraph.get(node) || new Set();
             for (const dep of dependencies) {
                 if (dependencyGraph.has(dep)) {
                     visit(dep);
                 }
             }
-            
+
             result.push(node);
         }
-        
+
         for (const node of dependencyGraph.keys()) {
             if (!visited.has(node)) {
                 visit(node);
             }
         }
-        
+
         return result;
     }
-    
+
     /**
      * 将插件分组，以便并行加载
      * 同一组内的插件没有相互依赖关系，可以并行加载
@@ -1705,26 +1726,26 @@ export class Features {
     private groupPluginsForLoad(loadOrder: string[], dependencyGraph: Map<string, Set<string>>): string[][] {
         const groups: string[][] = [];
         const processed = new Set<string>();
-        
+
         for (const plugin of loadOrder) {
             if (processed.has(plugin)) continue;
-            
+
             const currentGroup: string[] = [];
-            
+
             // 检查loadOrder中的每个插件，如果它还未处理且没有未处理的依赖，加入当前组
             for (const candidate of loadOrder) {
                 if (processed.has(candidate)) continue;
-                
+
                 const dependencies = dependencyGraph.get(candidate) || new Set();
                 // 检查是否所有依赖都已经处理过
                 const allDependenciesProcessed = Array.from(dependencies)
                     .every(dep => processed.has(dep) || !dependencyGraph.has(dep));
-                    
+
                 if (allDependenciesProcessed) {
                     currentGroup.push(candidate);
                 }
             }
-            
+
             if (currentGroup.length > 0) {
                 groups.push(currentGroup);
                 for (const p of currentGroup) {
@@ -1735,21 +1756,21 @@ export class Features {
                 // 找一个有最少未处理依赖的插件
                 let minUnprocessedDeps = Infinity;
                 let candidateToAdd = '';
-                
+
                 for (const candidate of loadOrder) {
                     if (processed.has(candidate)) continue;
-                    
+
                     const dependencies = dependencyGraph.get(candidate) || new Set();
                     const unprocessedDeps = Array.from(dependencies)
                         .filter(dep => !processed.has(dep) && dependencyGraph.has(dep))
                         .length;
-                        
+
                     if (unprocessedDeps < minUnprocessedDeps) {
                         minUnprocessedDeps = unprocessedDeps;
                         candidateToAdd = candidate;
                     }
                 }
-                
+
                 if (candidateToAdd) {
                     groups.push([candidateToAdd]);
                     processed.add(candidateToAdd);
@@ -1759,10 +1780,10 @@ export class Features {
                 }
             }
         }
-        
+
         return groups;
     }
-    
+
     /**
      * 将插件分组，以便并行启用
      * 每一组中的插件可以并行启用
@@ -1770,36 +1791,36 @@ export class Features {
     private groupPluginsForEnable(sortedPlugins: string[]): string[][] {
         const groups: string[][] = [];
         const processed = new Set<string>();
-        
+
         for (let i = 0; i < sortedPlugins.length; i++) {
             const pluginName = sortedPlugins[i];
             if (!pluginName || processed.has(pluginName)) continue;
-            
+
             const currentGroup: string[] = [];
-            
+
             for (let j = i; j < sortedPlugins.length; j++) {
                 const plugin = sortedPlugins[j];
                 if (!plugin || processed.has(plugin)) continue;
-                
+
                 const pluginObj = this.plugins.get(plugin);
                 if (!pluginObj) continue;
-                
+
                 // 检查此插件的所有依赖是否已经处理
                 const dependencies = pluginObj.dependencies || [];
-                const allDependenciesProcessed = dependencies.every(dep => 
+                const allDependenciesProcessed = dependencies.every(dep =>
                     !this.plugins.has(dep) || processed.has(dep));
-                
+
                 if (allDependenciesProcessed) {
                     currentGroup.push(plugin);
                     processed.add(plugin);
                 }
             }
-            
+
             if (currentGroup.length > 0) {
                 groups.push(currentGroup);
             }
         }
-        
+
         return groups;
     }
 

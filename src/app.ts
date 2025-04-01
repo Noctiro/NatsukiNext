@@ -32,11 +32,13 @@ log.info(`Login in ${self.username} (${self.id})`, { remote: true });
 // 初始化功能模块
 // Features类负责设置事件处理器和命令处理
 const features = new Features(telegram);
+// 将 features 实例添加到 client *before* init() to make it available in onLoad
+(telegram as any).features = features;
+
 const initSuccess = await features.init();
 
-// 将 features 实例添加到 client
+// 确认初始化成功
 if (initSuccess) {
-    (telegram as any).features = features;
     log.info('功能模块已成功初始化并添加到客户端', { remote: true });
 } else {
     log.error('功能模块初始化失败，程序可能无法正常工作', { remote: true });
