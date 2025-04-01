@@ -640,11 +640,11 @@ const plugin: BotPlugin = {
                                 await ctx.message.replyText(`❌ 部分或全部插件重新加载失败`);
                             }
                         } else {
-                            await ctx.message.replyText(`⏳ 正在重新加载插件 **${pluginName}**...`);
+                            await ctx.message.replyText(html`⏳ 正在重新加载插件 <b>${pluginName}</b>...`);
                             // @ts-ignore - 我们知道此方法存在
                             const result = await ctx.client.features.loadPlugin(pluginName);
                             if (result) {
-                                await ctx.message.replyText(`✅ 插件 **${pluginName}** 已成功重新加载`);
+                                await ctx.message.replyText(html`✅ 插件 <b>${pluginName}</b> 已成功重新加载`);
                             } else {
                                 await ctx.message.replyText(`❌ 插件重新加载失败`);
                             }

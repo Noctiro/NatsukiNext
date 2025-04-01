@@ -1073,6 +1073,9 @@ export class Features {
      * @returns 是否成功加载
      */
     async loadPlugin(pluginName: string, autoEnable: boolean = true): Promise<boolean> {
+        // Note: This function uses dynamic import with a timestamp query parameter
+        // to bypass the ESM cache when reloading plugins. This allows updates
+        // but might lead to multiple module instances in memory if reloaded often.
         try {
             log.info(`开始加载插件: ${pluginName}`);
 
@@ -1163,28 +1166,12 @@ export class Features {
         try {
             log.info(`加载插件: ${pluginPath}`);
 
-            // 处理导入路径
-            let importPath = pluginPath;
-            
-            // 添加时间戳以防止缓存，但要确保是有效URL
-            try {
-                // 尝试将路径转换为URL格式
-                if (importPath.startsWith('/')) {
-                    // 绝对路径转为文件URL
-                    importPath = `file://${importPath}`;
-                }
-                
-                // 添加时间戳查询参数
-                const fileURL = new URL(`${importPath}`);
-                fileURL.searchParams.set('update', Date.now().toString());
-                importPath = fileURL.toString();
-            } catch (err) {
-                // 如果转换失败，使用简单字符串拼接
-                importPath = `${pluginPath}?update=${Date.now()}`;
-            }
+            // Use dynamic import with a timestamp to bypass cache
+            // Node's import() generally handles file paths correctly across OS
+            const importPathWithCacheBust = `${pluginPath}?update=${Date.now()}`;
             
             // 获取插件模块
-            const module = await import(importPath);
+            const module = await import(importPathWithCacheBust);
             const plugin: BotPlugin | undefined = module.default;
 
             // 由于scanPluginsDir已经过滤过，这里仅做一次基本验证
@@ -1363,28 +1350,11 @@ export class Features {
                 return false;
             }
             
-            // 使用URL对象处理路径，增加安全性
-            let importPath = filePath;
-            
-            // 添加时间戳以防止缓存，但要确保是有效URL
-            try {
-                // 尝试将路径转换为URL格式
-                if (importPath.startsWith('/')) {
-                    // 绝对路径转为文件URL
-                    importPath = `file://${importPath}`;
-                }
-                
-                // 添加时间戳查询参数
-                const fileURL = new URL(`${importPath}`);
-                fileURL.searchParams.set('check', Date.now().toString());
-                importPath = fileURL.toString();
-            } catch (err) {
-                // 如果转换失败，使用简单字符串拼接
-                importPath = `${filePath}?check=${Date.now()}`;
-            }
+            // Use dynamic import with a timestamp to bypass cache for checking
+            const importPathWithCacheBust = `${filePath}?check=${Date.now()}`;
             
             // 尝试导入文件
-            const module = await import(importPath);
+            const module = await import(importPathWithCacheBust);
             
             // 检查是否有默认导出和必要属性
             const plugin = module.default;
@@ -1954,11 +1924,14 @@ export class Features {
      */
     private checkCommandCooldown(userId: number, command: string, cooldownSeconds: number): boolean {
         const now = Date.now();
+        const cooldownMillis = cooldownSeconds * 1000;
 
-        // 清理过期的冷却记录
-        this.commandCooldowns = this.commandCooldowns.filter(
-            record => now - record.timestamp < (record.command === command ? cooldownSeconds * 1000 : 60000)
-        );
+        // Clean up expired cooldown records for *this specific command* to manage memory.
+        // Filtering all records constantly might be less efficient if the list is large.
+        this.commandCooldowns = this.commandCooldowns.filter(record => {
+            // Keep records for other commands, or non-expired records for this command
+            return record.command !== command || (now - record.timestamp < cooldownMillis);
+        });
 
         const cooldownRecord = this.commandCooldowns.find(
             record => record.userId === userId && record.command === command
@@ -1986,14 +1959,18 @@ export class Features {
         );
 
         if (existingIndex !== -1) {
-            // 检查索引是否有效，防止潜在的未定义问题
-            if (existingIndex < this.commandCooldowns.length) {
-                const record = this.commandCooldowns[existingIndex];
-                if (record) {
-                    record.timestamp = now;
-                }
+            // Update timestamp for existing record
+            const record = this.commandCooldowns[existingIndex];
+            // Explicitly check if the record exists before updating (satisfies TS)
+            if (record) {
+                record.timestamp = now;
+            } else {
+                // This case is unlikely given findIndex succeeded, but handles edge cases.
+                log.warn(`Cooldown record unexpectedly not found at index ${existingIndex}. Adding new record.`);
+                this.commandCooldowns.push({ userId, command, timestamp: now });
             }
         } else {
+            // Add new record
             this.commandCooldowns.push({
                 userId,
                 command,
@@ -2002,224 +1979,3 @@ export class Features {
         }
     }
 }
-
-/**
- * Plugin Development Guide
- * 
- * Below is a complete plugin example demonstrating all available features and configuration options
- * 
- * ```typescript
- * import type { BotPlugin, CommandContext, MessageEventContext, CallbackEventContext } from '../features';
- * import { log } from '../log';
- * import type { TelegramClient } from '@mtcute/bun';
- * 
- * // Plugin configuration interface
- * interface MyPluginConfig {
- *     enabled: boolean;
- *     apiKey?: string;
- *     responseTimeout: number;
- *     allowedUsers: number[];
- * }
- * 
- * // Default configuration
- * const defaultConfig: MyPluginConfig = {
- *     enabled: true,
- *     responseTimeout: 30,
- *     allowedUsers: []
- * };
- * 
- * // Plugin state
- * let config: MyPluginConfig = { ...defaultConfig };
- * 
- * // Plugin definition
- * const plugin: BotPlugin = {
- *     name: 'example',                      // Plugin name (required)
- *     description: 'Example plugin',        // Plugin description (optional)
- *     version: '1.0.0',                     // Plugin version (optional)
- *     dependencies: ['system'],             // Dependencies on other plugins (optional)
- *     
- *     // Declare permissions (new approach)
- *     permissions: [
- *         {
- *             name: 'example.use',
- *             description: 'Permission to use the example plugin',
- *             isSystem: false,
- *             allowedUsers: []  // This will be updated from config
- *         },
- *         {
- *             name: 'example.admin',
- *             description: 'Administrative permission for the example plugin',
- *             isSystem: true,
- *             parent: 'admin'
- *         }
- *     ],
- *     
- *     // Called when plugin is loaded
- *     async onLoad(client: TelegramClient): Promise<void> {
- *         // Load configuration
- *         const savedConfig = await client.features.getPluginConfig<MyPluginConfig>('example');
- *         if (savedConfig) {
- *             config = { ...defaultConfig, ...savedConfig };
- *         }
- *         
- *         // Update permission with allowed users from config
- *         const permManager = client.features.getPermissionManager();
- *         const permission = permManager.getPermission('example.use');
- *         if (permission) {
- *             permission.allowedUsers = config.allowedUsers;
- *             permManager.updatePermission(permission);
- *         }
- *         
- *         log.info('Example plugin loaded');
- *     },
- *     
- *     // Called when plugin is unloaded
- *     async onUnload(): Promise<void> {
- *         log.info('Example plugin unloaded');
- *     },
- *     
- *     // Command definitions
- *     commands: [
- *         {
- *             name: 'example',                  // Command name (required)
- *             description: 'Example command',   // Command description (optional)
- *             aliases: ['ex', 'sample'],        // Command aliases (optional)
- *             requiredPermission: 'example.use', // Required permission (optional)
- *             cooldown: 5,                      // Cooldown in seconds (optional)
- *             
- *             // Command handler function (required)
- *             async handler(ctx: CommandContext): Promise<void> {
- *                 // Example parameter processing
- *                 const subCommand = ctx.args[0]?.toLowerCase();
- *                 
- *                 if (!subCommand) {
- *                     await ctx.reply(`
- * 📚 **Example Plugin Help**
- * 
- * Available commands:
- * /example status - View status
- * /example set <key> <value> - Configure settings
- * /example reset - Reset configuration
- * `);
- *                     return;
- *                 }
- *                 
- *                 switch (subCommand) {
- *                     case 'status':
- *                         await ctx.reply(`
- * 📊 **Plugin Status**
- * 
- * Enabled: ${config.enabled ? '✅ Yes' : '❌ No'}
- * API Key: ${config.apiKey ? 'Set' : 'Not set'}
- * Response timeout: ${config.responseTimeout} seconds
- * Allowed users: ${config.allowedUsers.length}
- * `);
- *                         break;
- *                         
- *                     case 'set':
- *                         // Permission check example
- *                         if (!ctx.hasPermission('example.admin')) {
- *                             await ctx.reply('❌ Only administrators can modify configuration');
- *                             return;
- *                         }
- *                         
- *                         const key = ctx.args[1];
- *                         const value = ctx.args.slice(2).join(' ');
- *                         
- *                         if (!key || !value) {
- *                             await ctx.reply('❌ Please provide a valid key and value');
- *                             return;
- *                         }
- *                         
- *                         try {
- *                             // Update configuration based on key
- *                             switch (key) {
- *                                 case 'enabled':
- *                                     config.enabled = value.toLowerCase() === 'true';
- *                                     break;
- *                                 case 'apiKey':
- *                                     config.apiKey = value;
- *                                     break;
- *                                 case 'timeout':
- *                                     config.responseTimeout = parseInt(value) || 30;
- *                                     break;
- *                                 default:
- *                                     await ctx.reply(`❌ Unknown configuration item: ${key}`);
- *                                     return;
- *                             }
- *                             
- *                             // Save updated configuration
- *                             await ctx.client.features.savePluginConfig('example', config);
- *                             await ctx.reply(`✅ Configuration updated: ${key} = ${value}`);
- *                         } catch (err) {
- *                             await ctx.reply(`❌ Setting failed: ${err}`);
- *                         }
- *                         break;
- *                         
- *                     case 'reset':
- *                         // Permission check example
- *                         if (!ctx.hasPermission('example.admin')) {
- *                             await ctx.reply('❌ Only administrators can reset configuration');
- *                             return;
- *                         }
- *                         
- *                         config = { ...defaultConfig };
- *                         await ctx.client.features.savePluginConfig('example', config);
- *                         await ctx.reply('✅ Configuration has been reset to defaults');
- *                         break;
- *                         
- *                     default:
- *                         await ctx.reply(`❌ Unknown subcommand: ${subCommand}`);
- *                 }
- *             }
- *         }
- *     ],
- *     
- *     // Event handler definitions
- *     events: [
- *         {
- *             type: 'message',  // Message event
- *             priority: 10,     // Priority (optional, higher numbers = higher priority)
- *             
- *             // Filter (optional)
- *             filter: (ctx) => {
- *                 if (ctx.type !== 'message') return false;
- *                 
- *                 // Only process text messages
- *                 return !!ctx.message.text && config.enabled;
- *             },
- *             
- *             // Event handler function
- *             async handler(ctx: MessageEventContext): Promise<void> {
- *                 const text = ctx.message.text;
- *                 if (!text) return;
- *                 
- *                 // Process specific keywords
- *                 if (text.includes('hello')) {
- *                     await ctx.reply('Hello there! I am the example plugin 👋');
- *                 }
- *             }
- *         },
- *         {
- *             type: 'callback',  // Callback query event
- *             
- *             // Event handler function
- *             async handler(ctx: CallbackEventContext): Promise<void> {
- *                 // Process specific callback data
- *                 if (ctx.data.startsWith('example:')) {
- *                     const action = ctx.data.split(':')[1];
- *                     
- *                     switch (action) {
- *                         case 'info':
- *                             await ctx.reply('This is callback information from the example plugin');
- *                             break;
- *                     }
- *                 }
- *             }
- *         }
- *     ]
- * };
- * 
- * export default plugin;
- * ```
- */ 
