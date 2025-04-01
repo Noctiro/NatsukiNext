@@ -8,9 +8,15 @@ import os from 'os';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { cleanHTML } from '../utils/HtmlHelper';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// 转换exec为Promise形式
+const execAsync = promisify(exec);
 
 interface SystemInfo {
     uptime: string;
@@ -232,6 +238,41 @@ function formatPluginStatus(status?: PluginStatus): string {
 }
 
 /**
+ * 执行终端命令并返回结果
+ * @param command 要执行的命令
+ * @param timeout 超时时间（毫秒）
+ * @returns 命令执行结果
+ */
+async function executeCommand(command: string, timeout: number = 30000): Promise<{ stdout: string; stderr: string; error?: string }> {
+    try {
+        // 设置超时选项
+        const options = {
+            timeout,
+            maxBuffer: 1024 * 1024 * 2, // 2MB缓冲区
+        };
+        
+        // 执行命令
+        const { stdout, stderr } = await execAsync(command, options);
+        return { stdout, stderr };
+    } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        log.error(`命令执行错误: ${error.message}`);
+        
+        // 尽可能返回stdout和stderr
+        const result: { stdout: string; stderr: string; error: string } = {
+            stdout: '', 
+            stderr: '', 
+            error: error.message
+        };
+        
+        if ('stdout' in error) result.stdout = String(error.stdout || '');
+        if ('stderr' in error) result.stderr = String(error.stderr || '');
+        
+        return result;
+    }
+}
+
+/**
  * 系统插件 - 提供基本系统功能和信息
  */
 const plugin: BotPlugin = {
@@ -252,6 +293,18 @@ const plugin: BotPlugin = {
             description: '停止机器人的权限',
             isSystem: true,
             parent: 'admin'
+        },
+        {
+            name: 'system.admin',
+            description: '系统管理员权限',
+            isSystem: true,
+            parent: 'admin'
+        },
+        {
+            name: 'system.exec',
+            description: '执行终端命令的权限',
+            isSystem: true,
+            parent: 'system.admin'
         }
     ],
 
@@ -722,6 +775,67 @@ const plugin: BotPlugin = {
                 message += `其他命令: /plugins enable <名称> 启用插件, /plugins disable <名称> 禁用插件, /plugins reload [名称] 重载插件`;
 
                 await ctx.message.replyText(md(message));
+            }
+        },
+        {
+            name: 'exec',
+            description: '执行终端命令并返回结果（仅管理员可用）',
+            requiredPermission: 'system.exec', // 使用system.exec权限
+            async handler(ctx: CommandContext) {
+                // 只允许管理员执行
+                if (!managerIds.includes(ctx.message.sender.id)) {
+                    await ctx.message.replyText('❌ 只有管理员才能执行此命令');
+                    return;
+                }
+                
+                const command = ctx.content.trim();
+                
+                if (!command) {
+                    await ctx.message.replyText('请指定要执行的命令，例如：/exec ls -la');
+                    return;
+                }
+                
+                await ctx.message.replyText(`⏳ 正在执行命令: ${command}`);
+                
+                try {
+                    // 执行命令，设置10秒超时
+                    const { stdout, stderr, error } = await executeCommand(command, 10000);
+                    
+                    // 准备结果消息
+                    let resultMessage = '🖥️ <b>命令执行结果</b><br><br>';
+                    
+                    if (error) {
+                        resultMessage += `❌ <b>错误</b>: ${error.replace(/\r\n/g, '<br>').replace(/\r/g, '<br>')}<br><br>`;
+                    }
+                    
+                    if (stdout) {
+                        // 如果输出太长，截断它
+                        const truncatedStdout = stdout.length > 2500 
+                            ? stdout.substring(0, 2500) + '...(输出被截断)'
+                            : stdout;
+                        
+                        resultMessage += `📤 <b>标准输出</b>:<br><blockquote collapsible>${truncatedStdout.replace(/\r\n/g, '<br>').replace(/\r/g, '<br>')}</blockquote>`;
+                    }
+                    
+                    if (stderr) {
+                        // 如果错误输出太长，截断它
+                        const truncatedStderr = stderr.length > 1000
+                            ? stderr.substring(0, 1000) + '...(错误输出被截断)'
+                            : stderr;
+                            
+                        resultMessage += `⚠️ <b>标准错误</b>:<br><blockquote collapsible>${truncatedStderr.replace(/\r\n/g, '<br>').replace(/\r/g, '<br>')}</blockquote>`;
+                    }
+                    
+                    if (!stdout && !stderr && !error) {
+                        resultMessage = '✅ 命令执行成功，没有输出';
+                    }
+                    
+                    await ctx.message.replyText(html(cleanHTML(resultMessage, { escapeUnknownTags: true })));
+                } catch (err) {
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    log.error(`执行命令时出错: ${error.message}`);
+                    await ctx.message.replyText(`❌ 执行命令时出错: ${error.message}`);
+                }
             }
         }
     ],
