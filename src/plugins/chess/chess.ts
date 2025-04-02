@@ -37,46 +37,28 @@ const plugin: BotPlugin = {
             name: 'chess',
             description: '开始一局中国象棋游戏',
             async handler(ctx: CommandContext) {
-                // 根据参数处理不同的子命令
                 const subCommand = ctx.args[0]?.toLowerCase();
 
                 if (!subCommand || subCommand === 'help') {
-                    // 显示帮助信息
                     await showHelp(ctx);
                     return;
                 }
 
-                switch (subCommand) {
-                    case 'challenge':
-                        // 挑战其他玩家
-                        await challengePlayer(ctx);
-                        break;
-                    case 'ai':
-                        // 与AI对战
-                        await startAiGame(ctx);
-                        break;
-                    case 'accept':
-                        // 接受挑战
-                        await acceptChallenge(ctx);
-                        break;
-                    case 'decline':
-                        // 拒绝挑战
-                        await declineChallenge(ctx);
-                        break;
-                    case 'move':
-                        // 移动棋子
-                        await moveCommand(ctx);
-                        break;
-                    case 'resign':
-                        // 认输
-                        await resignGame(ctx);
-                        break;
-                    case 'status':
-                        // 显示当前游戏状态
-                        await showGameStatus(ctx);
-                        break;
-                    default:
-                        await ctx.message.replyText(`未知命令：${subCommand}\n请使用 /chess help 查看帮助。`);
+                const handlers: Record<string, (ctx: CommandContext) => Promise<void>> = {
+                    challenge: challengePlayer,
+                    ai: startAiGame,
+                    accept: acceptChallenge,
+                    decline: declineChallenge,
+                    move: moveCommand,
+                    resign: resignGame,
+                    status: showGameStatus
+                };
+
+                const handler = handlers[subCommand];
+                if (handler) {
+                    await handler(ctx);
+                } else {
+                    await ctx.message.replyText(`未知命令：${subCommand}\n请使用 /chess help 查看帮助。`);
                 }
             }
         },
@@ -85,21 +67,14 @@ const plugin: BotPlugin = {
             description: '移动棋子 (游戏内快捷方式)',
             async handler(ctx: CommandContext) {
                 const userId = ctx.message.sender.id;
-                const game = gameManager.getPlayerActiveGame(userId); // Check if user is in *any* active game
+                const game = gameManager.getPlayerActiveGame(userId);
 
                 if (game) {
-                    // User is in a game, proceed with move logic
-                    // Adjust args for moveCommand: remove the '/m' part
-                    const moveArgs = ctx.args.slice(0); // Create a copy of args
-                    // Prepend 'move' so moveCommand knows what action to take
                     const adjustedCtx: CommandContext = {
                         ...ctx,
-                        args: ['move', ...moveArgs] // Pass 'move' and the actual move notation
+                        args: ['move', ...ctx.args.slice(0)]
                     };
                     await moveCommand(adjustedCtx);
-                } else {
-                    // User is not in a game, do nothing as requested
-                    log.debug(`User ${userId} tried /m outside of a game.`);
                 }
             }
         }
@@ -142,18 +117,15 @@ async function showHelp(ctx: CommandContext) {
  * 挑战其他玩家
  */
 async function challengePlayer(ctx: CommandContext) {
-    // 获取目标用户
     const targetUsername = ctx.args[1];
     if (!targetUsername) {
         await ctx.message.replyText('请指定要挑战的玩家，例如：/chess challenge @用户名');
         return;
     }
 
-    // 提取用户ID（如果是@用户的形式）
     let targetUserId: number | null = null;
 
     if (targetUsername.startsWith('@')) {
-        // 尝试通过用户名找到用户
         try {
             const username = targetUsername.substring(1);
             const user = await ctx.client.getUser(username);
@@ -163,37 +135,27 @@ async function challengePlayer(ctx: CommandContext) {
             return;
         }
     } else if (/^\d+$/.test(targetUsername)) {
-        // 如果直接输入用户ID
         targetUserId = parseInt(targetUsername);
     } else {
         await ctx.message.replyText('请使用有效的@用户名或用户ID');
         return;
     }
 
-    // 不能挑战自己
     if (targetUserId === ctx.message.sender.id) {
         await ctx.message.replyText('不能挑战自己');
         return;
     }
 
-    // 检查对方是否已经有活跃游戏
     if (targetUserId !== null) {
-        const opponentGame = gameManager.getPlayerActiveGame(targetUserId);
-
-        if (opponentGame) {
+        if (gameManager.getPlayerActiveGame(targetUserId)) {
             await ctx.message.replyText('对方已经在进行一场游戏');
             return;
         }
 
-        // 创建邀请
-        const gameId = gameManager.addInvite(targetUserId, ctx.message.sender.id);
-
-        // 发送邀请消息，使用正确的用户链接格式
+        gameManager.addInvite(targetUserId, ctx.message.sender.id);
         await ctx.message.replyText(
             html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName || '玩家'}</a> 邀请您下象棋！\n使用 /chess accept 接受挑战，或 /chess decline 拒绝挑战。`
         );
-    } else {
-        await ctx.message.replyText('无法获取有效的用户ID');
     }
 }
 
@@ -203,16 +165,12 @@ async function challengePlayer(ctx: CommandContext) {
 async function startAiGame(ctx: CommandContext) {
     const userId = ctx.message.sender.id;
 
-    // 检查玩家是否已经有活跃游戏
-    const playerGame = gameManager.getPlayerActiveGame(userId);
-
-    if (playerGame) {
+    if (gameManager.getPlayerActiveGame(userId)) {
         await ctx.message.replyText('您已经在进行一场游戏了，请先完成当前游戏');
         return;
     }
 
-    // 检查是否指定了AI难度（如 /chess ai hard）
-    let aiDifficulty = AI_DIFFICULTY_LEVELS.normal; // 默认普通难度
+    let aiDifficulty = AI_DIFFICULTY_LEVELS.normal;
     const difficultyArg = ctx.args[1]?.toLowerCase();
 
     if (difficultyArg) {
@@ -226,40 +184,10 @@ async function startAiGame(ctx: CommandContext) {
         }
     }
 
-    // 创建新游戏
     const game = gameManager.createGame(userId, 'AI', ctx.message.chat.id);
-
-    // 在游戏对象中保存AI难度
     (game as any).aiDifficulty = aiDifficulty;
 
-    // 获取难度文本
-    const difficultyText = getDifficultyText(aiDifficulty);
-
-    try {
-        // 生成棋盘图片
-        const boardBuffer = await BoardRenderer.drawBoardImage(game);
-
-        // 发送游戏消息
-        await ctx.message.replyMedia(
-            {
-                type: 'photo',
-                file: boardBuffer,
-                fileName: `chess_${game.id}.png`
-            },
-            {
-                caption: html`第 1 回合 - 红方（您）VS ${difficultyText}AI<br>请输入您的走法，例如：/m 炮二平五`
-            }
-        );
-    } catch (error) {
-        // 如果图片渲染失败，fallback到HTML渲染
-        log.error('棋盘图片渲染失败:', error);
-
-        // 使用HTML作为备用
-        const boardHtml = BoardRenderer.renderBoardHTML(game);
-        await ctx.message.replyText(
-            html`${html(boardHtml)}<br>红方（您）VS ${difficultyText}AI<br>请输入您的走法，例如：/m 炮二平五`
-        );
-    }
+    await renderAndSendBoard(game, ctx, `第 1 回合 - 红方（您）VS ${getDifficultyText(aiDifficulty)}AI<br>请输入您的走法，例如：/m 炮二平五`);
 }
 
 /**
@@ -267,52 +195,23 @@ async function startAiGame(ctx: CommandContext) {
  */
 async function acceptChallenge(ctx: CommandContext) {
     const targetUserId = ctx.message.sender.id;
-
-    // 检查是否有等待中的邀请
     const invite = gameManager.getInvite(targetUserId);
+    
     if (!invite) {
         await ctx.message.replyText('您没有收到任何象棋邀请');
         return;
     }
 
-    // 检查邀请是否过期
     if (invite.expires < Date.now()) {
         gameManager.removeInvite(targetUserId);
         await ctx.message.replyText('邀请已过期');
         return;
     }
 
-    // 创建新游戏
     const game = gameManager.createGame(invite.inviter, targetUserId, ctx.message.chat.id);
-
-    // 清除邀请
     gameManager.removeInvite(targetUserId);
 
-    try {
-        // 生成棋盘图片
-        const boardBuffer = await BoardRenderer.drawBoardImage(game);
-
-        // 发送游戏消息
-        await ctx.message.replyMedia(
-            {
-                type: 'photo',
-                file: boardBuffer,
-                fileName: `chess_${game.id}.png`
-            },
-            {
-                caption: html`第 1 回合 - 游戏开始！红方先行，请输入您的走法，例如：/m 炮二平五`
-            }
-        );
-    } catch (error) {
-        // 如果图片渲染失败，fallback到HTML渲染
-        log.error('棋盘图片渲染失败:', error);
-
-        // 使用HTML作为备用
-        const boardHtml = BoardRenderer.renderBoardHTML(game);
-        await ctx.message.replyText(
-            html`${html(boardHtml)}<br>游戏开始！红方先行，请输入您的走法，例如：/m 炮二平五`
-        );
-    }
+    await renderAndSendBoard(game, ctx, `第 1 回合 - 游戏开始！红方先行，请输入您的走法，例如：/m 炮二平五`);
 }
 
 /**
@@ -320,18 +219,14 @@ async function acceptChallenge(ctx: CommandContext) {
  */
 async function declineChallenge(ctx: CommandContext) {
     const targetUserId = ctx.message.sender.id;
-
-    // 检查是否有等待中的邀请
     const invite = gameManager.getInvite(targetUserId);
+    
     if (!invite) {
         await ctx.message.replyText('您没有收到任何象棋邀请');
         return;
     }
 
-    // 清除邀请
     gameManager.removeInvite(targetUserId);
-
-    // 通知发起者
     await ctx.message.replyText(`您已拒绝了象棋邀请`);
 }
 
@@ -347,36 +242,49 @@ async function moveCommand(ctx: CommandContext) {
         return;
     }
 
-    // 查找玩家当前的游戏
     const game = gameManager.getPlayerTurnGame(userId);
-
     if (!game) {
         await ctx.message.replyText('您当前没有轮到您行动的游戏');
         return;
     }
 
-    // 执行走法
     const moveResult = game.moveByNotation(moveText);
-
     if (!moveResult.success) {
         await ctx.message.replyText(`走法无效: ${moveResult.message}`);
         return;
     }
 
-    // 更新游戏棋盘
-    await updateGameBoard(game, ctx);
-
-    // 如果游戏结束，显示胜利信息
     if (game.status === GameStatus.FINISHED) {
         const winner = game.winner === PieceColor.RED ? '红方' : '黑方';
-        await ctx.message.replyText(`游戏结束！${winner}获胜！`);
+        await renderAndSendBoard(game, ctx, `游戏结束！${winner}获胜！`);
         return;
     }
 
-    // 如果是AI对战，让AI行动
+    await updateGameBoard(game, ctx);
+
     if (game.blackPlayer === 'AI' && game.currentTurn === PieceColor.BLACK) {
-        // 让AI行动，处理可能的异步操作
         await processAIMove(game, ctx);
+    }
+}
+
+/**
+ * 渲染并发送棋盘
+ */
+async function renderAndSendBoard(game: Game, ctx: CommandContext, caption: string) {
+    try {
+        const boardBuffer = await BoardRenderer.drawBoardImage(game);
+        await ctx.message.replyMedia(
+            {
+                type: 'photo',
+                file: boardBuffer,
+                fileName: `chess_${game.id}.png`
+            },
+            { caption: html(caption) }
+        );
+    } catch (error) {
+        log.error('棋盘图片渲染失败:', error);
+        const boardHtml = BoardRenderer.renderBoardHTML(game);
+        await ctx.message.replyText(html`${html(boardHtml)}<br>${caption}`);
     }
 }
 
@@ -384,15 +292,12 @@ async function moveCommand(ctx: CommandContext) {
  * 更新游戏棋盘消息
  */
 async function updateGameBoard(game: Game, ctx: CommandContext) {
-    // 如果轮到AI行动，直接返回，不发送新消息
     if (game.currentTurn === PieceColor.BLACK && game.blackPlayer === 'AI') {
         return;
     }
 
-    // 处理显示当前玩家
     let currentPlayer: string;
     if (game.currentTurn === PieceColor.RED) {
-        // 红方玩家显示：使用ID作为链接但显示玩家名
         currentPlayer = `<a href="tg://user?id=${game.redPlayer}">红方玩家</a>`;
     } else {
         currentPlayer = game.blackPlayer === 'AI'
@@ -400,134 +305,44 @@ async function updateGameBoard(game: Game, ctx: CommandContext) {
             : `<a href="tg://user?id=${game.blackPlayer}">黑方玩家</a>`;
     }
 
-    try {
-        // 生成棋盘图片
-        const boardBuffer = await BoardRenderer.drawBoardImage(game);
-
-        // 发送图片消息
-        await ctx.message.replyMedia(
-            {
-                type: 'photo',
-                file: boardBuffer,
-                fileName: `chess_${game.id}.png`
-            },
-            {
-                caption: html`第 ${Math.floor(game.history.length / 2) + 1} 回合 - 轮到${html(currentPlayer)}行动${game.lastMove ? ` | 上一步：${game.lastMove}` : ''}`
-            }
-        );
-    } catch (error) {
-        // 如果图片渲染失败，fallback到HTML渲染
-        log.error('棋盘图片渲染失败:', error);
-
-        // 使用HTML作为备用
-        const boardHtml = BoardRenderer.renderBoardHTML(game);
-        await ctx.message.replyText(
-            html`${html(boardHtml)}<br>轮到${html(currentPlayer)}行动`
-        );
-    }
+    const caption = `第 ${Math.floor(game.history.length / 2) + 1} 回合 - 轮到${currentPlayer}行动${game.lastMove ? ` | 上一步：${game.lastMove}` : ''}`;
+    await renderAndSendBoard(game, ctx, caption);
 }
 
 /**
  * 处理AI走棋
  */
 async function processAIMove(game: Game, ctx: CommandContext) {
-    // 发送“思考中”提示
     const thinkingMessage = await ctx.message.replyText('AI 正在思考中...');
-    let thinkingMessageId: number | undefined;
-    if (thinkingMessage) {
-        thinkingMessageId = thinkingMessage.id;
-    }
+    let thinkingMessageId: number | undefined = thinkingMessage?.id;
 
     try {
-        // 获取AI难度等级
         const aiDifficulty = (game as any).aiDifficulty || AI_DIFFICULTY_LEVELS.normal;
-
-        // 创建AI实例，高级难度时启用云库
         const useCloudLibrary = aiDifficulty === AI_DIFFICULTY_LEVELS.hard;
         const chessAI = new ChessAI(aiDifficulty, useCloudLibrary);
-
-        // 获取AI走法（现在是异步的）
         const aiMove = await chessAI.getMove(game);
 
-        // 删除“思考中”提示
         if (thinkingMessageId) {
             ctx.client.deleteMessagesById(ctx.chatId, [thinkingMessageId]);
+            thinkingMessageId = undefined;
         }
 
         if (!aiMove) {
-            // AI无法行动，认输
             game.status = GameStatus.FINISHED;
             game.winner = PieceColor.RED;
-
-            try {
-                // 生成棋盘图片
-                const boardBuffer = await BoardRenderer.drawBoardImage(game);
-
-                // 发送最终棋盘和结果
-                await ctx.message.replyMedia(
-                    {
-                        type: 'photo',
-                        file: boardBuffer,
-                        fileName: `chess_${game.id}_final.png`
-                    },
-                    {
-                        caption: html`AI无法行动，您获胜了！`
-                    }
-                );
-            } catch (error) {
-                // 如果图片渲染失败，fallback到HTML渲染
-                log.error('棋盘图片渲染失败:', error);
-
-                // 使用HTML作为备用
-                const boardHtml = BoardRenderer.renderBoardHTML(game);
-                await ctx.message.replyText(
-                    html`${html(boardHtml)}<br>AI无法行动，您获胜了！`
-                );
-            }
+            await renderAndSendBoard(game, ctx, `AI无法行动，您获胜了！`);
             return;
         }
 
-        // 执行AI移动
         game.move(aiMove.from, aiMove.to);
 
-        // 确定状态消息
-        let statusMessage: string;
-
-        // 如果游戏结束，显示胜利信息
-        if (game.status === GameStatus.FINISHED) {
-            statusMessage = 'AI获胜了！';
-        } else {
-            statusMessage = '轮到您行动';
-        }
-
-        try {
-            // 生成棋盘图片
-            const boardBuffer = await BoardRenderer.drawBoardImage(game);
-
-            // 发送AI走子结果
-            await ctx.message.replyMedia(
-                {
-                    type: 'photo',
-                    file: boardBuffer,
-                    fileName: `chess_${game.id}_ai.png`
-                },
-                {
-                    caption: html`第 ${Math.floor(game.history.length / 2) + 1} 回合 - ${statusMessage}${game.lastMove ? ` | AI走法：${game.lastMove}` : ''}`
-                }
-            );
-        } catch (error) {
-            // 如果图片渲染失败，fallback到HTML渲染
-            log.error('棋盘图片渲染失败:', error);
-
-            // 使用HTML作为备用
-            const boardHtml = BoardRenderer.renderBoardHTML(game);
-            await ctx.message.replyText(
-                html`${html(boardHtml)}<br>${statusMessage}`
-            );
-        }
+        const statusMessage = game.status === GameStatus.FINISHED 
+            ? 'AI获胜了！' 
+            : '轮到您行动';
+            
+        const caption = `第 ${Math.floor(game.history.length / 2) + 1} 回合 - ${statusMessage}${game.lastMove ? ` | AI走法：${game.lastMove}` : ''}`;
+        await renderAndSendBoard(game, ctx, caption);
     } catch (error) {
-        // 确保即使在AI计算或发送消息出错时也删除“思考中”提示
-        // 确保即使在AI计算或发送消息出错时也删除“思考中”提示
         if (thinkingMessageId) {
             try {
                 await ctx.client.deleteMessagesById(ctx.chatId, [thinkingMessageId]);
@@ -535,7 +350,6 @@ async function processAIMove(game: Game, ctx: CommandContext) {
                 log.error('Failed to delete thinking message:', deleteError);
             }
         }
-        // 重新抛出原始错误
         throw error;
     }
 }
@@ -544,16 +358,12 @@ async function processAIMove(game: Game, ctx: CommandContext) {
  * 获取难度文本描述
  */
 function getDifficultyText(difficulty: number): string {
-    switch (difficulty) {
-        case AI_DIFFICULTY_LEVELS.easy:
-            return '初级';
-        case AI_DIFFICULTY_LEVELS.normal:
-            return '中级';
-        case AI_DIFFICULTY_LEVELS.hard:
-            return '高级(云库)';
-        default:
-            return '初级';
-    }
+    const difficultyMap: Record<number, string> = {
+        [AI_DIFFICULTY_LEVELS.easy]: '初级',
+        [AI_DIFFICULTY_LEVELS.normal]: '中级',
+        [AI_DIFFICULTY_LEVELS.hard]: '高级'
+    };
+    return difficultyMap[difficulty] || '初级';
 }
 
 /**
@@ -561,8 +371,6 @@ function getDifficultyText(difficulty: number): string {
  */
 async function resignGame(ctx: CommandContext) {
     const userId = ctx.message.sender.id;
-
-    // 查找玩家当前的游戏
     const game = gameManager.getPlayerActiveGame(userId);
 
     if (!game) {
@@ -570,15 +378,11 @@ async function resignGame(ctx: CommandContext) {
         return;
     }
 
-    // 执行认输
-    const success = game.resign(userId);
-
-    if (!success) {
+    if (!game.resign(userId)) {
         await ctx.message.replyText('无法认输，可能游戏已经结束');
         return;
     }
 
-    // 处理获胜者显示
     let winner: string;
     if (game.winner === PieceColor.RED) {
         winner = typeof game.redPlayer === 'string' && game.redPlayer === 'AI'
@@ -590,31 +394,7 @@ async function resignGame(ctx: CommandContext) {
             : `<a href="tg://user?id=${game.blackPlayer}">黑方玩家</a>`;
     }
 
-    try {
-        // 生成棋盘图片
-        const boardBuffer = await BoardRenderer.drawBoardImage(game);
-
-        // 发送认输结果
-        await ctx.message.replyMedia(
-            {
-                type: 'photo',
-                file: boardBuffer,
-                fileName: `chess_${game.id}_resign.png`
-            },
-            {
-                caption: html`第 ${Math.floor(game.history.length / 2) + 1} 回合 - 游戏结束，${winner}获胜！`
-            }
-        );
-    } catch (error) {
-        // 如果图片渲染失败，fallback到HTML渲染
-        log.error('棋盘图片渲染失败:', error);
-
-        // 使用HTML作为备用
-        const boardHtml = BoardRenderer.renderBoardHTML(game);
-        await ctx.message.replyText(html`${html(boardHtml)}<br>游戏结束，${winner}获胜！`);
-    }
-
-    // 移除游戏
+    await renderAndSendBoard(game, ctx, `第 ${Math.floor(game.history.length / 2) + 1} 回合 - 游戏结束，${winner}获胜！`);
     gameManager.endGame(game.id);
 }
 
@@ -623,8 +403,6 @@ async function resignGame(ctx: CommandContext) {
  */
 async function showGameStatus(ctx: CommandContext) {
     const userId = ctx.message.sender.id;
-
-    // 查找玩家当前的游戏
     const game = gameManager.getPlayerActiveGame(userId);
 
     if (!game) {
@@ -632,34 +410,7 @@ async function showGameStatus(ctx: CommandContext) {
         return;
     }
 
-    // 获取游戏状态文本
-    const statusText = game.getStatusText();
-
-    try {
-        // 生成棋盘图片
-        const boardBuffer = await BoardRenderer.drawBoardImage(game);
-
-        // 发送游戏状态
-        await ctx.message.replyMedia(
-            {
-                type: 'photo',
-                file: boardBuffer,
-                fileName: `chess_${game.id}_status.png`
-            },
-            {
-                caption: html`第 ${Math.floor(game.history.length / 2) + 1} 回合 - ${statusText}`
-            }
-        );
-    } catch (error) {
-        // 如果图片渲染失败，fallback到HTML渲染
-        log.error('棋盘图片渲染失败:', error);
-
-        // 使用HTML作为备用
-        const boardHtml = BoardRenderer.renderBoardHTML(game);
-        await ctx.message.replyText(
-            html`${html(boardHtml)}<br>${statusText}`
-        );
-    }
+    await renderAndSendBoard(game, ctx, `第 ${Math.floor(game.history.length / 2) + 1} 回合 - ${game.getStatusText()}`);
 }
 
 export default plugin;

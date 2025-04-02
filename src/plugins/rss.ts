@@ -51,7 +51,7 @@ const RSS_SOURCES = [
     "https://feedx.net/rss/wsj.xml",                // 华尔街中文
     "https://feeds.feedburner.com/rsscna/politics", // 中央社政治新闻
     "https://news.pts.org.tw/xml/newsfeed.xml",     // 公视新闻
-    "http://www.bbc.co.uk/zhongwen/simp/index.xml", // bbc中文
+    "https://feeds.bbci.co.uk/zhongwen/trad/rss.xml", // bbc中文
     "https://feedx.net/rss/zhihudaily.xml",         // 知乎日报
 
     // 科技类

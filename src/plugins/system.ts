@@ -272,13 +272,26 @@ async function executeCommand(command: string, timeout: number = 30000): Promise
     }
 }
 
+// 格式化获取进程内存信息的更详细版本
+function getDetailedProcessMemory() {
+    const mem = process.memoryUsage();
+    return {
+        rss: formatBytes(mem.rss), // 常驻集大小
+        heapTotal: formatBytes(mem.heapTotal), // V8分配的堆内存总量
+        heapUsed: formatBytes(mem.heapUsed), // V8当前使用的堆内存
+        external: formatBytes(mem.external || 0), // V8管理的C++对象绑定的外部内存
+        arrayBuffers: formatBytes(mem.arrayBuffers || 0), // 分配的ArrayBuffer和SharedArrayBuffer的内存
+        usage: ((mem.heapUsed / mem.heapTotal) * 100).toFixed(1) + '%' // 堆内存使用率
+    };
+}
+
 /**
  * 系统插件 - 提供基本系统功能和信息
  */
 const plugin: BotPlugin = {
     name: 'system',
-    description: '系统核心功能',
-    version: '1.0.0',
+    description: '系统控制和信息命令',
+    version: '1.2.0',
 
     // 新增: 插件权限声明，这将被Features类处理
     permissions: [
@@ -835,6 +848,130 @@ const plugin: BotPlugin = {
                     const error = err instanceof Error ? err : new Error(String(err));
                     log.error(`执行命令时出错: ${error.message}`);
                     await ctx.message.replyText(`❌ 执行命令时出错: ${error.message}`);
+                }
+            }
+        },
+        {
+            name: 'memory',
+            description: '显示当前内存使用情况',
+            aliases: ['mem'],
+            handler: async (ctx: CommandContext) => {
+                // 只允许管理员执行
+                if (!managerIds.includes(ctx.message.sender.id)) {
+                    await ctx.message.replyText('❌ 只有管理员才能执行此命令');
+                    return;
+                }
+                
+                try {
+                    // 获取进程内存信息
+                    const memInfo = getDetailedProcessMemory();
+                    
+                    // 获取系统内存信息
+                    const sysInfo = await getSystemInfo();
+                    
+                    let message = '📊 <b>内存使用情况</b>\n\n';
+                    
+                    message += '<b>Bun 进程内存:</b>\n' +
+                              `- RSS (常驻集大小): ${memInfo.rss}\n` +
+                              `- 堆内存总量: ${memInfo.heapTotal}\n` +
+                              `- 堆内存使用: ${memInfo.heapUsed} (${memInfo.usage})\n` +
+                              `- 外部内存: ${memInfo.external}\n` +
+                              `- ArrayBuffer: ${memInfo.arrayBuffers}\n\n`;
+                    
+                    message += '<b>系统内存:</b>\n' +
+                              `- 总内存: ${sysInfo.memory.total}\n` +
+                              `- 已使用: ${sysInfo.memory.used} (${sysInfo.memory.percentage}%)\n` +
+                              `- 可用: ${sysInfo.memory.free}\n\n`;
+                    
+                    // 获取机器人实例中缓存的计数
+                    const features = ctx.client.features;
+                    
+                    // 构建缓存统计报告
+                    const cacheStats = {
+                        plugins: features.getPlugins().length,
+                        activePlugins: features.getPlugins().filter(p => p.status === PluginStatus.ACTIVE).length,
+                        commandsCached: 0,
+                        configsCached: 0,
+                        cooldowns: 0
+                    };
+                    
+                    message += '<b>缓存统计:</b>\n' +
+                              `- 已加载插件: ${cacheStats.plugins} (${cacheStats.activePlugins} 个活跃)\n` +
+                              `- 运行时间: ${sysInfo.botUptime}\n\n`;
+                    
+                    message += '<i>提示: 使用 /clearmem 命令清理内存</i>';
+                    
+                    await ctx.message.replyText(html(cleanHTML(message.replace(/\n/g, '<br>'), { escapeUnknownTags: true })));
+                } catch (err) {
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    log.error(`获取内存信息时出错: ${error.message}`);
+                    await ctx.message.replyText(`❌ 获取内存信息失败: ${error.message}`);
+                }
+            }
+        },
+        {
+            name: 'clearmem',
+            description: '清理内存和缓存',
+            handler: async (ctx: CommandContext) => {
+                // 只允许管理员执行
+                if (!managerIds.includes(ctx.message.sender.id)) {
+                    await ctx.message.replyText('❌ 只有管理员才能执行此命令');
+                    return;
+                }
+                
+                try {
+                    // 获取清理前的内存信息
+                    const beforeInfo = getDetailedProcessMemory();
+                    await ctx.message.replyText('🧹 正在清理内存和缓存...');
+                    
+                    // 执行内存清理
+                    const startTime = Date.now();
+                    ctx.client.features.cleanupMemory();
+                    
+                    // 手动触发垃圾回收
+                    if (global.gc) {
+                        try {
+                            global.gc();
+                        } catch (e) {
+                            // 忽略可能的错误
+                        }
+                    }
+                    
+                    // 获取清理后的内存信息
+                    const afterInfo = getDetailedProcessMemory();
+                    const duration = Date.now() - startTime;
+                    
+                    // 计算释放的内存
+                    const heapDiff = parseInt(beforeInfo.heapUsed) - parseInt(afterInfo.heapUsed);
+                    const rssDiff = parseInt(beforeInfo.rss) - parseInt(afterInfo.rss);
+                    
+                    // 构建报告
+                    let message = '✅ <b>内存清理完成</b>\n\n';
+                    
+                    message += `<b>耗时:</b> ${duration}ms\n\n`;
+                    
+                    message += '<b>清理前:</b>\n' +
+                              `- 堆内存: ${beforeInfo.heapUsed} (${beforeInfo.usage})\n` +
+                              `- RSS: ${beforeInfo.rss}\n\n`;
+                    
+                    message += '<b>清理后:</b>\n' +
+                              `- 堆内存: ${afterInfo.heapUsed} (${afterInfo.usage})\n` +
+                              `- RSS: ${afterInfo.rss}\n\n`;
+                    
+                    const formatDiff = (bytes: number): string => {
+                        const sign = bytes > 0 ? '-' : '+';
+                        return `${sign}${formatBytes(Math.abs(bytes))}`;
+                    };
+                    
+                    message += '<b>内存变化:</b>\n' +
+                              `- 堆内存: ${formatDiff(heapDiff)}\n` +
+                              `- RSS: ${formatDiff(rssDiff)}\n\n`;
+                    
+                    await ctx.message.replyText(html(cleanHTML(message.replace(/\n/g, '<br>'), { escapeUnknownTags: true })));
+                } catch (err) {
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    log.error(`清理内存时出错: ${error.message}`);
+                    await ctx.message.replyText(`❌ 内存清理失败: ${error.message}`);
                 }
             }
         }

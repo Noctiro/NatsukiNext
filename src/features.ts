@@ -10,7 +10,8 @@ import {
 } from '@mtcute/dispatcher';
 import { log } from './log';
 import { enableChats, managerIds } from './app';
-import { PermissionManager, type Permission, type PermissionGroup } from './permissions';
+import { PermissionManager, type Permission } from './permissions';
+import { embeddedPlugins, embeddedPluginsList } from './embedded-plugins';
 
 // 扩展 TelegramClient 类型，以便在整个应用中访问features实例
 declare module '@mtcute/bun' {
@@ -190,12 +191,12 @@ export interface BotPlugin {
     error?: string;
 }
 
-// 命令执行冷却记录
-interface CommandCooldown {
-    userId: number;
-    command: string;
-    timestamp: number;
-}
+// 命令执行冷却记录 - 不再需要接口，直接使用 Map 结构
+// interface CommandCooldown {
+//     userId: number;
+//     command: string;
+//     timestamp: number;
+// }
 
 /**
  * 功能管理器类 (Features)
@@ -231,8 +232,8 @@ export class Features {
     private eventHandlers = new Map<string, Set<PluginEvent>>();
     // 权限管理器实例
     private permissionManager!: PermissionManager;
-    // 命令冷却时间跟踪
-    private commandCooldowns: CommandCooldown[] = [];
+    // 命令冷却时间跟踪: Map<userId, Map<commandName, timestamp>>
+    private commandCooldowns: Map<number, Map<string, number>> = new Map();
     // 插件配置缓存
     private pluginConfigs = new Map<string, any>();
     // 命令处理器缓存，加速命令查找
@@ -249,6 +250,14 @@ export class Features {
     private recentlyUsedCommands: string[] = [];
     // 命令执行超时时间（毫秒）
     private readonly COMMAND_TIMEOUT = 180000; // 3分钟
+    // 内存清理间隔（毫秒）
+    private readonly MEMORY_CLEANUP_INTERVAL = 600000; // 10分钟
+    // 内存清理定时器
+    private memoryCleanupTimer?: ReturnType<typeof setInterval>;
+    // 内存泄漏检测 - 上次堆内存使用量
+    private lastHeapUsed = 0;
+    // 内存泄漏检测 - 连续增长次数
+    private consecutiveIncreases = 0;
 
     /**
      * 创建功能管理器实例
@@ -878,14 +887,7 @@ export class Features {
                     // 检查冷却时间
                     if (cmd.cooldown && userId) {
                         if (!this.checkCommandCooldown(userId, cmd.name, cmd.cooldown)) {
-                            const lastCmd = this.commandCooldowns.find(
-                                c => c.userId === userId && c.command === cmd.name
-                            );
-
-                            const remainingSecs = lastCmd
-                                ? Math.ceil((cmd.cooldown - (Date.now() - lastCmd.timestamp) / 1000))
-                                : cmd.cooldown;
-
+                            const remainingSecs = this.getRemainingCooldown(userId, cmd.name, cmd.cooldown);
                             return {
                                 index,
                                 canExecute: false,
@@ -1270,6 +1272,9 @@ export class Features {
             // 设置事件处理器
             this.setupHandlers();
 
+            // 启动内存管理定时器
+            this.startMemoryManagement();
+
             // 加载插件（权限管理器初始化后）
             log.info('开始加载插件...');
             await this.loadPlugins();
@@ -1324,6 +1329,13 @@ export class Features {
             // 清空插件列表
             this.plugins.clear();
 
+            // 清理无用缓存
+            this.commandHandlersCache.clear();
+            this.recentlyUsedCommands = [];
+            this.commandCacheLastUpdated = Date.now();
+            // 保留插件配置缓存，但清理命令冷却时间
+            this.commandCooldowns.clear();
+
             // 重新加载插件
             await this.loadPlugins();
 
@@ -1345,6 +1357,9 @@ export class Features {
 
             // 重新设置事件处理器
             this.setupHandlers();
+
+            // 运行一次内存清理
+            this.cleanupMemory();
 
             log.info('重新加载完成');
             return true;
@@ -1487,198 +1502,65 @@ export class Features {
         log.info('开始加载插件...');
 
         try {
-            // 获取已安装的插件文件列表（包括子目录中的）
-            const pluginDir = this.pluginsDir;
+            // 检查是否为二进制环境 (兼容 Windows 的 .exe)
+            const isBinaryEnvironment = process.execPath.endsWith('natsuki') || process.execPath.endsWith('natsuki.exe');
 
-            // 扫描插件目录及其子目录
-            const pluginFiles = await this.scanPluginsDir(pluginDir);
+            if (isBinaryEnvironment) {
+                log.info('检测到二进制环境，使用预编译插件...');
+                await this.loadEmbeddedPlugins();
+            } else {
+                // 获取已安装的插件文件列表（包括子目录中的）
+                const pluginDir = this.pluginsDir;
 
-            if (pluginFiles.length === 0) {
-                log.warn('未找到任何插件文件');
-                return;
-            }
+                // 扫描插件目录及其子目录
+                const pluginFiles = await this.scanPluginsDir(pluginDir);
 
-            log.debug(`发现${pluginFiles.length}个插件文件`);
-
-            // 第一阶段：并行加载所有插件
-            log.info('阶段 1/2: 加载插件...');
-            const loadStageStartTime = Date.now();
-
-            const loadResults = await Promise.allSettled(
-                pluginFiles.map(async ({ name }) => {
-                    const pluginStartTime = Date.now();
-                    try {
-                        // 先加载插件但不启用，只是为了获取依赖信息
-                        const success = await this.loadPlugin(name, false);
-                        const duration = Date.now() - pluginStartTime;
-
-                        if (success) {
-                            log.debug(`插件 ${name} 加载用时 ${duration}ms`);
-                        } else {
-                            log.warn(`插件 ${name} 加载失败，用时 ${duration}ms`);
-                        }
-
-                        return success;
-                    } catch (err) {
-                        const error = err instanceof Error ? err : new Error(String(err));
-                        const duration = Date.now() - pluginStartTime;
-                        log.error(`插件 ${name} 加载出错: ${error.message}，用时 ${duration}ms`);
-                        return false;
-                    }
-                })
-            );
-
-            // 计算有多少插件成功加载
-            const loadedCount = loadResults.filter(
-                result => result.status === 'fulfilled' && result.value === true
-            ).length;
-
-            const loadStageDuration = Date.now() - loadStageStartTime;
-            log.info(`成功加载 ${loadedCount}/${pluginFiles.length} 个插件，用时 ${loadStageDuration}ms`);
-
-            // 第二阶段：按依赖顺序并行启用插件
-            log.info('阶段 2/2: 启用插件...');
-            const enableStageStartTime = Date.now();
-
-            const sortedPluginNames = this.sortPluginsByDependencies();
-
-            // 根据依赖关系将插件分组
-            const enableGroups: string[][] = [];
-            const processed = new Set<string>();
-
-            // 创建一个映射，记录每个插件的直接依赖
-            const directDependencies = new Map<string, Set<string>>();
-
-            // 收集每个插件的直接依赖
-            for (const [name, plugin] of this.plugins.entries()) {
-                if (!name || !plugin) continue;
-
-                if (plugin.dependencies && plugin.dependencies.length > 0) {
-                    // 只记录系统中实际存在的依赖
-                    const existingDeps = plugin.dependencies.filter(dep => dep && this.plugins.has(dep));
-                    directDependencies.set(name, new Set(existingDeps));
-                } else {
-                    directDependencies.set(name, new Set());
-                }
-            }
-
-            // 最大循环次数，防止可能的无限循环
-            const maxIterations = sortedPluginNames.length * 2;
-            let iterations = 0;
-
-            // 分批启用插件，每批中的插件可以并行启用
-            while (processed.size < sortedPluginNames.length && iterations < maxIterations) {
-                iterations++;
-                const currentGroup: string[] = [];
-
-                // 找出所有可以在当前批次启用的插件
-                for (const name of sortedPluginNames) {
-                    if (!name || processed.has(name)) continue;
-
-                    const dependencies = directDependencies.get(name) || new Set();
-
-                    // 检查所有依赖是否已处理
-                    let allDepsProcessed = true;
-                    for (const dep of dependencies) {
-                        if (!dep || !processed.has(dep)) {
-                            allDepsProcessed = false;
-                            break;
-                        }
-                    }
-
-                    if (allDepsProcessed) {
-                        currentGroup.push(name);
-                    }
+                if (pluginFiles.length === 0) {
+                    log.warn('未找到任何插件文件');
+                    return;
                 }
 
-                if (currentGroup.length === 0) {
-                    // 如果没有可以启用的插件，说明可能存在循环依赖
-                    // 记录日志并中断循环
-                    const remaining = sortedPluginNames.filter(name => name && !processed.has(name));
-                    log.warn(`无法启用这些插件（可能存在循环依赖）: ${remaining.join(', ')}`);
-                    break;
-                }
+                log.debug(`发现${pluginFiles.length}个插件文件`);
 
-                // 将当前批次添加到启用组
-                enableGroups.push(currentGroup);
+                // 第一阶段：并行加载所有插件
+                log.info('阶段 1/2: 加载插件...');
+                const loadStageStartTime = Date.now();
 
-                // 将当前批次标记为已处理
-                for (const name of currentGroup) {
-                    if (name) processed.add(name);
-                }
-            }
-
-            if (iterations >= maxIterations) {
-                log.warn(`插件依赖解析达到最大迭代次数 (${maxIterations})，可能存在问题`);
-            }
-
-            // 逐批启用插件
-            let totalEnabled = 0;
-
-            for (const [groupIndex, group] of enableGroups.entries()) {
-                log.debug(`启用插件组 ${groupIndex + 1}/${enableGroups.length}，包含 ${group.length} 个插件`);
-
-                const groupStartTime = Date.now();
-
-                // 并行启用当前批次的插件
-                const enableResults = await Promise.allSettled(
-                    group.map(async pluginName => {
-                        if (!pluginName) return false;
-
-                        const plugin = this.plugins.get(pluginName);
-                        if (!plugin || plugin.status === PluginStatus.ACTIVE) return true;
-
+                const loadResults = await Promise.allSettled(
+                    pluginFiles.map(async ({ name }) => {
                         const pluginStartTime = Date.now();
-
                         try {
-                            log.info(`启用插件: ${pluginName}`);
-                            const success = await this.enablePlugin(pluginName, false);
-
+                            // 先加载插件但不启用，只是为了获取依赖信息
+                            const success = await this.loadPlugin(name, false);
                             const duration = Date.now() - pluginStartTime;
+
                             if (success) {
-                                log.debug(`插件 ${pluginName} 启用成功，用时 ${duration}ms`);
+                                log.debug(`插件 ${name} 加载用时 ${duration}ms`);
                             } else {
-                                log.warn(`插件 ${pluginName} 启用失败，用时 ${duration}ms`);
+                                log.warn(`插件 ${name} 加载失败，用时 ${duration}ms`);
                             }
 
                             return success;
                         } catch (err) {
                             const error = err instanceof Error ? err : new Error(String(err));
                             const duration = Date.now() - pluginStartTime;
-                            log.error(`启用插件 ${pluginName} 出错: ${error.message}，用时 ${duration}ms`);
-
-                            if (plugin) {
-                                plugin.status = PluginStatus.ERROR;
-                                plugin.error = error.message;
-                            }
-
+                            log.error(`插件 ${name} 加载出错: ${error.message}，用时 ${duration}ms`);
                             return false;
                         }
                     })
                 );
 
-                // 计算成功启用的插件数量
-                const enabledCount = enableResults.filter(
+                // 计算有多少插件成功加载
+                const loadedCount = loadResults.filter(
                     result => result.status === 'fulfilled' && result.value === true
                 ).length;
 
-                totalEnabled += enabledCount;
-
-                const groupDuration = Date.now() - groupStartTime;
-                log.debug(`插件组 ${groupIndex + 1} 启用完成: ${enabledCount}/${group.length} 成功，用时 ${groupDuration}ms`);
+                const loadStageDuration = Date.now() - loadStageStartTime;
+                log.info(`成功加载 ${loadedCount}/${pluginFiles.length} 个插件，用时 ${loadStageDuration}ms`);
             }
 
-            const enableStageDuration = Date.now() - enableStageStartTime;
-            log.info(`插件启用阶段完成，启用了 ${totalEnabled} 个插件，用时 ${enableStageDuration}ms`);
-
-            // 统计加载的插件数量和状态
-            const loadedPlugins = this.plugins.size;
-            const activePlugins = Array.from(this.plugins.values()).filter(p => p && p.status === PluginStatus.ACTIVE).length;
-            const errorPlugins = Array.from(this.plugins.values()).filter(p => p && p.status === PluginStatus.ERROR).length;
-            const disabledPlugins = Array.from(this.plugins.values()).filter(p => p && p.status === PluginStatus.DISABLED).length;
-
-            const totalDuration = Date.now() - startTime;
-            log.info(`插件加载完成。共加载 ${loadedPlugins} 个插件，${activePlugins} 个启用，${errorPlugins} 个错误，${disabledPlugins} 个禁用。总用时: ${totalDuration}ms`);
+            // 共用的启用插件逻辑
+            await this.enableLoadedPlugins();
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
             log.error(`插件加载过程错误: ${error.message}`);
@@ -1686,6 +1568,220 @@ export class Features {
                 log.debug(`错误堆栈: ${error.stack}`);
             }
         }
+    }
+
+    /**
+     * 加载嵌入式预编译插件
+     * @private
+     */
+    private async loadEmbeddedPlugins(): Promise<void> {
+        const startTime = Date.now();
+        log.info(`开始加载预编译插件，共 ${embeddedPluginsList.length} 个插件`);
+
+        if (embeddedPluginsList.length === 0) {
+            log.warn('没有找到预编译插件');
+            return;
+        }
+
+        // 并行加载所有嵌入式插件
+        const loadResults = await Promise.allSettled(
+            embeddedPluginsList.map(async (name: string) => {
+                const pluginStartTime = Date.now();
+                try {
+                    const plugin = embeddedPlugins.get(name);
+
+                    if (!plugin) {
+                        log.warn(`预编译插件 ${name} 不存在`);
+                        return false;
+                    }
+
+                    // 设置默认状态
+                    plugin.status = PluginStatus.DISABLED;
+
+                    // 注册插件
+                    this.plugins.set(name, plugin);
+
+                    // 注册插件的权限（如果有）
+                    if (plugin.permissions && plugin.permissions.length > 0) {
+                        try {
+                            for (const permission of plugin.permissions) {
+                                this.permissionManager.registerPermission(permission);
+                            }
+                            log.debug(`为插件 ${name} 注册了 ${plugin.permissions.length} 个权限`);
+                        } catch (err) {
+                            const error = err instanceof Error ? err : new Error(String(err));
+                            log.warn(`为插件 ${name} 注册权限失败: ${error.message}`);
+                        }
+                    }
+
+                    const duration = Date.now() - pluginStartTime;
+                    log.debug(`预编译插件 ${name} 加载用时 ${duration}ms`);
+
+                    return true;
+                } catch (err) {
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    const duration = Date.now() - pluginStartTime;
+                    log.error(`预编译插件 ${name} 加载出错: ${error.message}，用时 ${duration}ms`);
+                    return false;
+                }
+            })
+        );
+
+        // 计算有多少插件成功加载
+        const loadedCount = loadResults.filter(
+            (result: PromiseSettledResult<boolean>) => result.status === 'fulfilled' && result.value === true
+        ).length;
+
+        const loadDuration = Date.now() - startTime;
+        log.info(`成功加载 ${loadedCount}/${embeddedPluginsList.length} 个预编译插件，用时 ${loadDuration}ms`);
+    }
+
+    /**
+     * 启用已加载的插件
+     * @private
+     */
+    private async enableLoadedPlugins(): Promise<void> {
+        const startTime = Date.now();
+        log.info('阶段 2/2: 启用插件...');
+
+        const sortedPluginNames = this.sortPluginsByDependencies();
+
+        // 根据依赖关系将插件分组
+        const enableGroups: string[][] = [];
+        const processed = new Set<string>();
+
+        // 创建一个映射，记录每个插件的直接依赖
+        const directDependencies = new Map<string, Set<string>>();
+
+        // 收集每个插件的直接依赖
+        for (const [name, plugin] of this.plugins.entries()) {
+            if (!name || !plugin) continue;
+
+            if (plugin.dependencies && plugin.dependencies.length > 0) {
+                // 只记录系统中实际存在的依赖
+                const existingDeps = plugin.dependencies.filter(dep => dep && this.plugins.has(dep));
+                directDependencies.set(name, new Set(existingDeps));
+            } else {
+                directDependencies.set(name, new Set());
+            }
+        }
+
+        // 最大循环次数，防止可能的无限循环
+        const maxIterations = sortedPluginNames.length * 2;
+        let iterations = 0;
+
+        // 分批启用插件，每批中的插件可以并行启用
+        while (processed.size < sortedPluginNames.length && iterations < maxIterations) {
+            iterations++;
+            const currentGroup: string[] = [];
+
+            // 找出所有可以在当前批次启用的插件
+            for (const name of sortedPluginNames) {
+                if (!name || processed.has(name)) continue;
+
+                const dependencies = directDependencies.get(name) || new Set();
+
+                // 检查所有依赖是否已处理
+                let allDepsProcessed = true;
+                for (const dep of dependencies) {
+                    if (!dep || !processed.has(dep)) {
+                        allDepsProcessed = false;
+                        break;
+                    }
+                }
+
+                if (allDepsProcessed) {
+                    currentGroup.push(name);
+                }
+            }
+
+            if (currentGroup.length === 0) {
+                // 如果没有可以启用的插件，说明可能存在循环依赖
+                // 记录日志并中断循环
+                const remaining = sortedPluginNames.filter(name => name && !processed.has(name));
+                log.warn(`无法启用这些插件（可能存在循环依赖）: ${remaining.join(', ')}`);
+                break;
+            }
+
+            // 将当前批次添加到启用组
+            enableGroups.push(currentGroup);
+
+            // 将当前批次标记为已处理
+            for (const name of currentGroup) {
+                if (name) processed.add(name);
+            }
+        }
+
+        if (iterations >= maxIterations) {
+            log.warn(`插件依赖解析达到最大迭代次数 (${maxIterations})，可能存在问题`);
+        }
+
+        // 逐批启用插件
+        let totalEnabled = 0;
+
+        for (const [groupIndex, group] of enableGroups.entries()) {
+            log.debug(`启用插件组 ${groupIndex + 1}/${enableGroups.length}，包含 ${group.length} 个插件`);
+
+            const groupStartTime = Date.now();
+
+            // 并行启用当前批次的插件
+            const enableResults = await Promise.allSettled(
+                group.map(async pluginName => {
+                    if (!pluginName) return false;
+
+                    const plugin = this.plugins.get(pluginName);
+                    if (!plugin || plugin.status === PluginStatus.ACTIVE) return true;
+
+                    const pluginStartTime = Date.now();
+
+                    try {
+                        log.info(`启用插件: ${pluginName}`);
+                        const success = await this.enablePlugin(pluginName, false);
+
+                        const duration = Date.now() - pluginStartTime;
+                        if (success) {
+                            log.debug(`插件 ${pluginName} 启用成功，用时 ${duration}ms`);
+                        } else {
+                            log.warn(`插件 ${pluginName} 启用失败，用时 ${duration}ms`);
+                        }
+
+                        return success;
+                    } catch (err) {
+                        const error = err instanceof Error ? err : new Error(String(err));
+                        const duration = Date.now() - pluginStartTime;
+                        log.error(`启用插件 ${pluginName} 出错: ${error.message}，用时 ${duration}ms`);
+
+                        if (plugin) {
+                            plugin.status = PluginStatus.ERROR;
+                            plugin.error = error.message;
+                        }
+
+                        return false;
+                    }
+                })
+            );
+
+            // 计算成功启用的插件数量
+            const enabledCount = enableResults.filter(
+                result => result.status === 'fulfilled' && result.value === true
+            ).length;
+
+            totalEnabled += enabledCount;
+
+            const groupDuration = Date.now() - groupStartTime;
+            log.debug(`插件组 ${groupIndex + 1} 启用完成: ${enabledCount}/${group.length} 成功，用时 ${groupDuration}ms`);
+        }
+
+        const enableStageDuration = Date.now() - startTime;
+        log.info(`插件启用阶段完成，启用了 ${totalEnabled} 个插件，用时 ${enableStageDuration}ms`);
+
+        // 统计加载的插件数量和状态
+        const loadedPlugins = this.plugins.size;
+        const activePlugins = Array.from(this.plugins.values()).filter(p => p && p.status === PluginStatus.ACTIVE).length;
+        const errorPlugins = Array.from(this.plugins.values()).filter(p => p && p.status === PluginStatus.ERROR).length;
+        const disabledPlugins = Array.from(this.plugins.values()).filter(p => p && p.status === PluginStatus.DISABLED).length;
+
+        log.info(`插件加载完成。共加载 ${loadedPlugins} 个插件，${activePlugins} 个启用，${errorPlugins} 个错误，${disabledPlugins} 个禁用。`);
     }
 
     /**
@@ -1944,24 +2040,52 @@ export class Features {
      * @returns 如果可以执行则返回true，否则返回false
      */
     private checkCommandCooldown(userId: number, command: string, cooldownSeconds: number): boolean {
+        const userCooldowns = this.commandCooldowns.get(userId);
+        if (!userCooldowns) {
+            return true; // No cooldowns recorded for this user
+        }
+
+        const lastTimestamp = userCooldowns.get(command);
+        if (!lastTimestamp) {
+            return true; // No cooldown recorded for this specific command
+        }
+
         const now = Date.now();
+        const elapsedMillis = now - lastTimestamp;
         const cooldownMillis = cooldownSeconds * 1000;
 
-        // Clean up expired cooldown records for *this specific command* to manage memory.
-        // Filtering all records constantly might be less efficient if the list is large.
-        this.commandCooldowns = this.commandCooldowns.filter(record => {
-            // Keep records for other commands, or non-expired records for this command
-            return record.command !== command || (now - record.timestamp < cooldownMillis);
-        });
+        // Clean up expired entry for this specific user/command if checked and expired
+        if (elapsedMillis >= cooldownMillis) {
+            userCooldowns.delete(command);
+            if (userCooldowns.size === 0) {
+                this.commandCooldowns.delete(userId); // Clean up user map if empty
+            }
+            return true;
+        }
 
-        const cooldownRecord = this.commandCooldowns.find(
-            record => record.userId === userId && record.command === command
-        );
+        return false; // Still in cooldown
+    }
 
-        if (!cooldownRecord) return true;
+    /**
+     * 获取命令剩余冷却时间（秒）
+     * @param userId 用户ID
+     * @param command 命令名称
+     * @param cooldownSeconds 总冷却时间
+     * @returns 剩余冷却秒数，如果不在冷却中则返回0
+     */
+    private getRemainingCooldown(userId: number, command: string, cooldownSeconds: number): number {
+        const userCooldowns = this.commandCooldowns.get(userId);
+        if (!userCooldowns) return 0;
 
-        const elapsedSeconds = (now - cooldownRecord.timestamp) / 1000;
-        return elapsedSeconds >= cooldownSeconds;
+        const lastTimestamp = userCooldowns.get(command);
+        if (!lastTimestamp) return 0;
+
+        const now = Date.now();
+        const elapsedMillis = now - lastTimestamp;
+        const cooldownMillis = cooldownSeconds * 1000;
+        const remainingMillis = cooldownMillis - elapsedMillis;
+
+        return remainingMillis > 0 ? Math.ceil(remainingMillis / 1000) : 0;
     }
 
     /**
@@ -1975,28 +2099,353 @@ export class Features {
     private updateCommandCooldown(userId: number, command: string): void {
         const now = Date.now();
 
-        const existingIndex = this.commandCooldowns.findIndex(
-            record => record.userId === userId && record.command === command
-        );
-
-        if (existingIndex !== -1) {
-            // Update timestamp for existing record
-            const record = this.commandCooldowns[existingIndex];
-            // Explicitly check if the record exists before updating (satisfies TS)
-            if (record) {
-                record.timestamp = now;
-            } else {
-                // This case is unlikely given findIndex succeeded, but handles edge cases.
-                log.warn(`Cooldown record unexpectedly not found at index ${existingIndex}. Adding new record.`);
-                this.commandCooldowns.push({ userId, command, timestamp: now });
-            }
-        } else {
-            // Add new record
-            this.commandCooldowns.push({
-                userId,
-                command,
-                timestamp: now
-            });
+        let userCooldowns = this.commandCooldowns.get(userId);
+        if (!userCooldowns) {
+            userCooldowns = new Map<string, number>();
+            this.commandCooldowns.set(userId, userCooldowns);
         }
+        userCooldowns.set(command, now);
+    }
+
+    /**
+     * 启动内存管理系统
+     * 定期清理过期的缓存和未使用的数据，优化内存使用
+     */
+    private startMemoryManagement(): void {
+        // 清除可能存在的旧定时器
+        if (this.memoryCleanupTimer) {
+            clearInterval(this.memoryCleanupTimer);
+        }
+
+        // 设置新的定时清理任务
+        this.memoryCleanupTimer = setInterval(() => {
+            try {
+                log.debug('执行内存优化清理...');
+                this.cleanupMemory();
+
+                // 进行内存使用检查
+                this.checkMemoryUsage();
+            } catch (err) {
+                const error = err instanceof Error ? err : new Error(String(err));
+                log.error(`内存清理过程发生错误: ${error.message}`);
+            }
+        }, this.MEMORY_CLEANUP_INTERVAL);
+
+        // 添加一次立即清理
+        this.cleanupMemory();
+    }
+
+    /**
+     * 检查内存使用量并发出警告
+     * 当内存使用超过某些阈值时记录警告
+     */
+    private checkMemoryUsage(): void {
+        try {
+            const memoryUsage = process.memoryUsage();
+            const heapUsed = memoryUsage.heapUsed;
+            const heapTotal = memoryUsage.heapTotal;
+            const rss = memoryUsage.rss;
+
+            // 计算使用百分比
+            const heapUsagePercent = (heapUsed / heapTotal) * 100;
+
+            // 一些合理的阈值（可以根据实际需求调整）
+            const HEAP_WARNING_THRESHOLD = 80; // 堆内存使用率警告阈值（80%）
+            const RSS_WARNING_THRESHOLD = 1024 * 1024 * 1024; // RSS警告阈值（1GB）
+
+            // 检查并记录警告
+            if (heapUsagePercent > HEAP_WARNING_THRESHOLD) {
+                log.warn(`⚠️ 高堆内存使用: ${heapUsagePercent.toFixed(1)}% (${(heapUsed / 1024 / 1024).toFixed(2)}MB/${(heapTotal / 1024 / 1024).toFixed(2)}MB)`);
+
+                // 如果堆使用率超过90%，尝试主动触发GC
+                if (heapUsagePercent > 90 && global.gc) {
+                    log.warn('🧹 堆内存使用率超过90%，尝试执行紧急垃圾回收');
+                    try {
+                        global.gc();
+
+                        // 检查GC后的内存使用情况
+                        const afterGC = process.memoryUsage();
+                        const freedMemory = (heapUsed - afterGC.heapUsed) / 1024 / 1024;
+                        log.info(`垃圾回收完成，释放了 ${freedMemory.toFixed(2)}MB 堆内存`);
+                    } catch (err) {
+                        log.debug('手动垃圾回收失败，忽略');
+                    }
+                }
+            }
+
+            if (rss > RSS_WARNING_THRESHOLD) {
+                log.warn(`⚠️ 高RSS内存使用: ${(rss / 1024 / 1024).toFixed(2)}MB`);
+            }
+
+            // 添加潜在内存泄漏检测
+            // 如果堆内存使用持续增长，可能存在内存泄漏
+            if (heapUsed > this.lastHeapUsed) {
+                this.consecutiveIncreases++;
+                if (this.consecutiveIncreases >= 5) {
+                    log.warn(`🚨 检测到潜在内存泄漏：堆内存持续增长 ${this.consecutiveIncreases} 次`);
+                }
+            } else {
+                this.consecutiveIncreases = 0;
+            }
+
+            this.lastHeapUsed = heapUsed;
+        } catch (err) {
+            // 忽略错误
+        }
+    }
+
+    /**
+     * 全面内存清理方法
+     * 清理各种缓存和未使用的数据结构
+     */
+    public cleanupMemory(): void {
+        const startTime = Date.now();
+
+        // 1. 清理命令冷却记录
+        this.cleanupCommandCooldowns();
+
+        // 2. 清理命令处理器缓存
+        this.cleanupCommandCache();
+
+        // 3. 清理命令队列中悬挂的请求
+        this.cleanupCommandQueue();
+
+        // 4. 清理插件配置缓存
+        this.cleanupPluginConfigCache();
+
+        // 记录内存使用情况
+        this.logMemoryUsage();
+
+        // 记录执行时间，用于性能监控
+        const duration = Date.now() - startTime;
+        log.debug(`内存清理完成，耗时 ${duration}ms`);
+
+        // 主动触发垃圾回收（仅建议，实际效果取决于JavaScript引擎）
+        if (global.gc) {
+            try {
+                global.gc();
+                log.debug('手动触发垃圾回收');
+
+                // 再次记录内存使用情况，用于对比
+                this.logMemoryUsage('GC后');
+            } catch (err) {
+                log.debug('手动垃圾回收失败，忽略');
+            }
+        }
+    }
+
+    /**
+     * 记录当前内存使用情况
+     * @param prefix 日志前缀
+     */
+    private logMemoryUsage(prefix: string = '当前'): void {
+        try {
+            const memoryUsage = process.memoryUsage();
+            const formatMemory = (bytes: number): string => {
+                return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+            };
+
+            // 计算各种指标
+            const heapTotal = formatMemory(memoryUsage.heapTotal);
+            const heapUsed = formatMemory(memoryUsage.heapUsed);
+            const rss = formatMemory(memoryUsage.rss);
+            const external = formatMemory(memoryUsage.external || 0);
+            const heapUsage = ((memoryUsage.heapUsed / memoryUsage.heapTotal) * 100).toFixed(1) + '%';
+
+            // 记录内存统计
+            log.info(`${prefix}内存使用情况 - 堆内存: ${heapUsed}/${heapTotal} (${heapUsage}), RSS: ${rss}, 外部: ${external}`);
+
+            // Calculate total cooldown entries
+            let totalCooldowns = 0;
+            this.commandCooldowns.forEach(userMap => totalCooldowns += userMap.size);
+
+            // 记录缓存和集合的大小统计
+            const stats = {
+                plugins: this.plugins.size,
+                eventHandlers: Array.from(this.eventHandlers.values()).reduce((sum, set) => sum + set.size, 0),
+                cooldowns: totalCooldowns, // Use calculated total
+                configCache: this.pluginConfigs.size,
+                commandCache: this.commandHandlersCache.size,
+                commandQueue: this.commandQueue.size
+            };
+
+            log.debug(`缓存统计 - 插件: ${stats.plugins}, 事件处理器: ${stats.eventHandlers}, ` +
+                `冷却记录: ${stats.cooldowns}, 命令缓存: ${stats.commandCache}, ` +
+                `配置缓存: ${stats.configCache}, 命令队列: ${stats.commandQueue}`);
+        } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err));
+            log.warn(`获取内存使用情况失败: ${error.message}`);
+        }
+    }
+
+    /**
+     * 清理所有过期的命令冷却记录
+     */
+    private cleanupCommandCooldowns(): void {
+        const now = Date.now();
+        let removedCount = 0;
+
+        // Find the maximum cooldown time across all active plugins
+        let maxCooldownSeconds = 60; // Default to 60 seconds
+        for (const plugin of this.plugins.values()) {
+            if (plugin.status === PluginStatus.ACTIVE && plugin.commands) {
+                for (const cmd of plugin.commands) {
+                    if (cmd.cooldown && cmd.cooldown > maxCooldownSeconds) {
+                        maxCooldownSeconds = cmd.cooldown;
+                    }
+                }
+            }
+        }
+        const maxCooldownMillis = maxCooldownSeconds * 1000;
+
+        // Iterate through users and their cooldowns
+        for (const [userId, userCooldowns] of this.commandCooldowns.entries()) {
+            for (const [command, timestamp] of userCooldowns.entries()) {
+                // Check if the cooldown has expired based on the *maximum* possible cooldown
+                // This avoids needing to know the specific cooldown for each command during cleanup
+                if (now - timestamp >= maxCooldownMillis) {
+                    userCooldowns.delete(command);
+                    removedCount++;
+                }
+            }
+            // If a user's map becomes empty, remove the user entry
+            if (userCooldowns.size === 0) {
+                this.commandCooldowns.delete(userId);
+            }
+        }
+
+        if (removedCount > 0) {
+            log.debug(`清理了 ${removedCount} 条过期命令冷却记录`);
+        }
+    }
+
+    /**
+     * 清理命令处理器缓存
+     */
+    private cleanupCommandCache(): void {
+        const now = Date.now();
+
+        // 如果缓存已经过期，完全清空
+        if (now - this.commandCacheLastUpdated >= this.COMMAND_CACHE_TTL) {
+            const size = this.commandHandlersCache.size;
+            this.commandHandlersCache.clear();
+            this.recentlyUsedCommands = [];
+            this.commandCacheLastUpdated = now;
+
+            if (size > 0) {
+                log.debug(`清空了 ${size} 个命令处理器缓存条目`);
+            }
+        }
+        // 否则只清理超出容量的部分
+        else if (this.commandHandlersCache.size > this.CACHE_MAX_SIZE) {
+            // 获取需要保留的命令列表
+            const keepCommands = new Set(this.recentlyUsedCommands.slice(0, this.CACHE_MAX_SIZE));
+
+            // 计算要删除的命令数量
+            let deletedCount = 0;
+
+            // 遍历并删除不在保留列表中的缓存
+            for (const cmd of this.commandHandlersCache.keys()) {
+                if (!keepCommands.has(cmd)) {
+                    this.commandHandlersCache.delete(cmd);
+                    deletedCount++;
+                }
+            }
+
+            if (deletedCount > 0) {
+                log.debug(`清理了 ${deletedCount} 个过期命令处理器缓存条目`);
+            }
+
+            // 更新最近使用命令列表，只保留在keepCommands中的命令
+            this.recentlyUsedCommands = this.recentlyUsedCommands.filter(cmd => keepCommands.has(cmd));
+        }
+    }
+
+    /**
+     * 清理挂起的命令队列
+     */
+    private cleanupCommandQueue(): void {
+        // Note: Checking promise state externally is unreliable.
+        // A better approach might involve timeouts or explicit state tracking
+        // within the promise handling logic itself.
+        // For now, this cleanup is minimal.
+        // Consider adding a timestamp to queue entries and cleaning old ones.
+        let cleanedCount = 0;
+        // Example: If promises had a 'creationTime' property
+        // const now = Date.now();
+        // const MAX_QUEUE_AGE = this.COMMAND_TIMEOUT * 2; // e.g., 6 minutes
+        // for (const [userId, promiseInfo] of this.commandQueue.entries()) {
+        //     if (now - promiseInfo.creationTime > MAX_QUEUE_AGE) {
+        //         this.commandQueue.delete(userId);
+        //         cleanedCount++;
+        //         log.warn(`清理了可能悬挂的命令队列项 (用户: ${userId})`);
+        //     }
+        // }
+        if (cleanedCount > 0) {
+            log.debug(`清理了 ${cleanedCount} 个可能悬挂的命令队列项`);
+        }
+    }
+
+    /**
+     * 清理插件配置缓存
+     * 只保留活跃插件的配置
+     */
+    private cleanupPluginConfigCache(): void {
+        // 获取所有活跃插件名称
+        const activePlugins = new Set<string>();
+        for (const [name, plugin] of this.plugins.entries()) {
+            if (plugin.status === PluginStatus.ACTIVE) {
+                activePlugins.add(name);
+            }
+        }
+
+        // 删除非活跃插件的配置缓存
+        let cleanedCount = 0;
+        for (const pluginName of this.pluginConfigs.keys()) {
+            if (!activePlugins.has(pluginName)) {
+                this.pluginConfigs.delete(pluginName);
+                cleanedCount++;
+            }
+        }
+
+        if (cleanedCount > 0) {
+            log.debug(`清理了 ${cleanedCount} 个非活跃插件的配置缓存`);
+        }
+    }
+
+    /**
+     * 资源清理，用于应用退出前调用
+     */
+    async dispose(): Promise<void> {
+        log.info('正在清理功能管理器资源...');
+
+        // 清理内存管理定时器
+        if (this.memoryCleanupTimer) {
+            clearInterval(this.memoryCleanupTimer);
+            this.memoryCleanupTimer = undefined;
+        }
+
+        // 禁用所有插件
+        for (const [name, plugin] of this.plugins.entries()) {
+            if (plugin.status === PluginStatus.ACTIVE) {
+                try {
+                    await this.disablePlugin(name);
+                } catch (err) {
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    log.warn(`禁用插件 ${name} 时出错: ${error.message}`);
+                }
+            }
+        }
+
+        // 清空各种集合和缓存
+        this.plugins.clear();
+        this.eventHandlers.clear();
+        this.commandCooldowns.clear();
+        this.pluginConfigs.clear();
+        this.commandHandlersCache.clear();
+        this.recentlyUsedCommands = [];
+        this.commandQueue.clear();
+
+        log.info('功能管理器资源清理完成');
     }
 }

@@ -1,7 +1,7 @@
 import { Board } from '../models/Board';
 import { PieceColor, PieceType } from '../models/ChessTypes';
 import { Game } from '../models/Game';
-import { createCanvas, loadImage, registerFont, Canvas, CanvasRenderingContext2D } from 'canvas';
+import { createCanvas, loadImage, Canvas, GlobalFonts } from '@napi-rs/canvas'; // Removed registerFont, CanvasRenderingContext2D, added GlobalFonts
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -69,7 +69,7 @@ export class BoardRenderer {
      * @param lineWidth 箭头线宽
      */
     private static drawArrow(
-        ctx: CanvasRenderingContext2D,
+        ctx: any, // Let TS infer the context type
         fromX: number,
         fromY: number,
         toX: number,
@@ -132,7 +132,7 @@ export class BoardRenderer {
      * @param radius 圆角半径
      */
     private static roundRect(
-        ctx: CanvasRenderingContext2D,
+        ctx: any, // Let TS infer the context type
         x: number,
         y: number,
         width: number,
@@ -171,19 +171,25 @@ export class BoardRenderer {
                 const macFontPath = process.platform === 'darwin'
                     ? '/Library/Fonts/Arial Unicode.ttf'
                     : '';
+
+                let registeredFontFamily = '';
                 
                 // 按优先级尝试注册字体
                 if (fs.existsSync(fontPath)) {
-                    registerFont(fontPath, { family: 'MiSans-Regular' });
+                    GlobalFonts.registerFromPath(fontPath, 'MiSans-Regular');
+                    registeredFontFamily = 'MiSans-Regular';
                     log.info('使用项目内置 MiSans-Regular 字体');
                 } else if (process.platform === 'win32' && fs.existsSync(winFontPath)) {
-                    registerFont(winFontPath, { family: 'SimSun' });
+                    GlobalFonts.registerFromPath(winFontPath, 'SimSun');
+                    registeredFontFamily = 'SimSun';
                     log.info('使用系统 SimSun 字体');
                 } else if (process.platform === 'darwin' && fs.existsSync(macFontPath)) {
-                    registerFont(macFontPath, { family: 'Arial Unicode' });
+                    GlobalFonts.registerFromPath(macFontPath, 'Arial Unicode');
+                    registeredFontFamily = 'Arial Unicode';
                     log.info('使用系统 Arial Unicode 字体');
                 } else {
                     log.warn('未找到适合的中文字体，将使用系统默认字体');
+                    // Fallback font family might be needed here depending on the system
                 }
                 
                 this.fontLoaded = true;
@@ -232,8 +238,11 @@ export class BoardRenderer {
         const startX = offsetX + (showCoordinates ? this.COORDINATE_WIDTH : 0);
         const startY = offsetY + (showCoordinates ? this.COORDINATE_WIDTH : 0);
 
-        // 设置中文字体，如果SimSun不可用，回退到其他字体
-        const fontFamily = '"MiSans-Regular", "SimSun", "宋体", "Microsoft YaHei", "微软雅黑", sans-serif';
+        // 设置中文字体，使用加载的字体或回退
+        const fontFamily = GlobalFonts.families.some(f => f.family === 'MiSans-Regular') ? '"MiSans-Regular"' : 
+                           GlobalFonts.families.some(f => f.family === 'SimSun') ? '"SimSun"' :
+                           GlobalFonts.families.some(f => f.family === 'Arial Unicode') ? '"Arial Unicode"' :
+                           '"宋体", "Microsoft YaHei", "微软雅黑", sans-serif'; // Fallback fonts
         
         // 绘制棋盘背景 - 添加木纹质感
         const bgGradient = ctx.createLinearGradient(0, 0, width, height);
@@ -864,7 +873,7 @@ export class BoardRenderer {
         return result;
     }
 
-    private static drawPalaceDiagonals(ctx: CanvasRenderingContext2D, startX: number, startY: number) {
+    private static drawPalaceDiagonals(ctx: any, startX: number, startY: number) { // Let TS infer the context type
         // 上方九宫格（调整为绝对坐标计算）
         this.drawDiagonal(
             ctx,
@@ -885,7 +894,7 @@ export class BoardRenderer {
     }
 
     private static drawDiagonal(
-        ctx: CanvasRenderingContext2D,
+        ctx: any, // Let TS infer the context type
         fromX: number,  // 使用绝对坐标
         fromY: number,
         toX: number,
