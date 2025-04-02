@@ -4,7 +4,10 @@ import { log } from '../log';
 import DynamicMap from '../utils/DynamicMap';
 import { detectRepeatedSubstrings } from '../utils/MsgRepeatedCheck';
 
-// --- 配置接口 ---
+/**
+ * 防刷屏插件配置接口
+ * 定义插件的所有可配置选项
+ */
 interface AntiFloodConfig {
     enabled: boolean;
     maxScore: number;
@@ -38,7 +41,9 @@ interface AntiFloodConfig {
     warningMessageDeleteAfter: number; // seconds
 }
 
-// --- 默认配置 ---
+/**
+ * 默认配置值
+ */
 const defaultConfig: AntiFloodConfig = {
     enabled: true,
     maxScore: 30, // 用户分数的最大值
@@ -72,21 +77,25 @@ const defaultConfig: AntiFloodConfig = {
     warningMessageDeleteAfter: 30, // 警告消息自动删除时间（秒）
 };
 
-// 用户活动数据接口
+/**
+ * 用户活动数据接口
+ * 存储用户的消息状态和行为特征
+ */
 interface UserData {
-    score: number; // 当前累计分数
+    score: number;                      // 当前累计分数
     consecutiveSimilarityCount: number; // 连续相似消息计数
-    lastMessageTime: number; // 最后一条消息的时间戳 (秒)
-    lastMessage: string; // 上一条消息内容
-    lastMediaGroupID?: Long; // 上一条媒体组 ID
+    lastMessageTime: number;            // 最后一条消息的时间戳（秒）
+    lastMessage: string;                // 上一条消息内容
+    lastMediaGroupID?: Long;            // 上一条媒体组ID
     timestamps: { time: number; score: number; }[]; // 消息时间戳队列，用于高频检测
-    warningMessageId?: number; // 存储警告消息的 ID
-    lastWarningSentTime: number; // 上次发送警告消息的时间戳 (秒)
+    warningMessageId?: number;          // 当前警告消息的ID
+    lastWarningSentTime: number;        // 上次发送警告的时间戳（秒）
 }
 
-// 插件状态
+// 插件配置状态（运行时）
 let config: AntiFloodConfig = { ...defaultConfig };
-// 用户数据存储 - 使用 DynamicMap
+
+// 用户数据存储
 const userActivityMap = new DynamicMap<number, UserData>(() => ({
     score: 0,
     consecutiveSimilarityCount: 0,
@@ -101,7 +110,9 @@ let decayIntervalId: NodeJS.Timeout | undefined;
 
 /**
  * 计算消息长度得分
- * 使用对数增长来平滑长度影响，避免极长消息得分暴涨
+ * 使用对数增长平滑长度影响，避免极长消息得分暴涨
+ * @param length 消息长度
+ * @returns 长度得分
  */
 function calculateLengthScore(length: number): number {
     return length > config.length.threshold
@@ -110,25 +121,25 @@ function calculateLengthScore(length: number): number {
 }
 
 /**
- * 检测高频发送消息
- * 基于消息时间戳队列计算当前用户是否属于高频操作
+ * 检测高频发送消息行为
+ * @param userData 用户数据
+ * @param messageContext 消息上下文
+ * @param currentTime 当前时间戳（毫秒）
+ * @returns 是否为高频发送
  */
 function isHighFrequency(userData: UserData, messageContext: MessageEventContext, currentTime: number): boolean {
-    let messageScore = config.highFrequency.forgivenessScore.default; // 默认分数
-
-    // 根据消息类型调整分数 (从小到大判断)
+    // 根据消息类型确定分数
     const msg = messageContext.message;
-    // 媒体组检测
+    let messageScore = config.highFrequency.forgivenessScore.default;
+    
     if (msg.groupedId) {
         messageScore = config.highFrequency.forgivenessScore.mediaGroup;
-    }
-    // 转发检测
-    else if (msg.forward) {
+    } else if (msg.forward) {
         messageScore = config.highFrequency.forgivenessScore.forward;
     }
 
-    // 更新时间戳队列
-    const windowStart = currentTime - config.highFrequency.window * 1000; // 转换为毫秒
+    // 清理过期时间戳并添加新时间戳
+    const windowStart = currentTime - config.highFrequency.window * 1000;
     userData.timestamps = userData.timestamps.filter(entry => entry.time > windowStart);
     userData.timestamps.push({ time: currentTime, score: messageScore });
 
@@ -140,13 +151,22 @@ function isHighFrequency(userData: UserData, messageContext: MessageEventContext
 
 /**
  * 计算两个词频映射的余弦相似度
+ * @param freqMap1 第一个词频映射
+ * @param freqMap2 第二个词频映射
+ * @returns 相似度分数 (0-1)
  */
 function cosineSimilarity(freqMap1: Record<string, number>, freqMap2: Record<string, number>): number {
+    // 获取所有不重复的词
     const allWords = new Set([...Object.keys(freqMap1), ...Object.keys(freqMap2)]);
+    
+    // 边缘情况处理：任意一个映射为空时返回0
+    if (allWords.size === 0) return 0;
+    
     let dotProduct = 0;
     let norm1 = 0;
     let norm2 = 0;
 
+    // 计算点积和向量范数
     allWords.forEach(word => {
         const count1 = freqMap1[word] || 0;
         const count2 = freqMap2[word] || 0;
@@ -155,30 +175,36 @@ function cosineSimilarity(freqMap1: Record<string, number>, freqMap2: Record<str
         norm2 += count2 ** 2;
     });
 
+    // 计算余弦相似度
     const denominator = Math.sqrt(norm1) * Math.sqrt(norm2);
     return denominator === 0 ? 0 : dotProduct / denominator;
 }
 
 /**
  * 计算消息相似度并评估惩罚分数
- * 使用余弦相似度衡量消息与上一条消息的相似性
+ * @param message 当前消息
+ * @param lastMessage 上一条消息
+ * @param userData 用户数据
+ * @returns 相似度惩罚分数
  */
 function calculateSimilarityPenalty(message: string, lastMessage: string, userData: UserData): number {
     // 消息太短或上一条消息不存在时不计算
     if (!lastMessage || message.length < 8 || lastMessage.length < 8) {
-        userData.consecutiveSimilarityCount = 0; // 重置计数
+        userData.consecutiveSimilarityCount = 0;
         return 0;
     }
 
-    // 简单的分词（按空格）和词频统计
+    // 简单的分词和词频统计
     const getWordFrequency = (text: string): Record<string, number> => {
         const words = text.trim().split(/\s+/); // 按空白符分割
         const freqMap: Record<string, number> = {};
-        words.forEach(word => {
-            if (word) { // 忽略空字符串
+        
+        for (const word of words) {
+            if (word) {
                 freqMap[word] = (freqMap[word] || 0) + 1;
             }
-        });
+        }
+        
         return freqMap;
     };
 
@@ -207,33 +233,41 @@ function calculateSimilarityPenalty(message: string, lastMessage: string, userDa
 }
 
 /**
- * 防刷屏逻辑处理核心
+ * 尝试删除消息，错误时记录日志但不抛出异常
+ * @param ctx 消息上下文
+ * @param messageId 要删除的消息ID
+ * @param logPrefix 日志前缀
+ */
+async function safeDeleteMessage(ctx: MessageEventContext, messageId: number, logPrefix: string): Promise<void> {
+    try {
+        await ctx.client.deleteMessagesById(ctx.chatId, [messageId]);
+    } catch (error) {
+        log.error(`${logPrefix} 删除消息失败: ${error}`);
+    }
+}
+
+/**
+ * 防刷屏核心逻辑
  * 根据用户分数判断是否触发限制并处理警告消息
+ * @param ctx 消息上下文
+ * @param userData 用户数据
  */
 async function defend(ctx: MessageEventContext, userData: UserData): Promise<void> {
     if (!config.enabled) return;
 
-    const currentTimeSec = Math.floor(Date.now() / 1000); // 当前秒级时间戳
+    const currentTimeSec = Math.floor(Date.now() / 1000);
 
     if (userData.score > config.limitScore) {
-        try {
-            // 尝试删除触发刷屏的消息
-            await ctx.client.deleteMessagesById(ctx.chatId, [ctx.message.id]);
-        } catch (error) {
-            log.error(`[AntiFlood] 删除消息失败: ${error}`);
-        }
+        // 删除触发刷屏的消息
+        await safeDeleteMessage(ctx, ctx.message.id, "[AntiFlood]");
 
         // 检查是否需要发送新的警告消息
         const timeSinceLastWarning = currentTimeSec - userData.lastWarningSentTime;
         if (timeSinceLastWarning >= config.warningMessageInterval) {
-            // 尝试删除旧的警告消息 (如果存在)
+            // 删除旧警告消息（如果存在）
             if (userData.warningMessageId) {
-                try {
-                    await ctx.client.deleteMessagesById(ctx.chatId, [userData.warningMessageId]);
-                } catch (error) {
-                    log.error(`[AntiFlood] 删除上一条警告消息失败: ${error}`);
-                }
-                userData.warningMessageId = undefined; // 清除旧 ID
+                await safeDeleteMessage(ctx, userData.warningMessageId, "[AntiFlood]");
+                userData.warningMessageId = undefined;
             }
 
             // 计算预计恢复时间
@@ -244,48 +278,36 @@ async function defend(ctx: MessageEventContext, userData: UserData): Promise<voi
                 : Infinity; // 如果不衰减，则永不恢复
             const timeToRecoverSec = isFinite(timeToRecoverMs) ? (timeToRecoverMs / 1000).toFixed(1) : '永久';
 
-            // 发送新的警告消息
             try {
+                // 发送新的警告消息
                 const warningText = html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName}</a> 你已触发刷屏保护<br>预计 ${timeToRecoverSec} 秒后解除限制<br>#防刷屏保护`;
-
-                // 发送警告消息
                 const warningMsg = await ctx.message.answerText(warningText);
 
                 userData.warningMessageId = warningMsg.id; // 存储新警告消息的 ID
                 userData.lastWarningSentTime = currentTimeSec; // 更新上次发送警告的时间
 
-                // 设置定时删除新警告消息
+                // 设置定时删除警告消息
                 setTimeout(async () => {
-                    try {
-                        await ctx.client.deleteMessagesById(ctx.chatId, [warningMsg.id]);
-                        // 如果当前删除的警告消息仍然是记录中的 ID，则清除记录
-                        if (userData.warningMessageId === warningMsg.id) {
-                            userData.warningMessageId = undefined;
-                        }
-                    } catch (error) {
-                        log.error(`[AntiFlood] 自动删除警告消息失败: ${error}`);
+                    if (userData.warningMessageId === warningMsg.id) {
+                        await safeDeleteMessage(ctx, warningMsg.id, "[AntiFlood]");
+                        userData.warningMessageId = undefined;
                     }
                 }, config.warningMessageDeleteAfter * 1000);
             } catch (error) {
                 log.error(`[AntiFlood] 发送警告消息失败: ${error}`);
             }
         }
-    } else {
-        // 如果分数降到阈值以下，并且有警告消息记录，尝试删除
-        if (userData.warningMessageId) {
-            try {
-                await ctx.client.deleteMessagesById(ctx.chatId, [userData.warningMessageId]);
-                userData.warningMessageId = undefined; // 清除记录
-            } catch (error) {
-                log.error(`[AntiFlood] 分数降低后删除警告消息失败: ${error}`);
-            }
-        }
+    } else if (userData.warningMessageId) {
+        // 如果分数降到阈值以下，并且有警告消息，则删除
+        await safeDeleteMessage(ctx, userData.warningMessageId, "[AntiFlood]");
+        userData.warningMessageId = undefined;
     }
 }
 
 /**
  * 主消息处理逻辑
  * 检测消息并更新用户状态，调用防刷屏处理
+ * @param ctx 消息上下文
  */
 async function processMessage(ctx: MessageEventContext): Promise<void> {
     if (!config.enabled) return;
@@ -294,87 +316,70 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
     if (ctx.message.editDate) return;
 
     const userId = ctx.message.sender.id;
-    const messageText = ctx.message.text || ''; // 获取消息文本，无则为空字符串
-    const currentTimeMs = Date.now(); // 当前毫秒时间戳
+    const messageText = ctx.message.text || '';
+    const currentTimeMs = Date.now();
 
-    // 获取或创建用户数据
+    // 获取用户数据
     const userData = await userActivityMap.get(userId);
     const beforeScore = userData.score;
 
     // --- 分数计算 ---
-    let lengthScore = 0;
-    let repeatPenalty = 0;
-    let similarityPenalty = 0;
-    let repeatInMsgPenalty = 0;
-    let highFrequencyPenalty = 0; // 单独计算高频惩罚
-
+    let scoreIncrease = 0;
+    
     // 1. 长度得分
     if (messageText) {
-        lengthScore = calculateLengthScore(messageText.length);
+        scoreIncrease += calculateLengthScore(messageText.length);
+        
+        // 2. 完全重复惩罚
+        if (userData.lastMessage === messageText) {
+            scoreIncrease += config.repeat.penalty;
+        }
+        
+        // 3. 相似度惩罚
+        scoreIncrease += calculateSimilarityPenalty(messageText, userData.lastMessage, userData);
+        
+        // 4. 消息内重复子串惩罚
+        scoreIncrease += detectRepeatedSubstrings(messageText);
+    }
+    
+    // 5. 高频发送检测
+    if (isHighFrequency(userData, ctx, currentTimeMs)) {
+        scoreIncrease += config.limitScore; // 高频消息直接添加阈值分数
     }
 
-    // 2. 完全重复惩罚 (仅在有消息文本时)
-    if (messageText && userData.lastMessage === messageText) {
-        repeatPenalty = config.repeat.penalty;
-    }
-
-    // 3. 相似度惩罚 (仅在有消息文本时)
-    if (messageText) {
-        similarityPenalty = calculateSimilarityPenalty(messageText, userData.lastMessage, userData);
-    }
-
-    // 4. 消息内重复子串惩罚 (仅在有消息文本时)
-    if (messageText) {
-        repeatInMsgPenalty = detectRepeatedSubstrings(messageText); // 返回惩罚分数
-    }
-
-    // 5. 高频发送检测 (总是执行)
-    const isHighFreq = isHighFrequency(userData, ctx, currentTimeMs);
-    if (isHighFreq) {
-        // 直接增加大量分数，使其更容易触发限制
-        highFrequencyPenalty = config.limitScore;
-    }
-
-    // --- 更新用户分数 ---
-    let scoreIncrease = lengthScore + repeatPenalty + similarityPenalty + repeatInMsgPenalty + highFrequencyPenalty;
+    // 更新用户分数
     let afterScore = userData.score + scoreIncrease;
 
-    // 首次高分增长惩罚减免 (防止误报)
-    // 条件：增长量超过阈值的20%，且增长前的分数低于阈值的60%
+    // 首次高分增长惩罚减免（防止误报）
     if (scoreIncrease > config.limitScore * 0.2 && beforeScore < config.limitScore * 0.6) {
-        const reduction = scoreIncrease * 0.3; // 减免30%的增长量
-        afterScore = Math.min(beforeScore + scoreIncrease - reduction, config.limitScore - 0.1); // 确保减免后仍在限制之下一点
+        const reduction = scoreIncrease * 0.3;
+        afterScore = Math.min(beforeScore + scoreIncrease - reduction, config.limitScore - 0.1);
         log.info(`[AntiFlood] 用户 ${userId}: 首次高分增长缓解已应用. 分数: ${beforeScore.toFixed(2)} -> ${afterScore.toFixed(2)}`);
     }
 
-    // 限制分数在 [0, maxScore] 区间
+    // 限制分数范围
     userData.score = Math.min(Math.max(0, afterScore), config.maxScore);
 
-    // --- 轻度警告 ---
-    // 条件：分数超过阈值的60%，增长量大于等于1，且分数低于阈值
+    // 轻度警告（分数接近阈值时）
     if (userData.score > config.limitScore * 0.6 && scoreIncrease >= 1 && userData.score < config.limitScore) {
         try {
             const warningText = html`检测到风险行为，请停止刷屏/重复消息 ${userData.score.toFixed(1)}/${config.limitScore.toFixed(1)} (${(userData.score / config.limitScore * 100).toFixed(1)}%)`;
             const mildWarningMsg = await ctx.message.replyText(warningText);
 
             // 短暂显示后删除
-            setTimeout(async () => {
-                try {
-                    await ctx.client.deleteMessagesById(ctx.chatId, [mildWarningMsg.id]);
-                } catch (err) { /* 忽略删除错误 */ }
-            }, 3000); // 显示 3 秒
+            setTimeout(() => safeDeleteMessage(ctx, mildWarningMsg.id, "[AntiFlood]"), 3000);
         } catch (error) {
             log.error(`[AntiFlood] 发送轻度警告失败: ${error}`);
         }
     }
 
-    // --- 执行防刷屏核心逻辑 ---
+    // 执行防刷屏核心逻辑
     await defend(ctx, userData);
 
-    // --- 更新用户状态 ---
-    userData.lastMessage = messageText; // 存储当前消息文本
-    userData.lastMessageTime = Math.floor(currentTimeMs / 1000); // 存储当前消息时间戳 (秒)
-
+    // 更新用户状态
+    userData.lastMessage = messageText;
+    userData.lastMessageTime = Math.floor(currentTimeMs / 1000);
+    
     if (ctx.message.groupedId) {
         userData.lastMediaGroupID = ctx.message.groupedId; // 更新媒体组 ID
     }
@@ -438,57 +443,88 @@ const plugin: BotPlugin = {
             async handler(ctx: CommandContext) {
                 const subCommand = ctx.args[0]?.toLowerCase() || '';
 
-                // 确定目标用户 ID 和名称
+                // 确定目标用户ID和名称
                 let targetUserId = ctx.message.sender.id;
                 let targetName = ctx.message.sender.displayName;
 
-                // 如果是回复消息，获取被回复用户的ID和名称
-                if (ctx.message.replyToMessage) {
+                // 如果是回复消息，获取被回复用户的名称
+                if (ctx.message.replyToMessage && ctx.message.replyToMessage.sender) {
                     const replyMsg = ctx.message.replyToMessage;
-                    // targetUserId = replyMsg.raw.replyFrom?.fromId?.user.;
-                    targetName = replyMsg.sender?.displayName!;
+                    if (replyMsg.sender) {
+                        // 使用类型安全的方式检查sender类型并获取ID
+                        if ('id' in replyMsg.sender) {
+                            targetUserId = replyMsg.sender.id;
+                        }
+                        targetName = replyMsg.sender.displayName;
+                    }
                 }
 
                 const targetUserData = await userActivityMap.get(targetUserId);
                 const isAdmin = ctx.hasPermission('antiflood.admin');
 
-                if (isAdmin && subCommand === "reset") {
-                    userActivityMap.reset(targetUserId); // 重置目标用户数据
-                    await ctx.message.replyText(`${targetName} 的警报值已重置。`);
-                }
-                else if (isAdmin && subCommand === "detail") {
-                    // 移除循环引用或大型对象，准备序列化
-                    const { timestamps, ...simpleUserData } = targetUserData;
-                    const displayData = {
-                        ...simpleUserData,
-                        timestampCount: timestamps.length, // 显示时间戳数量代替完整列表
-                        lastTimestamp: timestamps.length > 0 ? new Date(timestamps[timestamps.length - 1]!.time).toISOString() : 'N/A'
-                    };
-
-                    try {
-                        // 使用 JSON.stringify 提供更简洁的输出
-                        const output = JSON.stringify(displayData, null, 2);
-                        await ctx.message.replyText(`${output}`);
-                    } catch (error) {
-                        log.error(`[AntiFlood] 检查用户数据时出错: ${error}`);
-                        await ctx.message.replyText("无法显示用户详细数据。");
-                    }
-                }
-                else if (isAdmin && subCommand === "enable") {
-                    config.enabled = true;
-                    await ctx.client.features.savePluginConfig('antiflood', config);
-                    await ctx.message.replyText("✅ 防刷屏功能已启用");
-                }
-                else if (isAdmin && subCommand === "disable") {
-                    config.enabled = false;
-                    await ctx.client.features.savePluginConfig('antiflood', config);
-                    await ctx.message.replyText("✅ 防刷屏功能已禁用");
-                }
-                else {
-                    // 默认显示分数
-                    const score = targetUserData.score;
-                    const status = score >= config.limitScore ? ' [限制中]' : '';
-                    await ctx.message.replyText(`${targetName} 的警报值为: ${score.toFixed(3)}${status}`);
+                switch (subCommand) {
+                    case "reset":
+                        if (!isAdmin) {
+                            await ctx.message.replyText("⚠️ 需要管理员权限");
+                            return;
+                        }
+                        userActivityMap.reset(targetUserId);
+                        await ctx.message.replyText(`${targetName} 的警报值已重置。`);
+                        break;
+                        
+                    case "detail":
+                        if (!isAdmin) {
+                            await ctx.message.replyText("⚠️ 需要管理员权限");
+                            return;
+                        }
+                        
+                        try {
+                            const { timestamps, ...simpleUserData } = targetUserData;
+                            const displayData = {
+                                ...simpleUserData,
+                                timestampCount: timestamps.length,
+                                lastTimestamp: timestamps.length > 0 
+                                    ? (() => {
+                                        const lastTime = timestamps[timestamps.length - 1]?.time;
+                                        return lastTime ? new Date(lastTime).toISOString() : 'N/A';
+                                      })()
+                                    : 'N/A'
+                            };
+                            
+                            await ctx.message.replyText(JSON.stringify(displayData, null, 2));
+                        } catch (error) {
+                            log.error(`[AntiFlood] 检查用户数据时出错: ${error}`);
+                            await ctx.message.replyText("无法显示用户详细数据。");
+                        }
+                        break;
+                        
+                    case "enable":
+                        if (!isAdmin) {
+                            await ctx.message.replyText("⚠️ 需要管理员权限");
+                            return;
+                        }
+                        
+                        config.enabled = true;
+                        await ctx.client.features.savePluginConfig('antiflood', config);
+                        await ctx.message.replyText("✅ 防刷屏功能已启用");
+                        break;
+                        
+                    case "disable":
+                        if (!isAdmin) {
+                            await ctx.message.replyText("⚠️ 需要管理员权限");
+                            return;
+                        }
+                        
+                        config.enabled = false;
+                        await ctx.client.features.savePluginConfig('antiflood', config);
+                        await ctx.message.replyText("✅ 防刷屏功能已禁用");
+                        break;
+                        
+                    default:
+                        // 默认显示分数
+                        const score = targetUserData.score;
+                        const status = score >= config.limitScore ? ' [限制中]' : '';
+                        await ctx.message.replyText(`${targetName} 的警报值为: ${score.toFixed(3)}${status}`);
                 }
             }
         }
