@@ -26,6 +26,7 @@ export interface LogConfig {
     prettyPrint?: boolean;
     indentSize?: number;
     showHostname?: boolean;
+    simplifyRemoteMessages?: boolean;
     telegram?: {
         client: TelegramClient;
         managerId?: number;
@@ -40,7 +41,7 @@ const Colors = {
     Blink: "\x1b[5m",
     Reverse: "\x1b[7m",
     Hidden: "\x1b[8m",
-    
+
     FgBlack: "\x1b[30m",
     FgRed: "\x1b[31m",
     FgGreen: "\x1b[32m",
@@ -50,7 +51,7 @@ const Colors = {
     FgCyan: "\x1b[36m",
     FgWhite: "\x1b[37m",
     FgGray: "\x1b[90m",
-    
+
     BgBlack: "\x1b[40m",
     BgRed: "\x1b[41m",
     BgGreen: "\x1b[42m",
@@ -60,7 +61,7 @@ const Colors = {
     BgCyan: "\x1b[46m",
     BgWhite: "\x1b[47m",
     BgGray: "\x1b[100m",
-    
+
     FgWhiteBgRed: `\x1b[41m\x1b[37m\x1b[1m`,
     FgBlackBgYellow: `\x1b[43m\x1b[30m\x1b[1m`,
     FgBlackBgCyan: `\x1b[46m\x1b[30m\x1b[1m`,
@@ -88,7 +89,8 @@ class Logger {
         remoteThrottleInterval: 2000,
         prettyPrint: true,
         indentSize: 2,
-        showHostname: false
+        showHostname: false,
+        simplifyRemoteMessages: true
     };
 
     private pluginName?: string;
@@ -132,15 +134,83 @@ class Logger {
         return new Logger(this.config, pluginName);
     }
 
-    private async sendToTelegram(text: string) {
+    private formatSimplifiedMessage(level: LogLevel, message: any, args: any[], options?: LogOptions): string {
+        const parts: string[] = [];
+        const levelName = LogLevel[level];
+        const icon = LogIcons[level];
+
+        if (this.config.showTimestamp) {
+            parts.push(`[${this.formatTimestamp()}]`);
+        }
+
+        parts.push(`[${icon} ${levelName}]`);
+
+        if (this.pluginName) {
+            parts.push(`[${this.pluginName}]`);
+        }
+
+        let simpleMessage = "";
+        if (typeof message === 'string') {
+            simpleMessage = message;
+        } else if (message instanceof Error) {
+            simpleMessage = `${message.name}: ${message.message}`;
+        } else {
+            try {
+                simpleMessage = JSON.stringify(message, (key, value) => {
+                    if (typeof value === 'object' && value !== null) {
+                        if (Array.isArray(value) && value.length > 3) {
+                            return [...value.slice(0, 3), `... (${value.length - 3} more items)`];
+                        }
+                    }
+                    return value;
+                }, 2);
+
+                if (simpleMessage.length > 500) {
+                    simpleMessage = simpleMessage.substring(0, 497) + "...";
+                }
+            } catch (e) {
+                simpleMessage = String(message);
+            }
+        }
+        parts.push(simpleMessage);
+
+        if (options?.tags && options.tags.length > 0) {
+            parts.push(options.tags.map(tag => `#${tag}`).join(' '));
+        }
+
+        if (options?.metadata && Object.keys(options.metadata).length > 0) {
+            const metaKeys = Object.keys(options.metadata);
+            if (metaKeys.length > 0) {
+                const metaStr = metaKeys.map(k => {
+                    const metadataValue = options.metadata?.[k];
+                    const valueStr = typeof metadataValue === 'object' && metadataValue !== null
+                        ? '(object)'
+                        : String(metadataValue);
+                    return `${k}: ${valueStr}`;
+                }).join(', ');
+                parts.push(`[${metaStr}]`);
+            }
+        }
+
+        return parts.join(' ');
+    }
+
+    private async sendToTelegram(text: string, level: LogLevel, message: any, args: any[], options?: LogOptions) {
         if (!this.config.telegram?.client || !this.config.telegram.managerId) return;
 
         const now = Date.now();
         const throttleInterval = this.config.remoteThrottleInterval || 2000;
-        
+
+        let telegramText = text;
+        if (this.config.simplifyRemoteMessages) {
+            telegramText = this.formatSimplifiedMessage(level, message, args, options);
+        } else {
+            telegramText = text.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
+        }
+
         if (now - this.lastRemoteSendTime < throttleInterval) {
-            this.pendingRemoteMessage = text;
-            
+            this.pendingRemoteMessage = telegramText;
+
             if (!this.pendingRemoteTimer) {
                 const remainingTime = throttleInterval - (now - this.lastRemoteSendTime);
                 this.pendingRemoteTimer = setTimeout(() => {
@@ -148,31 +218,31 @@ class Logger {
                         const messageToSend = this.pendingRemoteMessage;
                         this.pendingRemoteMessage = null;
                         this.pendingRemoteTimer = null;
-                        this.sendToTelegram(messageToSend);
+                        this.sendToTelegram(messageToSend, level, message, args, options);
                     }
                 }, remainingTime);
             }
             return;
         }
-        
+
         this.lastRemoteSendTime = now;
         this.pendingRemoteMessage = null;
 
         try {
-            if (this.lastMessage && text === this.lastMessage.text && this.lastMessage.messageId) {
+            if (this.lastMessage && telegramText === this.lastMessage.text && this.lastMessage.messageId) {
                 await this.config.telegram.client.sendText(
                     this.config.telegram.managerId,
-                    text,
+                    telegramText,
                     { replyTo: this.lastMessage.messageId }
                 );
             } else {
                 const msg = await this.config.telegram.client.sendText(
                     this.config.telegram.managerId,
-                    text
+                    telegramText
                 );
                 this.lastMessage = {
                     messageId: msg.id,
-                    text
+                    text: telegramText
                 };
             }
         } catch (err) {
@@ -203,54 +273,54 @@ class Logger {
     private formatValue(value: any, indent = 0): string {
         if (value === null) return 'null';
         if (value === undefined) return 'undefined';
-        
+
         if (typeof value === 'object') {
             if (value instanceof Error) {
                 return this.formatError(value, indent);
             }
-            
+
             if (Array.isArray(value)) {
                 if (!this.config.prettyPrint) return JSON.stringify(value);
-                
+
                 if (value.length === 0) return '[]';
-                
+
                 const indentSize = this.config.indentSize || 2;
                 const indentStr = ' '.repeat(indent + indentSize);
                 const baseIndent = ' '.repeat(indent);
-                
-                return '[\n' + 
-                    value.map(item => `${indentStr}${this.formatValue(item, indent + indentSize)}`).join(',\n') + 
+
+                return '[\n' +
+                    value.map(item => `${indentStr}${this.formatValue(item, indent + indentSize)}`).join(',\n') +
                     '\n' + baseIndent + ']';
             }
-            
+
             if (!this.config.prettyPrint) return JSON.stringify(value);
-            
+
             if (Object.keys(value).length === 0) return '{}';
-            
+
             const indentSize = this.config.indentSize || 2;
             const indentStr = ' '.repeat(indent + indentSize);
             const baseIndent = ' '.repeat(indent);
-            
-            return '{\n' + 
+
+            return '{\n' +
                 Object.entries(value)
                     .map(([key, val]) => `${indentStr}${key}: ${this.formatValue(val, indent + indentSize)}`)
-                    .join(',\n') + 
+                    .join(',\n') +
                 '\n' + baseIndent + '}';
         }
-        
+
         if (typeof value === 'string') return value;
-        
+
         return String(value);
     }
 
     private formatError(err: Error, indent = 0): string {
         const indentStr = ' '.repeat(indent);
         const parts = [`${indentStr}${Colors.FgRed}${err.name}${Colors.Reset}: ${err.message}`];
-        
+
         if (err.stack) {
             parts.push(`${indentStr}${Colors.FgGray}${err.stack.split('\n').slice(1).join('\n')}${Colors.Reset}`);
         }
-        
+
         return parts.join('\n');
     }
 
@@ -271,8 +341,8 @@ class Logger {
         }
 
         // Level Indicator
-        const levelIndicator = useColors 
-            ? `${levelBgColor} ${icon}${levelName.padEnd(5)} ${Colors.Reset}` 
+        const levelIndicator = useColors
+            ? `${levelBgColor} ${icon}${levelName.padEnd(5)} ${Colors.Reset}`
             : `[${icon}${levelName}]`;
         header += ` ${levelIndicator}`;
 
@@ -288,12 +358,12 @@ class Logger {
             mainMessage = message;
         } else if (message instanceof Error) {
             // Handle errors specifically here, formatValue might be too generic now
-            mainMessage = useColors 
-                ? `${Colors.FgRed}${message.name}${Colors.Reset}: ${message.message}` 
+            mainMessage = useColors
+                ? `${Colors.FgRed}${message.name}${Colors.Reset}: ${message.message}`
                 : `${message.name}: ${message.message}`;
         } else {
             // Use formatValue for other types, but without indentation initially
-            mainMessage = this.formatValue(message, 0); 
+            mainMessage = this.formatValue(message, 0);
         }
 
         // Apply highlighting
@@ -324,22 +394,22 @@ class Logger {
             const suffix = this.config.prettyPrint ? '' : Colors.Reset;
             details += useColors ? `${prefix}${metadataStr}${suffix}` : ` ${metadataStr}`;
         }
-        
+
         // Error Stack Trace (if message was an Error and showTrace is enabled)
         if (message instanceof Error && this.config.showTrace && message.stack) {
-             const stackLines = message.stack.split('\n').slice(1); // Skip the first line (error name/message)
-             const formattedStack = stackLines.map(line => `${indentStr}${line.trim()}`).join('\n');
-             details += useColors 
-                 ? `\n${Colors.Dim}${indentStr}↳ Stack Trace:\n${formattedStack}${Colors.Reset}` 
-                 : `\n${indentStr}↳ Stack Trace:\n${formattedStack}`;
-        } 
+            const stackLines = message.stack.split('\n').slice(1); // Skip the first line (error name/message)
+            const formattedStack = stackLines.map(line => `${indentStr}${line.trim()}`).join('\n');
+            details += useColors
+                ? `\n${Colors.Dim}${indentStr}↳ Stack Trace:\n${formattedStack}${Colors.Reset}`
+                : `\n${indentStr}↳ Stack Trace:\n${formattedStack}`;
+        }
         // General Stack Trace (if configured and level is ERROR/FATAL, but message wasn't Error)
         else if (this.config.showTrace && (level === LogLevel.ERROR || level === LogLevel.FATAL)) {
             const stack = new Error().stack?.split('\n').slice(3).join('\n'); // slice(3) to skip log call itself
             if (stack) {
                 const formattedStack = stack.split('\n').map(line => `${indentStr}${line.trim()}`).join('\n');
-                details += useColors 
-                    ? `\n${Colors.Dim}${indentStr}↳ Stack Trace:\n${formattedStack}${Colors.Reset}` 
+                details += useColors
+                    ? `\n${Colors.Dim}${indentStr}↳ Stack Trace:\n${formattedStack}${Colors.Reset}`
                     : `\n${indentStr}↳ Stack Trace:\n${formattedStack}`;
             }
         }
@@ -371,9 +441,7 @@ class Logger {
         }
 
         if ((level >= LogLevel.ERROR || options?.remote) && this.config.telegram?.client) {
-            // Strip ANSI color codes for Telegram
-            const plainMessage = formattedMessage.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
-            this.sendToTelegram(plainMessage);
+            this.sendToTelegram(formattedMessage, level, message, args, options);
         }
 
         if (level === LogLevel.FATAL) {

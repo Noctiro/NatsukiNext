@@ -39,7 +39,7 @@ const initSuccess = await features.init();
 
 // 确认初始化成功
 if (initSuccess) {
-    log.info('功能模块已成功初始化并添加到客户端', { remote: true });
+    log.info('功能模块初始化完毕', { remote: true });
 } else {
     log.error('功能模块初始化失败，程序可能无法正常工作', { remote: true });
     process.exit(1);
