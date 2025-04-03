@@ -1,17 +1,19 @@
 import { html } from "@mtcute/bun";
 import type { BotPlugin, CommandContext, MessageEventContext } from "../features";
-import { log } from "../log";
 import { generateRandomUserAgent } from "../utils/UserAgent";
 
 // 插件配置
 const config = {
     debug: false,  // 默认禁用调试模式
+    enableTLS: true, // 强制使用TLS
+    textSeparator: '...'  // 用于显示的文本分隔符
 };
 
-// 调试日志函数
+// 调试日志助手函数
+// 修改为使用插件专用日志器
 function debugLog(message: string): void {
     if (config.debug) {
-        log.info(`[隐私插件调试] ${message}`);
+        plugin.logger?.debug(`[Privacy] ${message}`);
     }
 }
 
@@ -671,70 +673,49 @@ function shouldProcessUrl(url: string): boolean {
 }
 
 /**
+ * 移除URL中的追踪参数
+ * @param urlObj URL对象
+ * @returns 清理后的URL字符串
+ */
+function removeTrackingParams(urlObj: URL): string {
+    // 简单实现：直接返回没有参数的URL
+    return `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
+}
+
+/**
  * 清理URL函数 - 移除所有参数，提供最大隐私保护
  * @param url 原始URL
  * @returns 清理后的URL和平台信息
  */
 function cleanUrl(url: string): { url: string, platformName?: string } {
+    if (!url) return { url: '' };
+
     try {
-        // 快速检查：如果URL无效，直接返回原始URL
-        if (!url || url.length < 4) {
-            return { url };
+        // 先尝试解析URL
+        const urlObj = new URL(url);
+
+        // 处理特定平台的特殊规则
+        const specialResult = applySpecialRules(url);
+
+        // 如果有特殊处理结果，直接返回
+        if (specialResult.url !== url) {
+            debugLog(`应用了特殊规则: ${specialResult.platformName} - ${specialResult.url}`);
+            return specialResult;
         }
 
-        // 确保URL有协议前缀
-        const hasProtocol = url.includes('://');
-        const urlWithProtocol = hasProtocol ? url : `https://${url}`;
+        // 移除常见的追踪参数
+        const cleanedUrl = removeTrackingParams(urlObj);
 
-        // 简化特殊规则应用逻辑，避免cleanUrl和applySpecialRules的循环调用
-        let platformName: string | undefined;
-        for (const rule of platformRules) {
-            if (rule.pattern.global) {
-                rule.pattern.lastIndex = 0;
-            }
-
-            // 尝试匹配URL
-            let match = url.match(rule.pattern);
-            if (!match && !hasProtocol) {
-                match = urlWithProtocol.match(rule.pattern);
-            }
-
-            if (match && rule.needsSpecialHandling) {
-                platformName = rule.name;
-                // 不在这里应用转换，只记录平台名称
-                break;
-            }
+        return { url: cleanedUrl, platformName: specialResult.platformName };
+    } catch (parseError) {
+        // 处理无法解析的URL
+        if (parseError instanceof TypeError && parseError.message.includes('Invalid URL')) {
+            plugin.logger?.warn(`解析URL失败: ${url}, 错误: ${parseError}`);
+            return { url }; // 返回原始URL
         }
 
-        // 快速检查：如果URL没有参数，直接返回
-        if (!urlWithProtocol.includes('?')) {
-            return { url, platformName };
-        }
-
-        try {
-            const parsedUrl = new URL(urlWithProtocol);
-
-            // 如果URL没有参数，则不需要处理
-            if (parsedUrl.search === '') {
-                return { url, platformName };
-            }
-
-            // 生成干净的URL
-            let cleanedUrl = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
-
-            // 如果原始URL没有协议前缀，还原为无前缀形式
-            if (!hasProtocol) {
-                cleanedUrl = cleanedUrl.replace(/^https?:\/\//, '');
-            }
-
-            return { url: cleanedUrl, platformName };
-        } catch (parseError) {
-            log.warn(`解析URL失败: ${url}, 错误: ${parseError}`);
-            return { url, platformName }; // 解析失败时返回原始URL
-        }
-    } catch (error) {
-        log.error(`清理URL出错: ${error}, URL: ${url}`);
-        return { url }; // 出错时返回原始URL
+        plugin.logger?.error(`清理URL出错: ${parseError}, URL: ${url}`);
+        return { url }; // 返回原始URL
     }
 }
 
@@ -853,12 +834,12 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
 
                             return { url: cleanedUrl, platformName: rule.name };
                         } catch (parseError) {
-                            log.error(`解析最终URL失败: ${finalUrl}, 错误: ${parseError}`);
+                            plugin.logger?.error(`解析最终URL失败: ${finalUrl}, 错误: ${parseError}`);
                             return { url: finalUrl, platformName: rule.name };
                         }
                     }
                 } catch (fetchError) {
-                    log.warn(`解析短链接失败: ${shortUrl}, 尝试继续处理`);
+                    plugin.logger?.warn(`解析短链接失败: ${shortUrl}, 尝试继续处理`);
                     // 继续处理，不要直接返回
                 }
             }
@@ -920,14 +901,14 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
 
                 return { url: cleanedUrl };
             } catch (parseError) {
-                log.error(`解析最终URL失败: ${finalUrl}, 错误: ${parseError}`);
+                plugin.logger?.error(`解析最终URL失败: ${finalUrl}, 错误: ${parseError}`);
                 return { url: finalUrl };
             }
         } catch (error) {
             if (error instanceof DOMException && error.name === 'AbortError') {
-                log.warn(`解析URL超时 ${urlWithProtocol}`);
+                plugin.logger?.warn(`解析URL超时 ${urlWithProtocol}`);
             } else {
-                log.error(`解析URL失败 ${urlWithProtocol}: ${error}`);
+                plugin.logger?.error(`解析URL失败 ${urlWithProtocol}: ${error}`);
             }
 
             // 尝试GET请求作为备选方案
@@ -964,16 +945,16 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
 
                     return { url: cleanedUrl };
                 } catch (parseError) {
-                    log.error(`解析GET请求URL失败: ${finalUrl}, 错误: ${parseError}`);
+                    plugin.logger?.error(`解析GET请求URL失败: ${finalUrl}, 错误: ${parseError}`);
                     return { url: finalUrl };
                 }
             } catch (getError) {
-                log.error(`GET请求也失败 ${urlWithProtocol}: ${getError}`);
+                plugin.logger?.error(`GET请求也失败 ${urlWithProtocol}: ${getError}`);
                 return { url: shortUrl }; // 所有处理都失败时返回原始URL
             }
         }
     } catch (error) {
-        log.error(`解析链接出现意外错误: ${error}`);
+        plugin.logger?.error(`解析链接出现意外错误: ${error}`);
         return { url: shortUrl }; // 任何错误发生时返回原始URL
     }
 }
@@ -1144,7 +1125,7 @@ async function processLinksInMessage(messageText: string): Promise<{
                         linkInfo.resolved = link;
                     }
                 } catch (resolveError) {
-                    log.error(`处理链接失败: ${link}, 错误: ${resolveError}`);
+                    plugin.logger?.error(`处理链接失败: ${link}, 错误: ${resolveError}`);
                     // 即使处理失败，也要保留带@前缀链接
                     if (!linkInfo.resolved && linkInfo.originalWithAt) {
                         linkInfo.resolved = link;
@@ -1153,7 +1134,7 @@ async function processLinksInMessage(messageText: string): Promise<{
 
                 return linkInfo;
             } catch (error) {
-                log.error(`处理链接流程错误: ${linkInfo.original}, 错误: ${error}`);
+                plugin.logger?.error(`处理链接流程错误: ${linkInfo.original}, 错误: ${error}`);
                 if (linkInfo.originalWithAt) {
                     linkInfo.resolved = linkInfo.original;
                 }
@@ -1239,16 +1220,6 @@ const plugin: BotPlugin = {
     description: '防跟踪链接处理插件',
     version: '2.2.0',
 
-    // 插件加载时执行
-    async onLoad(client) {
-        log.info(`隐私保护插件已加载，支持 ${platformRules.length} 个平台`);
-    },
-
-    // 插件卸载时执行
-    async onUnload() {
-        log.info('隐私保护插件已卸载');
-    },
-
     // 注册命令
     commands: [
         {
@@ -1318,7 +1289,7 @@ const plugin: BotPlugin = {
 
                         await ctx.message.replyText(result);
                     } catch (error) {
-                        log.error(`测试链接处理失败: ${error}`);
+                        plugin.logger?.error(`测试链接处理失败: ${error}`);
                         await ctx.message.replyText(`处理链接失败: ${error}`);
                     } finally {
                         // 恢复调试状态
@@ -1406,15 +1377,15 @@ const plugin: BotPlugin = {
                             try {
                                 await ctx.message.delete();
                             } catch (error) {
-                                log.error(`删除原消息失败: ${error}`);
+                                plugin.logger?.error(`删除原消息失败: ${error}`);
                             }
                         } catch (sendError) {
-                            log.error(`发送替换消息失败: ${sendError}`);
+                            plugin.logger?.error(`发送替换消息失败: ${sendError}`);
                             // 不删除原消息，以防消息丢失
                         }
                     }
                 } catch (error) {
-                    log.error(`处理消息错误: ${error}`);
+                    plugin.logger?.error(`处理消息错误: ${error}`);
                 }
             }
         }

@@ -53,7 +53,7 @@ class UserManager {
      * 重置所有用户的每日AI使用次数
      */
     checkAndResetDailyLimits(): void {
-        log.info('开始重置所有用户的AI使用次数');
+        plugin.logger?.info('开始重置所有用户的AI使用次数');
 
         // 获取所有用户ID
         const userIds = Array.from(this.userCount.keys());
@@ -63,7 +63,7 @@ class UserManager {
             this.userCount.set(userId, this.userCount.getDefaultData());
         }
 
-        log.info(`已重置${userIds.length}个用户的AI使用次数`);
+        plugin.logger?.info(`已重置${userIds.length}个用户的AI使用次数`);
     }
 
     /**
@@ -119,7 +119,7 @@ class UserManager {
             // 设置新值，限制最大值为默认次数的两倍
             this.userCount.set(userId, Math.min(this.userCount.getDefaultData() * 2, numericCount + increment));
         }).catch(err => {
-            log.error(`增加用户[${userId}]使用次数失败: ${err}`);
+            plugin.logger?.error(`增加用户[${userId}]使用次数失败: ${err}`);
         });
     }
 
@@ -198,8 +198,8 @@ class MessageManager {
                 // 记录更新后的内容
                 this.lastMessageContents.set(key, update.text);
             } catch (e) {
-                log.info(update.text)
-                log.error(`更新消息失败: ${e}`);
+                plugin.logger?.info(update.text)
+                plugin.logger?.error(`更新消息失败: ${e}`);
             }
         }
     }
@@ -225,7 +225,7 @@ class MessageManager {
             // 更新成功后记录内容
             this.lastMessageContents.set(key, cleanText);
         } catch (e) {
-            log.error(`更新状态消息失败: ${e}`);
+            plugin.logger?.error(`更新状态消息失败: ${e}`);
         }
     }
 
@@ -328,13 +328,13 @@ class KeywordGenerator {
 
             if (generatedKeywords && generatedKeywords.trim()) {
                 const optimizedKeywords = generatedKeywords.trim();
-                log.info(`生成搜索关键词: "${optimizedKeywords.replace(/\n/g, '; ')}"`);
+                plugin.logger?.info(`生成搜索关键词: "${optimizedKeywords.replace(/\n/g, '; ')}"`);
                 return optimizedKeywords;
             }
 
             throw new Error('AI返回的关键词为空');
         } catch (err) {
-            log.warn(`对问题生成关键词失败，使用备用方法: ${err instanceof Error ? err.message : String(err)}`);
+            plugin.logger?.warn(`对问题生成关键词失败，使用备用方法: ${err instanceof Error ? err.message : String(err)}`);
             return this.generateFallbackKeywords(userQuestion);
         }
     }
@@ -405,7 +405,7 @@ class KeywordGenerator {
         // 限制最多返回3个关键词短语
         const limitedPhrases = keywordPhrases.slice(0, 3);
 
-        log.info(`生成备用关键词: "${limitedPhrases.join('; ')}"`);
+        plugin.logger?.info(`生成备用关键词: "${limitedPhrases.join('; ')}"`);
         return limitedPhrases.join('\n');
     }
 
@@ -494,7 +494,7 @@ class SearchService {
 
             return { results: result };
         } catch (error) {
-            log.error(`搜索 "${keyword}" 失败:`, error);
+            plugin.logger?.error(`搜索 "${keyword}" 失败:`, error);
             return { results: null };
         }
     }
@@ -504,7 +504,7 @@ class SearchService {
      */
     async performBatchSearch(keywords: string): Promise<any[]> {
         if (!keywords || typeof keywords !== 'string') {
-            log.warn('无效的搜索关键词格式');
+            plugin.logger?.warn('无效的搜索关键词格式');
             return [];
         }
 
@@ -516,7 +516,7 @@ class SearchService {
             .slice(0, 3); // 直接限制为最多3个关键词
 
         if (keywordLines.length === 0) {
-            log.warn('没有找到有效的搜索关键词');
+            plugin.logger?.warn('没有找到有效的搜索关键词');
             return [];
         }
 
@@ -525,12 +525,12 @@ class SearchService {
         const hasMultiLang = languageAnalysis.isMultiLingual;
 
         if (hasMultiLang) {
-            log.info(`检测到多语言搜索需求: ${languageAnalysis.languages.join(', ')}`);
+            plugin.logger?.info(`检测到多语言搜索需求: ${languageAnalysis.languages.join(', ')}`);
         }
 
         // 过滤不必要的多语言关键词（如天气查询）
         const filteredKeywords = this.filterUnnecessaryMultilingualKeywords(keywordLines);
-        log.info(`开始搜索，关键词数量: ${filteredKeywords.length}，多语言=${hasMultiLang}`);
+        plugin.logger?.info(`开始搜索，关键词数量: ${filteredKeywords.length}，多语言=${hasMultiLang}`);
 
         const results = [];
         let totalResults = 0;
@@ -549,7 +549,7 @@ class SearchService {
                 this.generateBackupSearchKeywords(keywordLines, 3 - results.length);
 
             if (searchAttempts > 1 && currentKeywords.length > 0) {
-                log.info(`第${searchAttempts}轮搜索, 使用备用关键词: ${currentKeywords.join(', ')}`);
+                plugin.logger?.info(`第${searchAttempts}轮搜索, 使用备用关键词: ${currentKeywords.join(', ')}`);
             }
 
             // 按顺序执行搜索，避免并行请求
@@ -561,14 +561,14 @@ class SearchService {
 
                 // 检查缓存或执行搜索
                 if (cachedResult && (Date.now() - cachedResult.timestamp) < this.cacheExpiry) {
-                    log.info(`使用缓存结果: ${keyword}`);
+                    plugin.logger?.info(`使用缓存结果: ${keyword}`);
                     searchResult = cachedResult.results;
                 } else {
                     try {
-                        log.info(`执行搜索: ${keyword}`);
+                        plugin.logger?.info(`执行搜索: ${keyword}`);
                         const result = await this.performSearch(keyword);
                         if (!result?.results) {
-                            log.warn(`搜索 "${keyword}" 返回空结果`);
+                            plugin.logger?.warn(`搜索 "${keyword}" 返回空结果`);
                             continue;
                         }
 
@@ -580,7 +580,7 @@ class SearchService {
 
                         searchResult = result.results;
                     } catch (error) {
-                        log.error(`搜索 "${keyword}" 失败:`, error);
+                        plugin.logger?.error(`搜索 "${keyword}" 失败:`, error);
                         continue;
                     }
                 }
@@ -620,7 +620,7 @@ class SearchService {
 
                 // 检查是否已获取足够结果
                 if (totalResults >= 20 && highQualityResults >= 7) {
-                    log.info(`已找到足够高质量结果(${highQualityResults}/${totalResults})，停止搜索`);
+                    plugin.logger?.info(`已找到足够高质量结果(${highQualityResults}/${totalResults})，停止搜索`);
                     return results;
                 }
 
@@ -636,7 +636,7 @@ class SearchService {
             }
         }
 
-        log.info(`搜索完成 - 总计: ${results.length}个关键词, 结果: ${totalResults}, 高质量: ${highQualityResults}`);
+        plugin.logger?.info(`搜索完成 - 总计: ${results.length}个关键词, 结果: ${totalResults}, 高质量: ${highQualityResults}`);
         return results;
     }
 
@@ -709,7 +709,7 @@ class SearchService {
             // 对于本地信息，优先保留中文关键词
             const chineseKeywords = keywords.filter(kw => /[\u4e00-\u9fa5]/.test(kw));
             if (chineseKeywords.length > 0) {
-                log.info('检测到本地信息查询，优先使用中文关键词');
+                plugin.logger?.info('检测到本地信息查询，优先使用中文关键词');
                 return chineseKeywords;
             }
         }
@@ -817,7 +817,7 @@ class ResponseFormatter {
             // 由调用者决定在最终组装完所有内容后一次性进行清理，避免多次清理
             return htmlText;
         } catch (e) {
-            log.error(`Markdown转HTML出错: ${e}`);
+            plugin.logger?.error(`Markdown转HTML出错: ${e}`);
             // 出错时返回原始文本，让调用者处理清理
             return text;
         }
@@ -867,7 +867,7 @@ class ResponseFormatter {
                 displayText += `✏️ 回答内容(共${formatContent.length}字):<br>${formatContent}`;
             }
         } catch (e) {
-            log.error(`转换Markdown内容时出错: ${e}`);
+            plugin.logger?.error(`转换Markdown内容时出错: ${e}`);
             displayText += content; // 回退到原始内容
         }
 
@@ -1078,24 +1078,24 @@ class SearchResultFormatter {
         // 校验输入
         if (!searchResultsArray?.length) return '';
 
-        log.info(`开始格式化搜索结果，共 ${searchResultsArray.length} 个查询结果`);
+        plugin.logger?.info(`开始格式化搜索结果，共 ${searchResultsArray.length} 个查询结果`);
 
         // 筛选有效结果
         const validResults = searchResultsArray.filter(item => {
             // 检查结果是否存在
             const hasResults = !!item?.results;
             if (!hasResults) {
-                log.warn(`搜索结果项缺少 results 字段`);
+                plugin.logger?.warn(`搜索结果项缺少 results 字段`);
             }
             return hasResults;
         });
 
         if (!validResults.length) {
-            log.warn(`没有找到有效的搜索结果`);
+            plugin.logger?.warn(`没有找到有效的搜索结果`);
             return '';
         }
 
-        log.info(`有效的搜索结果: ${validResults.length}/${searchResultsArray.length}`);
+        plugin.logger?.info(`有效的搜索结果: ${validResults.length}/${searchResultsArray.length}`);
 
         // 准备结果容器
         let specialOutput = "";
@@ -1109,7 +1109,7 @@ class SearchResultFormatter {
             // 处理特殊结果
             const specialText = this.processSpecialResults(results, '');
             if (specialText) {
-                log.info(`发现特殊结果类型: ${specialText.split('\n')[0]}...`);
+                plugin.logger?.info(`发现特殊结果类型: ${specialText.split('\n')[0]}...`);
                 specialOutput += specialText + '\n\n';
             }
 
@@ -1147,7 +1147,7 @@ class SearchResultFormatter {
             }
         }
 
-        log.info(`收集了 ${allSearchResults.length} 个搜索结果项`);
+        plugin.logger?.info(`收集了 ${allSearchResults.length} 个搜索结果项`);
 
         // 第二步：去重并排序结果
         allSearchResults.sort((a, b) => b.quality - a.quality);
@@ -1161,11 +1161,11 @@ class SearchResultFormatter {
             }
         }
 
-        log.info(`去重后剩余 ${uniqueResults.length} 个搜索结果项`);
+        plugin.logger?.info(`去重后剩余 ${uniqueResults.length} 个搜索结果项`);
 
         // 第三步：如果没有找到有效结果，创建备用结果
         if (!uniqueResults.length && !specialOutput) {
-            log.warn(`没有有效结果和特殊结果，尝试创建备用结果`);
+            plugin.logger?.warn(`没有有效结果和特殊结果，尝试创建备用结果`);
             return this.createBackupResults(searchResultsArray, 5) || '';
         }
 
@@ -1180,7 +1180,7 @@ class SearchResultFormatter {
             const highQualityResults = uniqueResults.filter(item => item.quality > 5);
             const lowQualityResults = uniqueResults.filter(item => item.quality <= 5);
 
-            log.info(`高质量结果: ${highQualityResults.length}, 低质量结果: ${lowQualityResults.length}`);
+            plugin.logger?.info(`高质量结果: ${highQualityResults.length}, 低质量结果: ${lowQualityResults.length}`);
 
             // 高质量结果优先，但如果总结果数不超过5条，则全部保留
             let selectedResults: typeof uniqueResults = [];
@@ -1231,11 +1231,11 @@ class SearchResultFormatter {
 
             // 记录结果数量
             const resultCount = (output.match(/\[结果 \d+\]/g) || []).length;
-            log.info(`搜索结果格式化：输出${resultCount}个结果，包括${Math.min(highQualityResults.length, selectedResults.length)}个高质量结果`);
+            plugin.logger?.info(`搜索结果格式化：输出${resultCount}个结果，包括${Math.min(highQualityResults.length, selectedResults.length)}个高质量结果`);
         } else if (specialOutput) {
             // 只有特殊结果，无需添加占位结果
             const specialResultCount = specialOutput.split('\n\n').filter(s => s.trim()).length;
-            log.info(`只有${specialResultCount}个特殊结果`);
+            plugin.logger?.info(`只有${specialResultCount}个特殊结果`);
         }
 
         return output;
@@ -1382,7 +1382,7 @@ class SearchResultFormatter {
 
             return output.length > 0 ? output.join('\n') : initialText;
         } catch (e) {
-            log.error(`处理特殊结果类型时出错: ${e}`);
+            plugin.logger?.error(`处理特殊结果类型时出错: ${e}`);
             return initialText;
         }
     }
@@ -1449,7 +1449,7 @@ class SearchResultFormatter {
             resultText += '\n';
             return resultText;
         } catch (e) {
-            log.error(`处理搜索结果项时出错: ${e}`);
+            plugin.logger?.error(`处理搜索结果项时出错: ${e}`);
             return '搜索结果处理出错\n\n';
         }
     }
@@ -1566,7 +1566,7 @@ class SearchResultFormatter {
         // 如果总数少于等于所需数量，直接使用所有结果（不进行筛选）
         if (allPotentialResults.length <= requiredCount) {
             finalResults = [...allPotentialResults];
-            log.info(`备用结果数量(${allPotentialResults.length})不超过所需数量(${requiredCount})，不进行筛选`);
+            plugin.logger?.info(`备用结果数量(${allPotentialResults.length})不超过所需数量(${requiredCount})，不进行筛选`);
         } else {
             // 否则进行去重筛选
             const processedLinks = new Set<string>();
@@ -1605,7 +1605,7 @@ class SearchResultFormatter {
             backupOutput += this.formatSearchResultItem(result);
         });
 
-        log.info(`备选搜索结果：共显示${finalResults.length}个结果，从${allPotentialResults.length}条结果中筛选`);
+        plugin.logger?.info(`备选搜索结果：共显示${finalResults.length}个结果，从${allPotentialResults.length}条结果中筛选`);
 
         // 添加注意提示
         backupOutput += "\n⚠️ 注意：这些搜索结果可能与问题相关性不高，请结合AI知识回答。\n";
@@ -1678,7 +1678,7 @@ class SearchResultFormatter {
 
             return summary;
         } catch (e) {
-            log.error(`统计搜索结果时出错: ${e}`);
+            plugin.logger?.error(`统计搜索结果时出错: ${e}`);
             return "搜索结果";
         }
     }
@@ -1709,7 +1709,7 @@ class AIPromptGenerator {
         const hasAnyResults = resultCount > 0 ||
             (safeSearchResults && safeSearchResults.length > 5);
 
-        log.info(`AI提示词生成：搜索结果长度${safeSearchResults.length}字符，包含${resultCount}个结果，有效=${hasAnyResults}`);
+        plugin.logger?.info(`AI提示词生成：搜索结果长度${safeSearchResults.length}字符，包含${resultCount}个结果，有效=${hasAnyResults}`);
 
         // 构建搜索结果部分
         let resultContext = "";
@@ -1902,7 +1902,7 @@ class AIPlugin {
                     }
                 }
             } catch (err) {
-                log.error('Failed to get replied message:', err);
+                plugin.logger?.error('Failed to get replied message:', err);
             }
         }
 
@@ -1915,7 +1915,7 @@ class AIPlugin {
         // 开始处理请求
         const waitMsg = await ctx.message.replyText(`${STATUS_EMOJIS.analyzing} 正在分析您的问题...${slowModeTip}`);
         if (!waitMsg?.id) {
-            log.error('Failed to send initial message');
+            plugin.logger?.error('Failed to send initial message');
             return;
         }
 
@@ -1933,7 +1933,7 @@ class AIPlugin {
 
             // 记录关键词数量
             const keywordCount = keywords.split('\n').filter(k => k.trim()).length;
-            log.info(`已提取${keywordCount}个搜索关键词，将进行精准搜索`);
+            plugin.logger?.info(`已提取${keywordCount}个搜索关键词，将进行精准搜索`);
 
             // 进行搜索
             const searchPreview = KeywordGenerator.formatSearchPreview(keywords);
@@ -1963,11 +1963,11 @@ class AIPlugin {
 
             if (!hasAnySearchResults) {
                 // 完全没有搜索结果
-                log.warn(`未获取到任何搜索结果，将使用AI自身知识回答问题: "${question}"`);
+                plugin.logger?.warn(`未获取到任何搜索结果，将使用AI自身知识回答问题: "${question}"`);
                 await this.messageManager.updateMessageStatus(ctx, waitMsg.id, 'warning', `未找到相关搜索结果，将使用AI自身知识回答问题... ${slowModeTip}`);
             } else if (!hasHighQualityResults) {
                 // 有结果但质量可能不高
-                log.info(`获取到一些搜索结果，但质量可能不高，AI将参考这些结果回答问题`);
+                plugin.logger?.info(`获取到一些搜索结果，但质量可能不高，AI将参考这些结果回答问题`);
 
                 // 检查特殊结果类型
                 if (searchResultText.includes("字典解释") || searchResultText.includes("翻译结果") ||
@@ -1978,7 +1978,7 @@ class AIPlugin {
                 }
             } else {
                 // 有高质量结果
-                log.info(`获取到高质量搜索结果，长度: ${searchResultText.length} 字符`);
+                plugin.logger?.info(`获取到高质量搜索结果，长度: ${searchResultText.length} 字符`);
                 // 显示搜索结果摘要给用户
                 const resultSummary = SearchResultFormatter.summarizeSearchResults(searchResults);
                 await this.messageManager.updateMessageStatus(ctx, waitMsg.id, 'thinking', `已找到${resultSummary}，正在分析并思考中... ${slowModeTip}`);
@@ -2019,7 +2019,7 @@ class AIPlugin {
                                 // 检查内容是否与上次相同
                                 if (this.messageManager['isContentUnchanged'](key, cleanFinalText)) {
                                     // 内容相同，跳过更新
-                                    log.debug(`跳过最终更新，内容未变化`);
+                                    plugin.logger?.debug(`跳过最终更新，内容未变化`);
                                     return;
                                 }
 
@@ -2031,9 +2031,9 @@ class AIPlugin {
                                 }).then(() => {
                                     // 更新成功后记录内容
                                     this.messageManager['lastMessageContents'].set(key, cleanFinalText);
-                                }).catch(e => log.error(`最终更新消息失败: ${e}`));
+                                }).catch(e => plugin.logger?.error(`最终更新消息失败: ${e}`));
                             } catch (e) {
-                                log.error(`创建最终消息时出错: ${e}`);
+                                plugin.logger?.error(`创建最终消息时出错: ${e}`);
                             }
                         } else {
                             try {
@@ -2043,7 +2043,7 @@ class AIPlugin {
                                 const cleanText = cleanHTML(displayText);
                                 this.messageManager.throttledEditMessage(ctx, ctx.chatId, waitMsg.id, cleanText);
                             } catch (e) {
-                                log.error(`创建中间消息时出错: ${e}`);
+                                plugin.logger?.error(`创建中间消息时出错: ${e}`);
                             }
                         }
                     },
@@ -2055,7 +2055,7 @@ class AIPlugin {
             }
         } catch (error) {
             // 改进错误处理以提供更友好的错误信息
-            log.error('AI processing error:', error);
+            plugin.logger?.error('AI processing error:', error);
 
             let errorMessage = '处理请求时出错';
             if (error instanceof Error) {
@@ -2161,7 +2161,7 @@ const plugin: BotPlugin = {
     async onLoad(client: TelegramClient) {
         // 创建Cron任务，每天凌晨0点执行一次用户次数重置
         userLimitResetCron = new Cron("0 0 * * *", () => {
-            log.info('执行定时任务：重置所有用户的AI使用次数');
+            plugin.logger?.info('执行定时任务：重置所有用户的AI使用次数');
             aiPluginInstance.checkAndResetUserLimits();
         });
     },
@@ -2170,7 +2170,7 @@ const plugin: BotPlugin = {
         // 停止Cron任务
         if (userLimitResetCron) {
             userLimitResetCron.stop();
-            log.info('AI插件已卸载：用户次数刷新计划任务已停止');
+            plugin.logger?.info('AI插件已卸载：用户次数刷新计划任务已停止');
         }
     }
 };

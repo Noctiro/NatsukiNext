@@ -1,6 +1,5 @@
 import type { BotPlugin, CommandContext } from '../features';
-import { log } from '../log';
-import { md, type TelegramClient } from '@mtcute/bun';
+import { md } from '@mtcute/bun';
 import type { Permission, PermissionGroup } from '../permissions';
 
 /**

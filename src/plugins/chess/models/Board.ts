@@ -1,5 +1,5 @@
 import { PieceType, PieceColor } from './ChessTypes';
-import type { IPiece, Position } from './ChessTypes';
+import type { Position } from './ChessTypes';
 import { Piece } from './Piece';
 
 /**

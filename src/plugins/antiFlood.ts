@@ -1,6 +1,5 @@
 import { html, Long, type Message } from '@mtcute/bun';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext, PluginEvent } from '../features';
-import { log } from '../log';
 import DynamicMap from '../utils/DynamicMap';
 import { detectRepeatedSubstrings } from '../utils/MsgRepeatedCheck';
 
@@ -132,8 +131,6 @@ function calculateLengthScore(length: number): number {
 
 /**
  * 检测高频发送消息行为
- * @param userData 用户数据
- * @param messageContext 消息上下文
  * @param userData 用户数据
  * @param messageContext 消息上下文
  * @param currentTimeMs 当前时间戳（毫秒）
@@ -296,7 +293,7 @@ async function safeDeleteMessage(client: MessageEventContext['client'], chatId: 
     try {
         await client.deleteMessagesById(chatId, [messageId]);
     } catch (error) {
-        log.error(`${logPrefix} 删除消息失败: ${error}`);
+        plugin.logger?.error(`${logPrefix} 删除消息失败: ${error}`);
     }
 }
 
@@ -380,7 +377,7 @@ async function defend(ctx: MessageEventContext, userData: UserData): Promise<voi
                     }
                 }, config.warningMessageDeleteAfter * 1000);
             } catch (error) {
-                log.error(`[AntiFlood] 发送警告消息失败: ${error}`);
+                plugin.logger?.error(`[AntiFlood] 发送警告消息失败: ${error}`);
             }
         }
     } else if (userData.warningMessageId) {
@@ -455,7 +452,7 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
             // Short display duration
             setTimeout(() => safeDeleteMessage(ctx.client, ctx.chatId, mildWarningMsg.id, "[AntiFlood Mild]"), 5000); // Increased slightly to 5s
         } catch (error) {
-            log.error(`[AntiFlood] 发送轻度警告失败: ${error}`);
+            plugin.logger?.error(`[AntiFlood] 发送轻度警告失败: ${error}`);
         }
     }
 
@@ -497,7 +494,7 @@ const plugin: BotPlugin = {
 
     // 加载时执行
     async onLoad(client) {
-        log.info('防刷屏插件加载中...');
+        this.logger?.info('防刷屏插件加载中...');
 
         // 加载配置
         config = await client.features.getPluginConfig<AntiFloodConfig>('antiflood', defaultConfig);
@@ -507,7 +504,7 @@ const plugin: BotPlugin = {
             const decayFactor = 1 - config.decay.rate;
             if (decayFactor <= 0 || decayFactor >= 1) {
                 if (config.decay.rate !== 0) { // Avoid logging if decay is intentionally off
-                    log.warn(`[AntiFlood] Invalid decay rate: ${config.decay.rate}. Decay disabled.`);
+                    this.logger?.warn(`[AntiFlood] Invalid decay rate: ${config.decay.rate}. Decay disabled.`);
                 }
                 return; // Stop decay process if rate is invalid
             }
@@ -539,13 +536,13 @@ const plugin: BotPlugin = {
 
             // Remove inactive users (if DynamicMap supports it)
             if (usersToRemove.length > 0 && typeof userActivityMap.delete === 'function') {
-                log.debug(`[AntiFlood Decay] Removing ${usersToRemove.length} inactive users from map.`);
+                this.logger?.debug(`[Decay] Removing ${usersToRemove.length} inactive users from map.`);
                 usersToRemove.forEach(userId => userActivityMap.delete(userId));
             }
 
         }, config.decay.interval);
 
-        log.info(`防刷屏插件已加载，当前状态: ${config.enabled ? '已启用' : '已禁用'}`);
+        this.logger?.info(`防刷屏插件已加载，当前状态: ${config.enabled ? '已启用' : '已禁用'}`);
     },
 
     // 卸载时执行
@@ -555,7 +552,7 @@ const plugin: BotPlugin = {
             clearInterval(decayIntervalId);
             decayIntervalId = undefined;
         }
-        log.info('防刷屏插件已卸载');
+        this.logger?.info('防刷屏插件已卸载');
     },
 
     // 命令处理
@@ -624,7 +621,7 @@ const plugin: BotPlugin = {
 
                             await ctx.message.replyText(JSON.stringify(displayData, null, 2));
                         } catch (error) {
-                            log.error(`[AntiFlood] 检查用户数据时出错: ${error}`);
+                            plugin.logger?.error(`[AntiFlood] 检查用户数据时出错: ${error}`);
                             await ctx.message.replyText("无法显示用户详细数据。");
                         }
                         break;

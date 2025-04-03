@@ -1,5 +1,4 @@
 import type { BotPlugin, CommandContext, MessageEventContext } from "../features";
-import { log } from "../log";
 import { getFastAI } from "../ai/AiManager";
 import { md } from "@mtcute/markdown-parser";
 
@@ -130,7 +129,7 @@ function isNotChinese(text: string): boolean {
 
     // 排除太短或空消息 (基于原始文本)
     if (!originalText || originalText.length < MIN_TEXT_LENGTH) {
-        log.debug(`原始消息太短，不翻译: "${originalText}"`);
+        plugin.logger?.debug(`原始消息太短，不翻译: "${originalText}"`);
         return false;
     }
 
@@ -138,7 +137,7 @@ function isNotChinese(text: string): boolean {
     if (originalText.length <= SHORT_MSG_MAX_LENGTH) {
         const wordCount = originalText.trim().split(/\s+/).length;
         if (wordCount <= SHORT_MSG_MAX_WORDS) {
-            log.debug(`原始消息为简短语句 (${wordCount}个单词，${originalText.length}字符)，不翻译: "${originalText}"`);
+            plugin.logger?.debug(`原始消息为简短语句 (${wordCount}个单词，${originalText.length}字符)，不翻译: "${originalText}"`);
             return false;
         }
     }
@@ -146,7 +145,7 @@ function isNotChinese(text: string): boolean {
     // 检查是否匹配常见不翻译模式 (基于原始文本)
     for (const pattern of SKIP_TRANSLATION_PATTERNS) {
         if (pattern.test(originalText.trim())) {
-            log.debug(`原始消息匹配不翻译模式，跳过翻译: "${originalText.substring(0, 15)}..."`);
+            plugin.logger?.debug(`原始消息匹配不翻译模式，跳过翻译: "${originalText.substring(0, 15)}..."`);
             return false;
         }
     }
@@ -159,10 +158,10 @@ function isNotChinese(text: string): boolean {
     // 如果清理后文本为空或太短，则不翻译
     const MIN_CLEANED_LENGTH = 5; // 清理后文本的最小长度要求 (Increased from 3)
     if (cleanedLength < MIN_CLEANED_LENGTH) {
-        log.debug(`清理后文本太短 (${cleanedLength} < ${MIN_CLEANED_LENGTH})，不翻译. 原文: "${originalText.substring(0, 30)}..." 清理后: "${cleanedText}"`);
+        plugin.logger?.debug(`清理后文本太短 (${cleanedLength} < ${MIN_CLEANED_LENGTH})，不翻译. 原文: "${originalText.substring(0, 30)}..." 清理后: "${cleanedText}"`);
         return false;
     }
-    log.debug(`原文长度: ${originalText.length}, 清理后长度: ${cleanedLength}. 清理后文本片段: "${cleanedText.substring(0, 30)}..."`);
+    plugin.logger?.debug(`原文长度: ${originalText.length}, 清理后长度: ${cleanedLength}. 清理后文本片段: "${cleanedText.substring(0, 30)}..."`);
 
     // 计算中文比例 (基于清理后文本)
     const chineseMatches = cleanedText.match(LANGUAGE_RANGES.chinese) || [];
@@ -170,7 +169,7 @@ function isNotChinese(text: string): boolean {
 
     // 如果清理后文本中文比例高于阈值，不翻译
     if (chineseRatio >= CHINESE_THRESHOLD) {
-        log.debug(`清理后文本中文比例 ${(chineseRatio * 100).toFixed(1)}% >= ${CHINESE_THRESHOLD * 100}%, 不翻译`);
+        plugin.logger?.debug(`清理后文本中文比例 ${(chineseRatio * 100).toFixed(1)}% >= ${CHINESE_THRESHOLD * 100}%, 不翻译`);
         return false;
     }
 
@@ -189,19 +188,19 @@ function isNotChinese(text: string): boolean {
     // 1. Check if foreign language ratio is high enough
     const MIN_FOREIGN_RATIO_TO_TRANSLATE = 0.35; // Threshold for foreign language dominance
     if (foreignLangRatio >= MIN_FOREIGN_RATIO_TO_TRANSLATE) {
-        log.debug(`清理后文本外语比例 ${(foreignLangRatio * 100).toFixed(1)}% >= ${MIN_FOREIGN_RATIO_TO_TRANSLATE * 100}%, 需要翻译`);
+        plugin.logger?.debug(`清理后文本外语比例 ${(foreignLangRatio * 100).toFixed(1)}% >= ${MIN_FOREIGN_RATIO_TO_TRANSLATE * 100}%, 需要翻译`);
         return true;
     }
 
     // 2. Check if total language ratio is high enough (covers mixed languages)
     const MIN_TOTAL_LANG_RATIO = 0.5; // Threshold for overall language content
     if (totalLangRatio >= MIN_TOTAL_LANG_RATIO) {
-        log.debug(`清理后文本总语言字符比例 ${(totalLangRatio * 100).toFixed(1)}% >= ${MIN_TOTAL_LANG_RATIO * 100}%, 需要翻译 (外语比例: ${(foreignLangRatio * 100).toFixed(1)}%)`);
+        plugin.logger?.debug(`清理后文本总语言字符比例 ${(totalLangRatio * 100).toFixed(1)}% >= ${MIN_TOTAL_LANG_RATIO * 100}%, 需要翻译 (外语比例: ${(foreignLangRatio * 100).toFixed(1)}%)`);
         return true;
     }
 
     // If none of the conditions met, do not translate
-    log.debug(`清理后文本不满足翻译条件: 中文比例 ${(chineseRatio * 100).toFixed(1)}%, 外语比例 ${(foreignLangRatio * 100).toFixed(1)}%, 总语言比例 ${(totalLangRatio * 100).toFixed(1)}%`);
+    plugin.logger?.debug(`清理后文本不满足翻译条件: 中文比例 ${(chineseRatio * 100).toFixed(1)}%, 外语比例 ${(foreignLangRatio * 100).toFixed(1)}%, 总语言比例 ${(totalLangRatio * 100).toFixed(1)}%`);
     return false;
 }
 
@@ -322,7 +321,7 @@ async function translateWithGoogle(text: string, targetLang: string = DEFAULT_LA
             return ensurePrefix(translation);
         } catch (error) {
             retryCount++;
-            log.warn(`Google翻译尝试${retryCount}/${MAX_RETRY_COUNT}次失败: ${error}`);
+            plugin.logger?.warn(`Google翻译尝试${retryCount}/${MAX_RETRY_COUNT}次失败: ${error}`);
 
             if (retryCount < MAX_RETRY_COUNT) {
                 await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
@@ -346,7 +345,7 @@ async function translateWithAI(text: string, prompt: string = DEFAULT_PROMPT): P
         const result = await fastAI.get(`${prompt}\n\n${text}`);
         return ensurePrefix(result);
     } catch (error) {
-        log.error(`AI翻译失败: ${error}`);
+        plugin.logger?.error(`AI翻译失败: ${error}`);
         throw error;
     }
 }
@@ -392,12 +391,12 @@ async function streamTranslateWithAI(
                             chatId: ctx.chatId,
                             message: waitMsg.id,
                             text: messageText
-                        }).catch(e => log.error(`更新翻译消息失败: ${e}`));
+                        }).catch(e => plugin.logger?.error(`更新翻译消息失败: ${e}`));
 
                         lastContent = displayContent;
                         lastUpdateTime = now;
                     } catch (e) {
-                        log.error(`更新消息异常: ${e}`);
+                        plugin.logger?.error(`更新消息异常: ${e}`);
                     }
                 }
             },
@@ -406,14 +405,14 @@ async function streamTranslateWithAI(
 
         // 检查翻译结果是否与原文一致
         if (finalContent && isTranslationSimilarToOriginal(text, finalContent)) {
-            log.debug(`流式翻译结果与原文基本一致，更新为提示信息`);
+            plugin.logger?.debug(`流式翻译结果与原文基本一致，更新为提示信息`);
 
             // 更新最终消息为提示信息
             ctx.client.editMessage({
                 chatId: ctx.chatId,
                 message: waitMsg.id,
                 text: "翻译结果与原文基本一致，无需翻译"
-            }).catch(e => log.error(`更新最终翻译消息失败: ${e}`));
+            }).catch(e => plugin.logger?.error(`更新最终翻译消息失败: ${e}`));
 
             return;
         }
@@ -424,10 +423,10 @@ async function streamTranslateWithAI(
                 chatId: ctx.chatId,
                 message: waitMsg.id,
                 text: finalContent
-            }).catch(e => log.error(`更新最终翻译消息失败: ${e}`));
+            }).catch(e => plugin.logger?.error(`更新最终翻译消息失败: ${e}`));
         }
     } catch (error) {
-        log.error(`流式AI翻译失败: ${error}`);
+        plugin.logger?.error(`流式AI翻译失败: ${error}`);
         await ctx.message.replyText(`翻译失败: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
@@ -444,25 +443,25 @@ async function simpleTranslateText(ctx: MessageEventContext, text: string): Prom
 
         // 检查翻译结果是否与原文一致
         if (isTranslationSimilarToOriginal(text, translatedText)) {
-            log.debug(`翻译结果与原文基本一致，不发送翻译: "${translatedText.substring(0, 30)}..."`);
+            plugin.logger?.debug(`翻译结果与原文基本一致，不发送翻译: "${translatedText.substring(0, 30)}..."`);
             return;
         }
 
         await ctx.message.replyText(translatedText);
     } catch (error) {
-        log.warn(`AI翻译失败，切换到Google翻译: ${error}`);
+        plugin.logger?.warn(`AI翻译失败，切换到Google翻译: ${error}`);
         try {
             const translatedText = await translateWithGoogle(text);
 
             // 同样检查Google翻译结果是否与原文一致
             if (isTranslationSimilarToOriginal(text, translatedText)) {
-                log.debug(`Google翻译结果与原文基本一致，不发送翻译: "${translatedText.substring(0, 30)}..."`);
+                plugin.logger?.debug(`Google翻译结果与原文基本一致，不发送翻译: "${translatedText.substring(0, 30)}..."`);
                 return;
             }
 
             await ctx.message.replyText(translatedText);
         } catch (e) {
-            log.error(`所有翻译方式均失败: ${e}`);
+            plugin.logger?.error(`所有翻译方式均失败: ${e}`);
             // 普通消息触发时不显示错误
         }
     }
@@ -491,14 +490,14 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
 
             // 检查翻译结果是否与原文一致
             if (isTranslationSimilarToOriginal(text, translatedText)) {
-                log.debug(`翻译命令结果与原文基本一致，返回提示信息`);
+                plugin.logger?.debug(`翻译命令结果与原文基本一致，返回提示信息`);
 
                 if (waitMsg?.id) {
                     await ctx.message.client.editMessage({
                         chatId: ctx.chatId,
                         message: waitMsg.id,
                         text: "翻译结果与原文基本一致，无需翻译"
-                    }).catch(e => log.error(`更新翻译消息失败: ${e}`));
+                    }).catch(e => plugin.logger?.error(`更新翻译消息失败: ${e}`));
                 } else {
                     await ctx.message.replyText("翻译结果与原文基本一致，无需翻译");
                 }
@@ -512,7 +511,7 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
                     message: waitMsg.id,
                     text: translatedText
                 }).catch(async e => {
-                    log.error(`更新翻译消息失败: ${e}`);
+                    plugin.logger?.error(`更新翻译消息失败: ${e}`);
                     // 失败时发送新消息
                     await ctx.message.replyText(translatedText);
                 });
@@ -520,12 +519,12 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
                 await ctx.message.replyText(translatedText);
             }
         } catch (aiError) {
-            log.warn(`AI翻译失败，切换到Google翻译: ${aiError}`);
+            plugin.logger?.warn(`AI翻译失败，切换到Google翻译: ${aiError}`);
             const translatedText = await translateWithGoogle(text);
 
             // 检查Google翻译结果是否与原文一致
             if (isTranslationSimilarToOriginal(text, translatedText)) {
-                log.debug(`Google翻译命令结果与原文基本一致，返回提示信息`);
+                plugin.logger?.debug(`Google翻译命令结果与原文基本一致，返回提示信息`);
                 await ctx.message.replyText("翻译结果与原文基本一致，无需翻译");
                 return;
             }
@@ -534,7 +533,7 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
         }
     } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        log.error(`翻译出错: ${errorMsg}`);
+        plugin.logger?.error(`翻译出错: ${errorMsg}`);
         await ctx.message.replyText(`❌ 翻译失败: ${errorMsg}`);
     }
 }
@@ -555,10 +554,10 @@ async function getTextFromReply(ctx: CommandContext): Promise<string | null> {
         }
 
         const text = replyMsg[0].text;
-        log.debug(`从回复消息获取文本: ${text.substring(0, 30)}${text.length > 30 ? '...' : ''}`);
+        plugin.logger?.debug(`从回复消息获取文本: ${text.substring(0, 30)}${text.length > 30 ? '...' : ''}`);
         return text;
     } catch (err) {
-        log.error(`获取回复消息失败: ${err}`);
+        plugin.logger?.error(`获取回复消息失败: ${err}`);
         return null;
     }
 }
@@ -589,7 +588,7 @@ async function handleTranslateCommand(ctx: CommandContext): Promise<void> {
         await commandTranslateText(ctx, textToTranslate);
     } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        log.error(`翻译命令处理错误: ${errorMsg}`);
+        plugin.logger?.error(`翻译命令处理错误: ${errorMsg}`);
         await ctx.message.replyText(`❌ 翻译失败: ${errorMsg}`);
     }
 }
@@ -597,30 +596,10 @@ async function handleTranslateCommand(ctx: CommandContext): Promise<void> {
 // 定义插件
 const plugin: BotPlugin = {
     name: 'translator',
-    description: '提供多语言翻译功能',
-    version: '1.0.2',
+    description: '提供实时翻译功能，支持自动翻译非中文消息',
+    version: '1.2.0',
 
-    // 自动翻译非中文消息
-    events: [
-        {
-            type: 'message',
-            filter: (ctx) => {
-                if (ctx.type !== 'message') return false;
-                if (ctx.message.text.length > 500) return false;
-                const text = ctx.message.text;
-                return !!text && isNotChinese(text);
-            },
-            handler: async (ctx: MessageEventContext) => {
-                const text = ctx.message.text;
-                if (!text) return;
-
-                log.debug(`检测到非中文消息，自动翻译: ${text.substring(0, 20)}...`);
-                await simpleTranslateText(ctx, text);
-            }
-        }
-    ],
-
-    // 翻译命令
+    // 命令和事件会在后面定义
     commands: [
         {
             name: 'translate',
@@ -629,6 +608,26 @@ const plugin: BotPlugin = {
             cooldown: 3,
             async handler(ctx: CommandContext) {
                 await handleTranslateCommand(ctx);
+            }
+        }
+    ],
+
+    // 自动翻译非中文消息
+    events: [
+        {
+            type: 'message',
+            filter: (ctx) => {
+                if (ctx.type !== 'message') return false;
+                if (!ctx.message.text || ctx.message.text.length > 500) return false;
+                const text = ctx.message.text;
+                return isNotChinese(text);
+            },
+            async handler(ctx: MessageEventContext) {
+                const text = ctx.message.text;
+                if (!text) return;
+
+                plugin.logger?.debug(`检测到非中文消息，自动翻译: ${text.substring(0, 20)}...`);
+                await simpleTranslateText(ctx, text);
             }
         }
     ]

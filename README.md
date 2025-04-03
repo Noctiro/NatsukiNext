@@ -10,6 +10,7 @@ NatsukiMiyu Next 是一个基于 [mtcute](https://github.com/mtcute/mtcute) 构�
 - **精细的权限管理**: 内置权限系统，可以定义和管理用户及用户组的权限。
 - **配置管理**: 每个插件都可以拥有独立的配置文件，并支持默认配置。
 - **依赖管理**: 插件可以声明对其他插件的依赖，确保加载顺序。
+- **插件专用日志**: 为每个插件提供专用的日志记录器，自动标记插件来源，便于调试和问题排查。
 - **TypeScript 支持**: 使用 TypeScript 编写，提供类型安全和更好的开发体验。
 
 ## 插件开发指南
@@ -471,6 +472,7 @@ export default plugin;
    - `description`, `version`: (可选) 插件的描述信息。
    - `dependencies`: (可选) 声明此插件依赖的其他插件名称数组。框架会确保依赖项先加载。
    - `permissions`: (可选) 声明插件所需的权限列表。每个权限包含名称、描述、是否系统权限以及可选的父权限。
+   - `logger`: (自动注入) 插件专用的日志记录器，由框架自动创建并注入，用于记录插件相关日志。
    - `onLoad`: (可选) 异步函数，在插件加载并启用时调用。适合执行初始化任务，如加载配置、连接外部服务、注册动态路由等。接收 `TelegramClient` 实例作为参数。
    - `onUnload`: (可选) 异步函数，在插件禁用或卸载时调用。适合执行清理任务，如保存状态、断开连接等。
    - `commands`: (可选) 命令定义数组。每个命令对象包含：
@@ -487,24 +489,69 @@ export default plugin;
      - `handler`: (必需) 异步函数，处理事件逻辑。接收对应事件类型的上下文对象。
 5. **导出插件 (`export default plugin`)**: (必需) 必须使用 `export default` 将插件对象导出，以便框架能够加载它。
 
-### 使用上下文对象 (`ctx`)
+### 使用日志记录器
 
-- **`CommandContext`**:
-  - `ctx.message.replyText("...")`: 快捷回复消息。
-  - `ctx.args`: 获取命令参数数组。
-  - `ctx.content`: 获取所有参数拼接成的字符串。
-  - `ctx.hasPermission("permission.name")`: 检查用户是否有指定权限。
-  - `ctx.client`: 访问完整的 `TelegramClient` 实例，可以调用所有 MTProto API 方法。
-- **`MessageEventContext`**:
-  - `ctx.message`: 访问完整的消息对象。
-  - `ctx.message.text`: 获取消息文本。
-  - `ctx.message.replyText("...")`: 回复消息。
-  - `ctx.hasPermission(...)`: 检查权限。
-- **`CallbackEventContext`**:
-  - `ctx.query.answer({ text: "...", alert: true/false })`: 回答回调查询 (按钮旁的提示或弹窗)。
-  - `ctx.data`: 获取回调数据字符串。
-  - `ctx.client.editMessageText(...)`: 编辑原始包含按钮的消息。
-  - `ctx.client.sendText(...)`: 发送新消息。
+框架为每个插件提供了专用的日志记录器，由系统自动注入到插件对象的 `logger` 属性中。这使得不同插件的日志可以清晰区分，便于调试和问题排查。
+
+- **在插件生命周期方法中使用**:
+
+  ```typescript
+  // 在onLoad、onUnload等方法中使用this.logger
+  async onLoad(client: TelegramClient): Promise<void> {
+    this.logger?.info(`插件已加载 v${this.version}`);
+    this.logger?.debug("配置加载完成", { remote: false });
+  }
+  ```
+
+- **在事件处理器中使用**:
+
+  ```typescript
+  // 在事件处理器中，需要使用plugin引用
+  async handler(ctx: MessageEventContext): Promise<void> {
+    plugin.logger?.debug(`收到消息: ${ctx.message.text}`);
+    // ...处理逻辑
+  }
+  ```
+
+- **在外部函数中使用**:
+
+  ```typescript
+  // 在插件外部定义的函数中，需要通过plugin引用调用
+  function processData(data: any) {
+    plugin.logger?.info(`处理数据: ${data.length} 条记录`);
+    // ...处理逻辑
+  }
+  ```
+
+- **日志级别**:
+  - `logger.debug()`: 调试信息，仅在开发环境显示
+  - `logger.info()`: 普通信息，默认级别
+  - `logger.warn()`: 警告信息
+  - `logger.error()`: 错误信息，通常会自动发送到管理员
+  - `logger.fatal()`: 致命错误，会导致程序退出
+
+- **特殊选项**:
+
+  ```typescript
+  // 强制发送到Telegram管理员
+  this.logger?.info("重要通知消息", { remote: true });
+  
+  // 添加标签，便于过滤
+  this.logger?.debug("数据结构", { tags: ["data", "structure"] });
+  
+  // 添加元数据，便于排查问题
+  this.logger?.error("API调用失败", { 
+    metadata: { 
+      statusCode: 404, 
+      endpoint: "/users" 
+    } 
+  });
+  ```
+
+- **最佳实践**:
+  - 不要在插件中导入全局`log`对象，使用插件专用的`logger`
+  - 对于关键操作和错误处理，使用`{ remote: true }`选项确保管理员能收到通知
+  - 使用适当的日志级别，避免过多调试信息干扰正常日志，没必要的日志不要输出
 
 ### 配置管理
 

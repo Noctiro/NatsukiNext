@@ -1,5 +1,4 @@
 import type { BotPlugin, CommandContext } from "../features";
-import { log } from "../log";
 import { enableChats } from "../app";
 import WebSocket from 'ws';
 
@@ -232,7 +231,7 @@ class EarthquakeService {
                 throw new Error(`HTTP请求失败: ${response.status}`);
             }
 
-            log.debug(`HTTP数据获取成功，耗时: ${requestTime}ms`);
+            plugin.logger?.debug(`HTTP数据获取成功，耗时: ${requestTime}ms`);
 
             // 获取新数据并处理
             const responseData = await response.json();
@@ -254,7 +253,7 @@ class EarthquakeService {
         } catch (error) {
             // 仅在非中止错误时记录
             if (!(error instanceof DOMException && error.name === 'AbortError')) {
-                log.error(`HTTP请求失败: ${error}`);
+                plugin.logger?.error(`HTTP请求失败: ${error}`);
             }
         } finally {
             this.httpController = null;
@@ -273,7 +272,7 @@ class EarthquakeService {
 
         // 超出最大重连次数，切换回HTTP模式
         if (this.reconnectAttempts > CONFIG.maxReconnectAttempts && !this.forceMode) {
-            log.warn(`WebSocket重连次数超过上限(${CONFIG.maxReconnectAttempts}次)，切换回HTTP模式`);
+            plugin.logger?.warn(`WebSocket重连次数超过上限(${CONFIG.maxReconnectAttempts}次)，切换回HTTP模式`);
             this.startHttpPolling();
             this.reconnectAttempts = 0;
             return;
@@ -283,7 +282,7 @@ class EarthquakeService {
             // 清理之前的WebSocket连接
             this.closeAllWebSockets();
             
-            log.info(`尝试建立WebSocket连接(第${this.reconnectAttempts + 1}次)`);
+            plugin.logger?.info(`尝试建立WebSocket连接(第${this.reconnectAttempts + 1}次)`);
             this.socket = new WebSocket(CONFIG.wsApi);
 
             // 更新重连计数
@@ -291,7 +290,7 @@ class EarthquakeService {
 
             // 定义事件处理器并保存引用，以便后续清理
             this.listeners.open = () => {
-                log.info(`WebSocket连接已建立`);
+                plugin.logger?.info(`WebSocket连接已建立`);
                 this.mode = 'WebSocket';
                 this.reconnectAttempts = 0;
                 this.lastDataTimestamp = Date.now();
@@ -305,7 +304,7 @@ class EarthquakeService {
                     // 安全地解析消息数据
                     const rawData = event.data;
                     if (!rawData) {
-                        log.warn('收到空WebSocket消息');
+                        plugin.logger?.warn('收到空WebSocket消息');
                         return;
                     }
                     
@@ -317,14 +316,14 @@ class EarthquakeService {
                         this.webSocketPing = now - message.timestamp;
 
                         if (this.webSocketPing >= 500) {
-                            log.warn(`WebSocket延迟过高: ${this.webSocketPing}ms`);
+                            plugin.logger?.warn(`WebSocket延迟过高: ${this.webSocketPing}ms`);
                         }
                         return;
                     }
 
                     // 验证数据结构
                     if (!message || typeof message !== 'object') {
-                        log.warn('收到的WebSocket消息格式无效');
+                        plugin.logger?.warn('收到的WebSocket消息格式无效');
                         return;
                     }
 
@@ -340,14 +339,14 @@ class EarthquakeService {
                     this.processCwaEew();
                     this.processCencEqlist();
                 } catch (error) {
-                    log.error(`WebSocket消息处理错误: ${error}`);
+                    plugin.logger?.error(`WebSocket消息处理错误: ${error}`);
                 }
             };
 
             this.listeners.close = (event: any) => {
                 const reason = event?.reason ? `: ${event.reason}` : '';
                 const code = event?.code || 'unknown';
-                log.info(`WebSocket连接已关闭，代码: ${code}${reason}`);
+                plugin.logger?.info(`WebSocket连接已关闭，代码: ${code}${reason}`);
 
                 // 启动HTTP轮询作为备份
                 this.startHttpPolling();
@@ -359,7 +358,7 @@ class EarthquakeService {
             };
 
             this.listeners.error = (error: any) => {
-                log.error(`WebSocket连接错误: ${error}`);
+                plugin.logger?.error(`WebSocket连接错误: ${error}`);
 
                 // 启动HTTP轮询作为备份
                 this.startHttpPolling();
@@ -382,7 +381,7 @@ class EarthquakeService {
             // 设置连接超时
             setTimeout(() => {
                 if (this.socket && this.socket.readyState === WebSocketStates.CONNECTING) {
-                    log.warn('WebSocket连接超时');
+                    plugin.logger?.warn('WebSocket连接超时');
                     this.closeAllWebSockets();
                     
                     if (this.forceMode !== 'HTTP') {
@@ -392,7 +391,7 @@ class EarthquakeService {
             }, CONFIG.httpTimeout); // 使用相同的超时时间
             
         } catch (error) {
-            log.error(`创建WebSocket连接失败: ${error}`);
+            plugin.logger?.error(`创建WebSocket连接失败: ${error}`);
 
             // 启动HTTP轮询作为备份
             this.startHttpPolling();
@@ -443,13 +442,13 @@ class EarthquakeService {
      */
     private async sendEarthquakeInfo(text: string, lat: number, lon: number) {
         if (!enableChats || enableChats.length === 0) {
-            log.warn('没有启用接收地震信息的聊天');
+            plugin.logger?.warn('没有启用接收地震信息的聊天');
             return;
         }
         
         // 确保坐标有效
         if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-            log.error(`无效的地理坐标: 纬度=${lat}, 经度=${lon}`);
+            plugin.logger?.error(`无效的地理坐标: 纬度=${lat}, 经度=${lon}`);
             return;
         }
 
@@ -478,7 +477,7 @@ class EarthquakeService {
                             }
                             lastSendMsgs.splice(i, 1);
                         } catch (error) {
-                            log.error(`删除消息失败: ${error}`);
+                            plugin.logger?.error(`删除消息失败: ${error}`);
                             lastSendMsgs.splice(i, 1);
                         }
                     }
@@ -493,7 +492,7 @@ class EarthquakeService {
                     lastSendMsgs.shift(); // 删除最旧的消息
                 }
             } catch (error) {
-                log.error(`向聊天 ${chatId} 发送地震信息失败: ${error}`);
+                plugin.logger?.error(`向聊天 ${chatId} 发送地震信息失败: ${error}`);
             }
         }
     }
@@ -529,7 +528,7 @@ class EarthquakeService {
                 ids: [messageId]
             });
         } catch (error) {
-            log.error(`删除消息失败: ${error}`);
+            plugin.logger?.error(`删除消息失败: ${error}`);
             return false;
         }
     }
@@ -849,16 +848,16 @@ ${originTime} 发生
 
         // 根据模式启动服务
         if (this.forceMode === 'HTTP' || !this.forceMode) {
-            log.info("启动HTTP轮询服务");
+            plugin.logger?.info("启动HTTP轮询服务");
             this.startHttpPolling();
         }
 
         if (this.forceMode === 'WebSocket' || !this.forceMode) {
-            log.info("尝试建立WebSocket连接");
+            plugin.logger?.info("尝试建立WebSocket连接");
             this.connectWebSocket();
         }
 
-        log.info("Wolfx防灾预警服务已初始化");
+        plugin.logger?.info("Wolfx防灾预警服务已初始化");
     }
 
     /**
@@ -874,7 +873,7 @@ ${originTime} 发生
         // 清理消息映射
         this.lastSendMsgsMap.clear();
 
-        log.info("Wolfx防灾预警服务已停止");
+        plugin.logger?.info("Wolfx防灾预警服务已停止");
     }
 
     /**
@@ -942,9 +941,9 @@ ${originTime} 发生
                 this.socket.readyState === WebSocketStates.CONNECTING) {
                 try {
                     this.socket.close();
-                    log.info(`关闭WebSocket连接`);
+                    plugin.logger?.info(`关闭WebSocket连接`);
                 } catch (error) {
-                    log.error(`关闭WebSocket连接出错: ${error}`);
+                    plugin.logger?.error(`关闭WebSocket连接出错: ${error}`);
                 }
             }
             

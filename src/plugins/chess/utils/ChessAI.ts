@@ -4,7 +4,6 @@ import { PieceColor, PieceType } from '../models/ChessTypes';
 import type { Position } from '../models/ChessTypes';
 import { MoveValidator } from './MoveValidator';
 import { Game } from '../models/Game';
-import { log } from '../../../log';
 import { ZobristHash } from './ZobristHash';
 
 // 置换表节点类型
@@ -72,22 +71,25 @@ export class ChessAI {
     private timeControl: TimeControl;
     private maxThinkingTime: number;
     private historyTable: number[][][][] = [];
-    private killerMoves: Array<Array<{from: Position, to: Position} | null>> = [];
+    private killerMoves: Array<Array<{ from: Position, to: Position } | null>> = [];
+    private logger: any;
 
     /**
      * 创建象棋AI实例
      * @param difficultyLevel 难度等级(1-6)，默认为3（初级）
      * @param useCloudLibrary 是否使用云库API (仅对最高难度有效)
      * @param maxThinkingTime 最大思考时间（毫秒），默认1分钟
+     * @param logger 日志记录器
      */
-    constructor(difficultyLevel: number = 3, useCloudLibrary: boolean = true, maxThinkingTime: number = 60000) {
+    constructor(difficultyLevel: number = 3, useCloudLibrary: boolean = true, maxThinkingTime: number = 60000, logger?: any) {
         this.moveValidator = new MoveValidator();
         this.difficultyLevel = Math.min(Math.max(difficultyLevel, 3), 6);
         this.useCloudLibrary = useCloudLibrary && this.difficultyLevel >= 6; // 仅最高难度时使用云库
         this.zobristHash = new ZobristHash();
         this.transpositionTable = new Array(this.TT_SIZE);
         this.maxThinkingTime = maxThinkingTime;
-        
+        this.logger = logger;
+
         // 初始化时间控制
         this.timeControl = {
             startTime: 0,
@@ -113,9 +115,9 @@ export class ChessAI {
         }
 
         // 初始化历史表 (10行×9列×10行×9列)
-        this.historyTable = Array(10).fill(0).map(() => 
-            Array(9).fill(0).map(() => 
-                Array(10).fill(0).map(() => 
+        this.historyTable = Array(10).fill(0).map(() =>
+            Array(9).fill(0).map(() =>
+                Array(10).fill(0).map(() =>
                     Array(9).fill(0))));
 
         // 假设最大深度为50
@@ -130,7 +132,7 @@ export class ChessAI {
     async getMove(game: Game): Promise<{ from: Position, to: Position } | null> {
         // 增加搜索年龄
         this.searchAge++;
-        
+
         const board = game.getBoardObject();
         const aiColor = PieceColor.BLACK; // AI总是使用黑方
 
@@ -142,7 +144,7 @@ export class ChessAI {
                     return cloudMove;
                 }
             } catch (error) {
-                log.error("云库API请求失败，回退到本地算法", error);
+                this.logger?.error("云库API请求失败，回退到本地算法", error);
                 // 云库请求失败，回退到本地算法
             }
         }
@@ -191,33 +193,31 @@ export class ChessAI {
             if (data && (data.startsWith('move:') || data.startsWith('egtb:'))) {
                 const parts = data.split(':');
                 if (parts.length < 2 || !parts[1]) {
-                    log.error('云库返回的着法格式无效:', data);
+                    this.logger?.error('云库返回的着法格式无效:', data);
                     return null;
                 }
 
                 const moveText = parts[1];
 
                 // 将云库的走法文本转换为位置
-                const move = this.convertCloudMoveToPositions(moveText);
-                if (move) {
-                    return move;
-                } else {
-                    // Handle cases where move parsing failed but format was initially correct
-                    log.error('无法解析云库返回的着法:', moveText);
+                const positions = this.convertCloudMoveToPositions(moveText);
+                if (!positions) {
+                    this.logger?.error('无法解析云库返回的着法:', moveText);
                     return null;
                 }
-            } else if (data === 'nobestmove' || data === 'unknown') {
-                // Explicitly handle 'nobestmove' and 'unknown'
-                log.info('云库没有最佳着法推荐或局面未知:', data);
+                return positions;
+            } else if (data && data.startsWith('status:')) {
+                // 没有最佳着法或局面未知
+                this.logger?.info('云库没有最佳着法推荐或局面未知:', data);
                 return null;
             } else {
-                // Log any other unexpected format
-                log.warn('云库返回未知格式:', data);
+                // 未知数据格式
+                this.logger?.warn('云库返回未知格式:', data);
                 return null;
             }
         } catch (error) {
-            log.error('访问云库API时出错:', error);
-            return null;
+            this.logger?.error('访问云库API时出错:', error);
+            throw error; // 重新抛出，让调用者处理
         }
     }
 
@@ -307,54 +307,47 @@ export class ChessAI {
     }
 
     /**
-     * 将云库API返回的着法转换为位置
-     * 云库格式: "c3c4" 表示从c3移动到c4
+     * 将云库返回的着法转换为位置坐标
+     * @param moveText 着法文本，格式如 "h0g2"
+     * @returns 起始和目标位置
      */
     private convertCloudMoveToPositions(moveText: string): { from: Position, to: Position } | null {
-        if (!moveText || moveText.length !== 4) {
-            return null;
-        }
-
-        // 统一转换为小写处理字母坐标
-        moveText = moveText.toLowerCase();
-
         try {
-            // 棋盘坐标系转换
-            // 云库中列(a-i)对应0-8，行(0-9)对应9-0（翻转的）
-            const fromCol = moveText.charCodeAt(0) - 'a'.charCodeAt(0);
+            if (moveText.length < 4) return null;
 
-            // 确保字符存在并是有效数字
+            // 云库使用的是a0-i9格式，需要转换为我们的坐标系
+            // 横坐标：a-i 对应 0-8
+            // 纵坐标：0-9 (0在上方，9在下方)
+            const fromColChar = moveText.charAt(0);
             const fromRowChar = moveText.charAt(1);
-            if (!/[0-9]/.test(fromRowChar)) {
-                log.error('无效的行坐标:', fromRowChar);
-                return null;
-            }
-            const fromRow = 9 - parseInt(fromRowChar, 10);
-
-            const toCol = moveText.charCodeAt(2) - 'a'.charCodeAt(0);
-
-            // 确保字符存在并是有效数字
+            const toColChar = moveText.charAt(2);
             const toRowChar = moveText.charAt(3);
-            if (!/[0-9]/.test(toRowChar)) {
-                log.error('无效的行坐标:', toRowChar);
-                return null;
-            }
-            const toRow = 9 - parseInt(toRowChar, 10);
 
-            // 检查转换后的坐标是否有效
-            if (
-                fromCol < 0 || fromCol >= Board.COLS || fromRow < 0 || fromRow >= Board.ROWS ||
-                toCol < 0 || toCol >= Board.COLS || toRow < 0 || toRow >= Board.ROWS
-            ) {
+            // 列：a-i -> 0-8
+            const fromCol = fromColChar.charCodeAt(0) - 'a'.charCodeAt(0);
+            const toCol = toColChar.charCodeAt(0) - 'a'.charCodeAt(0);
+
+            // 行：0-9，但FEN表示中是下面为0
+            const fromRow = parseInt(fromRowChar);
+            if (isNaN(fromRow) || fromRow < 0 || fromRow > 9) {
+                this.logger?.error('无效的行坐标:', fromRowChar);
                 return null;
             }
 
-            return {
-                from: [fromRow, fromCol],
-                to: [toRow, toCol]
-            };
+            const toRow = parseInt(toRowChar);
+            if (isNaN(toRow) || toRow < 0 || toRow > 9) {
+                this.logger?.error('无效的行坐标:', toRowChar);
+                return null;
+            }
+
+            // 注意：云库使用FEN坐标系，上下颠倒，需要转换
+            // 使用数组形式创建Position
+            const from: Position = [9 - fromRow, fromCol]; // [row, col]
+            const to: Position = [9 - toRow, toCol]; // [row, col]
+
+            return { from, to };
         } catch (e) {
-            log.error('解析着法时出错:', moveText, e);
+            this.logger?.error('解析着法时出错:', moveText, e);
             return null;
         }
     }
@@ -365,53 +358,53 @@ export class ChessAI {
      */
     private iterativeDeepeningSearch(board: Board, aiColor: PieceColor): { from: Position, to: Position } | null {
         const possibleMoves = this.getAllPossibleMoves(board, aiColor);
-        
+
         if (possibleMoves.length === 0) {
             return null;
         }
-        
+
         // 先检查高级策略
         const strategicMove = this.applyAdvancedStrategies(board, aiColor, possibleMoves);
         if (strategicMove) {
             return strategicMove;
         }
-        
+
         // 保存当前最佳走法
         let bestMove: { from: Position, to: Position } | null = null;
-        
+
         // 初始深度（确保至少有一个结果）
         const initialDepth = Math.min(3, this.maxDepth);
-        
+
         // 获取一个随机走法作为备选（避免时间用尽时没有走法可用）
         const randomIndex = Math.floor(Math.random() * possibleMoves.length);
         bestMove = possibleMoves[randomIndex] || null; // 使用 || null 确保类型是 Position | null
-        
+
         // 使用迭代深化搜索
         // 初始深度为较小值，然后逐渐增加，最大到设定的maxDepth
         for (let depth = initialDepth; depth <= this.maxDepth; depth++) {
             // 如果已经超时，中断搜索
             if (this.timeControl.timeoutReached) {
-                log.info(`迭代深化搜索在深度${depth-1}时超时，返回当前最佳走法`);
+                this.logger?.info(`迭代深化搜索在深度${depth - 1}时超时，返回当前最佳走法`);
                 break;
             }
-            
+
             // 对根节点进行Alpha-Beta搜索
             const result = this.rootAlphaBeta(board, depth, aiColor);
-            
+
             // 如果不是因为超时而返回的有效结果，更新最佳走法
             if (result && !this.timeControl.timeoutReached) {
                 bestMove = result;
-                log.info(`深度${depth}搜索完成，找到最佳走法: ${JSON.stringify(bestMove.from)} -> ${JSON.stringify(bestMove.to)}`);
+                this.logger?.info(`深度${depth}搜索完成，找到最佳走法: ${JSON.stringify(bestMove.from)} -> ${JSON.stringify(bestMove.to)}`);
             } else if (this.timeControl.timeoutReached) {
                 // 超时了，使用上一层深度的结果
-                log.info(`深度${depth}搜索超时，使用深度${depth-1}的结果`);
+                this.logger?.info(`深度${depth}搜索超时，使用深度${depth - 1}的结果`);
                 break;
             }
         }
-        
+
         return bestMove;
     }
-    
+
     /**
      * 根节点Alpha-Beta搜索
      * 针对根节点的特殊处理，返回最佳走法
@@ -420,52 +413,52 @@ export class ChessAI {
         let alpha = -Infinity;
         let beta = Infinity;
         let bestMove: { from: Position, to: Position } | null = null;
-        
+
         // 获取所有可能的走法
         const moves = this.getAllPossibleMoves(board, aiColor);
-        
+
         // 对走法进行启发式排序
         this.sortMovesByHeuristic(moves, board, depth);
-        
+
         // 限制搜索的走法数量，提高效率（只对根节点有效）
-        const movesToSearch = this.difficultyLevel >= 5 
-            ? moves 
+        const movesToSearch = this.difficultyLevel >= 5
+            ? moves
             : moves.slice(0, Math.min(10, moves.length));
-        
+
         // 对每个走法进行搜索
         for (const move of movesToSearch) {
             // 检查是否超时
             if (this.timeControl.timeoutReached) {
                 return bestMove;
             }
-            
+
             // 模拟走棋
             const boardCopy = board.clone();
             boardCopy.movePiece(move.from, move.to);
-            
+
             // 执行Alpha-Beta搜索（Min节点）
             const score = this.alphaBeta(boardCopy, depth - 1, alpha, beta, false, aiColor);
-            
+
             // 更新最佳走法
             if (score > alpha) {
                 alpha = score;
                 bestMove = move;
             }
         }
-        
+
         return bestMove;
     }
-    
+
     /**
      * Alpha-Beta搜索算法
      * 带超时检查和置换表
      */
-    private alphaBeta(board: Board, depth: number, alpha: number, beta: number, 
-                     isMaximizing: boolean, aiColor: PieceColor, 
-                     allowNullMove: boolean = true): number {
+    private alphaBeta(board: Board, depth: number, alpha: number, beta: number,
+        isMaximizing: boolean, aiColor: PieceColor,
+        allowNullMove: boolean = true): number {
         // 增加搜索节点计数
         this.timeControl.nodesSearched++;
-        
+
         // 定期检查是否超时
         if (this.timeControl.nodesSearched % this.timeControl.checkInterval === 0) {
             if (Date.now() - this.timeControl.startTime > this.timeControl.maxTime) {
@@ -473,15 +466,15 @@ export class ChessAI {
                 return isMaximizing ? -Infinity : Infinity; // 返回一个对当前方不利的极端值
             }
         }
-        
+
         // 如果已经超时，立即返回
         if (this.timeControl.timeoutReached) {
             return isMaximizing ? -Infinity : Infinity;
         }
-        
+
         // 当前局面的哈希值
         const currentHash = this.zobristHash.calculateHash(board);
-        
+
         // 查询置换表
         const ttEntry = this.probeTranspositionTable(currentHash);
         if (ttEntry && ttEntry.depth >= depth) {
@@ -492,28 +485,28 @@ export class ChessAI {
             } else if (ttEntry.flag === NodeType.UPPER && ttEntry.score < beta) {
                 beta = ttEntry.score;
             }
-            
+
             if (alpha >= beta) {
                 return ttEntry.score;
             }
         }
-        
+
         // 空步裁剪（只在非根节点、非极限节点、Beta节点使用）
         if (depth >= 3 && allowNullMove && !isMaximizing && !this.isInCheck(board, aiColor)) {
             // R为缩减因子，通常为2或3
             const R = 2;
-            
+
             // 跳过一步，让对方继续走
             const nullScore = -this.alphaBeta(
-                board, 
+                board,
                 depth - 1 - R,  // 减少深度+缩减因子
-                -beta, 
+                -beta,
                 -beta + 1,      // 零窗口搜索
                 true,          // 轮到对方走
-                aiColor, 
+                aiColor,
                 false          // 禁止连续使用空步裁剪
             );
-            
+
             // 如果跳过一步后仍能保持优势，则不需深入搜索
             if (nullScore >= beta) {
                 // 防止错过将军
@@ -524,43 +517,43 @@ export class ChessAI {
                 }
             }
         }
-        
+
         // 达到叶子节点或搜索深度上限
         if (depth === 0) {
             // 不直接返回评估值，而是进行静态评估搜索
             return this.quiescenceSearch(board, alpha, beta, isMaximizing, aiColor);
         }
-        
+
         const opponentColor = aiColor === PieceColor.BLACK ? PieceColor.RED : PieceColor.BLACK;
         const currentColor = isMaximizing ? aiColor : opponentColor;
-        
+
         // 获取所有可能的走法
         const moves = this.getAllPossibleMoves(board, currentColor);
-        
+
         // 无子可走，对方胜利
         if (moves.length === 0) {
             return isMaximizing ? -10000 : 10000;
         }
-        
+
         // 排序走法以提高剪枝效率
         this.sortMovesByHeuristic(moves, board, depth);
-        
+
         let bestScore = isMaximizing ? -Infinity : Infinity;
         let originalAlpha = alpha;
         let currentBestMove: { from: Position, to: Position } | null = null;
-        
+
         if (isMaximizing) {
             for (const move of moves) {
                 const boardCopy = board.clone();
                 boardCopy.movePiece(move.from, move.to);
-                
+
                 const score = this.alphaBeta(boardCopy, depth - 1, alpha, beta, false, aiColor);
-                
+
                 if (score > bestScore) {
                     bestScore = score;
                     currentBestMove = move;
                 }
-                
+
                 alpha = Math.max(alpha, score);
                 if (beta <= alpha) {
                     // 如果是非吃子走法导致的剪枝，记录为杀手着法
@@ -574,14 +567,14 @@ export class ChessAI {
             for (const move of moves) {
                 const boardCopy = board.clone();
                 boardCopy.movePiece(move.from, move.to);
-                
+
                 const score = this.alphaBeta(boardCopy, depth - 1, alpha, beta, true, aiColor);
-                
+
                 if (score < bestScore) {
                     bestScore = score;
                     currentBestMove = move;
                 }
-                
+
                 beta = Math.min(beta, score);
                 if (beta <= alpha) {
                     // 如果是非吃子走法导致的剪枝，记录为杀手着法
@@ -592,7 +585,7 @@ export class ChessAI {
                 }
             }
         }
-        
+
         // 保存到置换表
         let flag = NodeType.EXACT;
         if (bestScore <= originalAlpha) {
@@ -600,7 +593,7 @@ export class ChessAI {
         } else if (bestScore >= beta) {
             flag = NodeType.LOWER;
         }
-        
+
         this.storeTranspositionEntry(
             currentHash,
             depth,
@@ -608,7 +601,7 @@ export class ChessAI {
             flag,
             currentBestMove
         );
-        
+
         return bestScore;
     }
 
@@ -619,10 +612,10 @@ export class ChessAI {
         // 找到将/帅
         const generals = board.getPiecesByTypeAndColor(PieceType.GENERAL, color);
         if (generals.length === 0 || !generals[0]) return false;
-        
+
         const generalPos = generals[0].position;
         const opponentColor = color === PieceColor.RED ? PieceColor.BLACK : PieceColor.RED;
-        
+
         // 检查是否有对方棋子可以吃到将/帅
         const opponentPieces = board.getPiecesByColor(opponentColor);
         for (const piece of opponentPieces) {
@@ -630,7 +623,7 @@ export class ChessAI {
                 return true;
             }
         }
-        
+
         return false;
     }
 
@@ -638,23 +631,23 @@ export class ChessAI {
      * 对走法按启发式规则进行排序以提高剪枝效率
      * 吃子走法排在前面，按被吃棋子价值从高到低排序
      */
-    private sortMovesByHeuristic(moves: { from: Position, to: Position }[], 
-                                board: Board, depth: number): void {
+    private sortMovesByHeuristic(moves: { from: Position, to: Position }[],
+        board: Board, depth: number): void {
         // 类型安全地定义moveScores数组
-        const moveScores: Array<{move: { from: Position, to: Position }, score: number}> = [];
-        
+        const moveScores: Array<{ move: { from: Position, to: Position }, score: number }> = [];
+
         // 处理每个走法
         for (const move of moves) {
             const [fromRow, fromCol] = move.from;
             const [toRow, toCol] = move.to;
             let score = 0;
-            
+
             // 吃子走法优先
             const targetPiece = board.getPiece(move.to);
             if (targetPiece) {
                 score = 10000 + PIECE_VALUES[targetPiece.type];
             }
-            
+
             // 杀手着法表
             if (depth >= 0 && depth < this.killerMoves.length && this.killerMoves[depth]) {
                 // 第一个杀手着法
@@ -666,7 +659,7 @@ export class ChessAI {
                     score = 8000;
                 }
             }
-            
+
             // 历史启发式分数 - 安全地访问嵌套数组
             const historyTable = this.historyTable;
             if (fromRow >= 0 && fromRow < historyTable.length) {
@@ -681,13 +674,13 @@ export class ChessAI {
                     }
                 }
             }
-            
+
             moveScores.push({ move, score });
         }
-        
+
         // 按分数排序
         moveScores.sort((a, b) => b.score - a.score);
-        
+
         // 更新moves数组
         for (let i = 0; i < Math.min(moves.length, moveScores.length); i++) {
             moves[i] = moveScores[i]!.move;
@@ -749,24 +742,24 @@ export class ChessAI {
             let total = 0;
             for (const piece of pieces) {
                 total += PIECE_VALUES[piece.type];
-                
+
                 // 兵过河奖励
                 if (piece.type === PieceType.SOLDIER) {
-                    const isCrossed = (color === PieceColor.RED && piece.position[0] < 5) || 
-                                    (color === PieceColor.BLACK && piece.position[0] > 4);
+                    const isCrossed = (color === PieceColor.RED && piece.position[0] < 5) ||
+                        (color === PieceColor.BLACK && piece.position[0] > 4);
                     if (isCrossed) {
                         total += SOLDIER_CROSS_RIVER_BONUS;
                         // 距离对方将帅奖励
-                        const generalPos = board.getPiecesByTypeAndColor(PieceType.GENERAL, 
+                        const generalPos = board.getPiecesByTypeAndColor(PieceType.GENERAL,
                             color === aiColor ? opponentColor : aiColor)[0]?.position;
                         if (generalPos) {
-                            const distance = Math.abs(generalPos[0] - piece.position[0]) + 
-                                          Math.abs(generalPos[1] - piece.position[1]);
+                            const distance = Math.abs(generalPos[0] - piece.position[0]) +
+                                Math.abs(generalPos[1] - piece.position[1]);
                             total += Math.max(0, (10 - distance) * 15);
                         }
                     }
                 }
-                
+
                 total += this.getPositionValue(piece, color, board) * 1.5;
                 total += this.countPossibleMoves(board, piece.position) * 8;
                 total += this.evaluateCoordination(board, piece.position, color);
@@ -1449,16 +1442,16 @@ export class ChessAI {
      */
 
     // 存储置换表条目
-    private storeTranspositionEntry(hash: bigint, depth: number, score: number, 
-                                   flag: NodeType, bestMove: { from: Position, to: Position } | null): void {
+    private storeTranspositionEntry(hash: bigint, depth: number, score: number,
+        flag: NodeType, bestMove: { from: Position, to: Position } | null): void {
         const index = Number(hash % BigInt(this.TT_SIZE));
         const entry = this.transpositionTable[index];
-        
+
         // 安全检查，确保bestMove不为undefined
         const safeBestMove = bestMove === undefined ? null : bestMove;
-        
+
         // 替换策略：总是替换旧条目，深度更大的优先
-        if (!entry || entry.age < this.searchAge || 
+        if (!entry || entry.age < this.searchAge ||
             (entry.age === this.searchAge && entry.depth <= depth)) {
             this.transpositionTable[index] = {
                 hash,
@@ -1475,19 +1468,19 @@ export class ChessAI {
     private probeTranspositionTable(hash: bigint): TranspositionEntry | null {
         const index = Number(hash % BigInt(this.TT_SIZE));
         const entry = this.transpositionTable[index];
-        
+
         // 验证哈希值是否匹配（避免冲突）
         if (entry && entry.hash === hash) {
             return entry;
         }
-        
+
         return null;
     }
 
     // 静态评估搜索
-    private quiescenceSearch(board: Board, alpha: number, beta: number, 
-                             isMaximizing: boolean, aiColor: PieceColor, 
-                             depth: number = 0): number {
+    private quiescenceSearch(board: Board, alpha: number, beta: number,
+        isMaximizing: boolean, aiColor: PieceColor,
+        depth: number = 0): number {
         // 每隔一定节点检查时间
         this.timeControl.nodesSearched++;
         if (this.timeControl.nodesSearched % this.timeControl.checkInterval === 0) {
@@ -1496,15 +1489,15 @@ export class ChessAI {
                 return isMaximizing ? -Infinity : Infinity;
             }
         }
-        
+
         // 检查递归深度，避免无限递归
         if (depth > 10) {
             return this.evaluateBoard(board, aiColor);
         }
-        
+
         // 先进行局面静态评估
         const standPat = this.evaluateBoard(board, aiColor);
-        
+
         // 根据节点类型处理alpha/beta值
         if (isMaximizing) {
             if (standPat >= beta) return beta; // 剪枝
@@ -1513,19 +1506,19 @@ export class ChessAI {
             if (standPat <= alpha) return alpha; // 剪枝
             if (beta > standPat) beta = standPat;
         }
-        
+
         // 获取所有吃子走法
-        const currentColor = isMaximizing ? aiColor : 
-                            (aiColor === PieceColor.RED ? PieceColor.BLACK : PieceColor.RED);
+        const currentColor = isMaximizing ? aiColor :
+            (aiColor === PieceColor.RED ? PieceColor.BLACK : PieceColor.RED);
         const captureMoves = this.getCaptureMoves(board, currentColor);
-        
+
         // 根据节点类型继续搜索
         if (isMaximizing) {
             let maxEval = standPat;
             for (const move of captureMoves) {
                 const boardCopy = board.clone();
                 boardCopy.movePiece(move.from, move.to);
-                
+
                 const evalScore = this.quiescenceSearch(boardCopy, alpha, beta, false, aiColor, depth + 1);
                 maxEval = Math.max(maxEval, evalScore);
                 alpha = Math.max(alpha, evalScore);
@@ -1537,7 +1530,7 @@ export class ChessAI {
             for (const move of captureMoves) {
                 const boardCopy = board.clone();
                 boardCopy.movePiece(move.from, move.to);
-                
+
                 const evalScore = this.quiescenceSearch(boardCopy, alpha, beta, true, aiColor, depth + 1);
                 minEval = Math.min(minEval, evalScore);
                 beta = Math.min(beta, evalScore);
@@ -1551,15 +1544,15 @@ export class ChessAI {
     private getCaptureMoves(board: Board, color: PieceColor): { from: Position, to: Position }[] {
         const moves: { from: Position, to: Position }[] = [];
         const pieces = board.getPiecesByColor(color);
-        
+
         for (const piece of pieces) {
             for (let row = 0; row < Board.ROWS; row++) {
                 for (let col = 0; col < Board.COLS; col++) {
                     const targetPos: Position = [row, col];
                     const targetPiece = board.getPiece(targetPos);
-                    
+
                     // 只考虑吃子走法
-                    if (targetPiece && targetPiece.color !== color && 
+                    if (targetPiece && targetPiece.color !== color &&
                         this.moveValidator.isValidMove(board, piece.position, targetPos)) {
                         // 可以加上启发式评估，优先考虑更有价值的吃子
                         moves.push({
@@ -1570,7 +1563,7 @@ export class ChessAI {
                 }
             }
         }
-        
+
         // 按吃子价值排序
         moves.sort((a, b) => {
             const pieceA = board.getPiece(a.to);
@@ -1580,17 +1573,17 @@ export class ChessAI {
             }
             return 0;
         });
-        
+
         return moves;
     }
 
     // 记录杀手着法
-    private recordKillerMove(depth: number, move: {from: Position, to: Position}): void {
+    private recordKillerMove(depth: number, move: { from: Position, to: Position }): void {
         // 确保深度在范围内
         if (depth >= this.killerMoves.length) {
             return;
         }
-        
+
         // 初始化当前深度的杀手着法数组，如果不存在
         if (!this.killerMoves[depth]) {
             this.killerMoves[depth] = [null, null];
@@ -1598,7 +1591,7 @@ export class ChessAI {
 
         // 获取当前深度的杀手走法数组（已确认存在）
         const killerMovesAtDepth = this.killerMoves[depth]!;
-        
+
         // 确保不重复记录，使用类型安全的方式比较
         const firstMove = killerMovesAtDepth[0] ?? null;
         if (!this.equalMove(move, firstMove)) {
@@ -1610,10 +1603,10 @@ export class ChessAI {
     }
 
     // 检查两个走法是否相同
-    private equalMove(a: {from: Position, to: Position} | null, 
-                     b: {from: Position, to: Position} | null): boolean {
+    private equalMove(a: { from: Position, to: Position } | null,
+        b: { from: Position, to: Position } | null): boolean {
         if (!a || !b) return false;
-        return a.from[0] === b.from[0] && a.from[1] === b.from[1] && 
-               a.to[0] === b.to[0] && a.to[1] === b.to[1];
+        return a.from[0] === b.from[0] && a.from[1] === b.from[1] &&
+            a.to[0] === b.to[0] && a.to[1] === b.to[1];
     }
 }

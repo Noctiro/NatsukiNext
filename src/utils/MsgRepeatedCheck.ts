@@ -1,5 +1,3 @@
-import { performance } from 'perf_hooks'; // Using Node.js performance hooks if needed for fine-grained timing
-
 /**
  * Represents a range within a string.
  */

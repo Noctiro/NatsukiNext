@@ -1,6 +1,5 @@
 import type { BotPlugin, CommandContext, PluginCommand } from '../features';
 import { PluginStatus } from '../features';
-import { log } from '../log';
 import { html } from '@mtcute/bun';
 import { md } from '@mtcute/markdown-parser';
 import { managerIds } from '../app';
@@ -82,7 +81,7 @@ function getCpuInfo() {
             usage: `${usage}%`
         };
     } catch (err) {
-        log.error('Failed to get CPU info:', err);
+        plugin.logger?.error('Failed to get CPU info:', err);
         return {
             model: '获取失败',
             cores: 0,
@@ -140,7 +139,7 @@ async function getNetworkInfo() {
             tx: txRate
         };
     } catch (err) {
-        log.error('Failed to get network info:', err);
+        plugin.logger?.error('Failed to get network info:', err);
         return null;
     }
 }
@@ -190,7 +189,7 @@ async function getSystemInfo(): Promise<SystemInfo> {
         };
     } catch (err) {
         const error = err as Error;
-        log.error('Failed to get system info:', error);
+        plugin.logger?.error('Failed to get system info:', error);
         throw new Error('获取系统信息失败');
     }
 }
@@ -250,24 +249,24 @@ async function executeCommand(command: string, timeout: number = 30000): Promise
             timeout,
             maxBuffer: 1024 * 1024 * 2, // 2MB缓冲区
         };
-        
+
         // 执行命令
         const { stdout, stderr } = await execAsync(command, options);
         return { stdout, stderr };
     } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
-        log.error(`命令执行错误: ${error.message}`);
-        
+        plugin.logger?.error(`命令执行错误: ${error.message}`);
+
         // 尽可能返回stdout和stderr
         const result: { stdout: string; stderr: string; error: string } = {
-            stdout: '', 
-            stderr: '', 
+            stdout: '',
+            stderr: '',
             error: error.message
         };
-        
+
         if ('stdout' in error) result.stdout = String(error.stdout || '');
         if ('stderr' in error) result.stderr = String(error.stderr || '');
-        
+
         return result;
     }
 }
@@ -582,25 +581,20 @@ const plugin: BotPlugin = {
         },
         {
             name: 'stop',
-            description: '停止机器人',
-            requiredPermission: 'system.stop',
+            description: '停止机器人服务\n仅管理员可用',
             async handler(ctx: CommandContext) {
-                // 只允许管理员执行此命令
                 if (!managerIds.includes(ctx.message.sender.id)) {
-                    await ctx.message.replyText(html`❌ 只有管理员才能停止机器人`);
+                    await ctx.message.replyText('❌ 只有管理员才能执行此命令');
                     return;
                 }
-                
-                await ctx.message.replyText(html`⚠️ <b>正在停止机器人...</b><br>机器人即将关闭，需要手动重新启动。`);
-                
-                // 记录关闭信息
-                log.info(`管理员 ${ctx.message.sender.displayName}(${ctx.message.sender.id}) 触发了机器人停止命令`, { remote: true });
-                
-                // 延迟关闭以确保消息发送完成
+
+                plugin.logger?.info(`管理员 ${ctx.message.sender.displayName}(${ctx.message.sender.id}) 触发了机器人停止命令`, { remote: true });
+                await ctx.message.replyText('🛑 即将停止机器人...');
+                plugin.logger?.info('正在停止机器人...', { remote: true });
+
                 setTimeout(() => {
-                    log.info('正在停止机器人...', { remote: true });
                     process.exit(0);
-                }, 2000);
+                }, 1000);
             }
         },
         {
@@ -800,53 +794,53 @@ const plugin: BotPlugin = {
                     await ctx.message.replyText('❌ 只有管理员才能执行此命令');
                     return;
                 }
-                
+
                 const command = ctx.content.trim();
-                
+
                 if (!command) {
                     await ctx.message.replyText('请指定要执行的命令，例如：/exec ls -la');
                     return;
                 }
-                
+
                 await ctx.message.replyText(`⏳ 正在执行命令: ${command}`);
-                
+
                 try {
                     // 执行命令，设置10秒超时
                     const { stdout, stderr, error } = await executeCommand(command, 10000);
-                    
+
                     // 准备结果消息
                     let resultMessage = '🖥️ <b>命令执行结果</b><br><br>';
-                    
+
                     if (error) {
                         resultMessage += `❌ <b>错误</b>: ${error.replace(/\r\n/g, '<br>').replace(/\r/g, '<br>')}<br><br>`;
                     }
-                    
+
                     if (stdout) {
                         // 如果输出太长，截断它
-                        const truncatedStdout = stdout.length > 2500 
+                        const truncatedStdout = stdout.length > 2500
                             ? stdout.substring(0, 2500) + '...(输出被截断)'
                             : stdout;
-                        
+
                         resultMessage += `📤 <b>标准输出</b>:<br><blockquote collapsible>${truncatedStdout.replace(/\r\n/g, '<br>').replace(/\r/g, '<br>')}</blockquote>`;
                     }
-                    
+
                     if (stderr) {
                         // 如果错误输出太长，截断它
                         const truncatedStderr = stderr.length > 1000
                             ? stderr.substring(0, 1000) + '...(错误输出被截断)'
                             : stderr;
-                            
+
                         resultMessage += `⚠️ <b>标准错误</b>:<br><blockquote collapsible>${truncatedStderr.replace(/\r\n/g, '<br>').replace(/\r/g, '<br>')}</blockquote>`;
                     }
-                    
+
                     if (!stdout && !stderr && !error) {
                         resultMessage = '✅ 命令执行成功，没有输出';
                     }
-                    
+
                     await ctx.message.replyText(html(cleanHTML(resultMessage, { escapeUnknownTags: true })));
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`执行命令时出错: ${error.message}`);
+                    plugin.logger?.error(`执行命令时出错: ${error.message}`);
                     await ctx.message.replyText(`❌ 执行命令时出错: ${error.message}`);
                 }
             }
@@ -861,31 +855,31 @@ const plugin: BotPlugin = {
                     await ctx.message.replyText('❌ 只有管理员才能执行此命令');
                     return;
                 }
-                
+
                 try {
                     // 获取进程内存信息
                     const memInfo = getDetailedProcessMemory();
-                    
+
                     // 获取系统内存信息
                     const sysInfo = await getSystemInfo();
-                    
+
                     let message = '📊 <b>内存使用情况</b>\n\n';
-                    
+
                     message += '<b>Bun 进程内存:</b>\n' +
-                              `- RSS (常驻集大小): ${memInfo.rss}\n` +
-                              `- 堆内存总量: ${memInfo.heapTotal}\n` +
-                              `- 堆内存使用: ${memInfo.heapUsed} (${memInfo.usage})\n` +
-                              `- 外部内存: ${memInfo.external}\n` +
-                              `- ArrayBuffer: ${memInfo.arrayBuffers}\n\n`;
-                    
+                        `- RSS (常驻集大小): ${memInfo.rss}\n` +
+                        `- 堆内存总量: ${memInfo.heapTotal}\n` +
+                        `- 堆内存使用: ${memInfo.heapUsed} (${memInfo.usage})\n` +
+                        `- 外部内存: ${memInfo.external}\n` +
+                        `- ArrayBuffer: ${memInfo.arrayBuffers}\n\n`;
+
                     message += '<b>系统内存:</b>\n' +
-                              `- 总内存: ${sysInfo.memory.total}\n` +
-                              `- 已使用: ${sysInfo.memory.used} (${sysInfo.memory.percentage}%)\n` +
-                              `- 可用: ${sysInfo.memory.free}\n\n`;
-                    
+                        `- 总内存: ${sysInfo.memory.total}\n` +
+                        `- 已使用: ${sysInfo.memory.used} (${sysInfo.memory.percentage}%)\n` +
+                        `- 可用: ${sysInfo.memory.free}\n\n`;
+
                     // 获取机器人实例中缓存的计数
                     const features = ctx.client.features;
-                    
+
                     // 构建缓存统计报告
                     const cacheStats = {
                         plugins: features.getPlugins().length,
@@ -894,17 +888,17 @@ const plugin: BotPlugin = {
                         configsCached: 0,
                         cooldowns: 0
                     };
-                    
+
                     message += '<b>缓存统计:</b>\n' +
-                              `- 已加载插件: ${cacheStats.plugins} (${cacheStats.activePlugins} 个活跃)\n` +
-                              `- 运行时间: ${sysInfo.botUptime}\n\n`;
-                    
+                        `- 已加载插件: ${cacheStats.plugins} (${cacheStats.activePlugins} 个活跃)\n` +
+                        `- 运行时间: ${sysInfo.botUptime}\n\n`;
+
                     message += '<i>提示: 使用 /clearmem 命令清理内存</i>';
-                    
+
                     await ctx.message.replyText(html(cleanHTML(message.replace(/\n/g, '<br>'), { escapeUnknownTags: true })));
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`获取内存信息时出错: ${error.message}`);
+                    plugin.logger?.error(`获取内存信息时出错: ${error.message}`);
                     await ctx.message.replyText(`❌ 获取内存信息失败: ${error.message}`);
                 }
             }
@@ -918,16 +912,16 @@ const plugin: BotPlugin = {
                     await ctx.message.replyText('❌ 只有管理员才能执行此命令');
                     return;
                 }
-                
+
                 try {
                     // 获取清理前的内存信息
                     const beforeInfo = getDetailedProcessMemory();
                     await ctx.message.replyText('🧹 正在清理内存和缓存...');
-                    
+
                     // 执行内存清理
                     const startTime = Date.now();
                     ctx.client.features.cleanupMemory();
-                    
+
                     // 手动触发垃圾回收
                     if (global.gc) {
                         try {
@@ -936,41 +930,41 @@ const plugin: BotPlugin = {
                             // 忽略可能的错误
                         }
                     }
-                    
+
                     // 获取清理后的内存信息
                     const afterInfo = getDetailedProcessMemory();
                     const duration = Date.now() - startTime;
-                    
+
                     // 计算释放的内存
                     const heapDiff = parseInt(beforeInfo.heapUsed) - parseInt(afterInfo.heapUsed);
                     const rssDiff = parseInt(beforeInfo.rss) - parseInt(afterInfo.rss);
-                    
+
                     // 构建报告
                     let message = '✅ <b>内存清理完成</b>\n\n';
-                    
+
                     message += `<b>耗时:</b> ${duration}ms\n\n`;
-                    
+
                     message += '<b>清理前:</b>\n' +
-                              `- 堆内存: ${beforeInfo.heapUsed} (${beforeInfo.usage})\n` +
-                              `- RSS: ${beforeInfo.rss}\n\n`;
-                    
+                        `- 堆内存: ${beforeInfo.heapUsed} (${beforeInfo.usage})\n` +
+                        `- RSS: ${beforeInfo.rss}\n\n`;
+
                     message += '<b>清理后:</b>\n' +
-                              `- 堆内存: ${afterInfo.heapUsed} (${afterInfo.usage})\n` +
-                              `- RSS: ${afterInfo.rss}\n\n`;
-                    
+                        `- 堆内存: ${afterInfo.heapUsed} (${afterInfo.usage})\n` +
+                        `- RSS: ${afterInfo.rss}\n\n`;
+
                     const formatDiff = (bytes: number): string => {
                         const sign = bytes > 0 ? '-' : '+';
                         return `${sign}${formatBytes(Math.abs(bytes))}`;
                     };
-                    
+
                     message += '<b>内存变化:</b>\n' +
-                              `- 堆内存: ${formatDiff(heapDiff)}\n` +
-                              `- RSS: ${formatDiff(rssDiff)}\n\n`;
-                    
+                        `- 堆内存: ${formatDiff(heapDiff)}\n` +
+                        `- RSS: ${formatDiff(rssDiff)}\n\n`;
+
                     await ctx.message.replyText(html(cleanHTML(message.replace(/\n/g, '<br>'), { escapeUnknownTags: true })));
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`清理内存时出错: ${error.message}`);
+                    plugin.logger?.error(`清理内存时出错: ${error.message}`);
                     await ctx.message.replyText(`❌ 内存清理失败: ${error.message}`);
                 }
             }

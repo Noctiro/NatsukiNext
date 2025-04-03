@@ -1,5 +1,4 @@
 import { getFastAI, getHighQualityAI } from "../ai/AiManager";
-import { log } from "../log";
 import { fetchRSS, type RSSItem, type RSSFeed } from "../utils/RssParse";
 import type { BotPlugin, CommandContext } from '../features';
 import { html, Message, type TelegramClient, type TextWithEntities } from "@mtcute/bun";
@@ -323,7 +322,7 @@ abstract class NewsSelector {
                 .filter(item => this.isNewsValid(item))
                 .map(item => this.convertToNewsItem(item, source, sourceName));
         } catch (error) {
-            log.error(`获取RSS源失败 ${source}: ${error}`);
+            plugin.logger?.error(`获取RSS源失败 ${source}: ${error}`);
             return [];
         }
     }
@@ -377,7 +376,7 @@ class AiNewsSelector extends NewsSelector {
         const sourcePromises = selectedSources.map(source =>
             this.fetchNewsWithLimit(source, itemsPerSource)
                 .catch(error => {
-                    log.warn(`获取新闻失败 ${source}: ${error}`);
+                    plugin.logger?.warn(`获取新闻失败 ${source}: ${error}`);
                     return [];
                 })
         );
@@ -476,10 +475,10 @@ class AiNewsSelector extends NewsSelector {
             }
 
             // 索引无效时随机选择
-            log.warn(`AI返回的不是有效数字: ${response}`);
+            plugin.logger?.warn(`AI返回的不是有效数字: ${response}`);
             return news[Math.floor(Math.random() * news.length)] ?? null;
         } catch (error) {
-            log.error(`AI选择失败: ${error}`);
+            plugin.logger?.error(`AI选择失败: ${error}`);
             // 错误情况下随机选择
             return news[Math.floor(Math.random() * news.length)] ?? null;
         }
@@ -594,7 +593,7 @@ class AlgorithmNewsSelector extends NewsSelector {
             // 根据综合得分排序并返回最佳新闻
             return this.selectBestNews(allNews);
         } catch (error) {
-            log.error(`Error selecting news: ${error}`);
+            plugin.logger?.error(`Error selecting news: ${error}`);
             return null;
         }
     }
@@ -625,7 +624,7 @@ class AlgorithmNewsSelector extends NewsSelector {
                 return item;
             });
         } catch (error) {
-            log.warn(`评分新闻失败 ${source}: ${error}`);
+            plugin.logger?.warn(`评分新闻失败 ${source}: ${error}`);
             return [];
         }
     }
@@ -971,7 +970,7 @@ class NewsService {
                 await client.sendText(chatId, `获取新闻失败: ${errorMessage}`);
             }
 
-            log.error('News fetch error:', error);
+            plugin.logger?.error('News fetch error:', error);
         }
     }
 
@@ -1071,7 +1070,7 @@ class NewsService {
             // 使用HtmlHelper一站式处理HTML
             return comment.trim();
         } catch (error) {
-            log.error(`AI summary generation failed: ${error}`);
+            plugin.logger?.error(`AI summary generation failed: ${error}`);
             return '';
         }
     }
@@ -1103,7 +1102,7 @@ class NewsService {
 
             return commentText ? `🤖 ${commentText}<br>` : '';
         } catch (error) {
-            log.error(`AI comment generation failed: ${error}`);
+            plugin.logger?.error(`AI comment generation failed: ${error}`);
             return '';
         }
     }
@@ -1243,7 +1242,7 @@ class NewsService {
 
         // 如果AI筛选失败，回退到传统算法筛选
         if (!selectedNews) {
-            log.info('Falling back to algorithm selector');
+            plugin.logger?.info('Falling back to algorithm selector');
             selectedNews = await this.algorithmSelector.selectNews();
         }
 
@@ -1289,7 +1288,7 @@ class NewsService {
 
             // 如果AI筛选失败，回退到算法选择器
             if (!selectedNews) {
-                log.info('RSS: AI选择器未返回结果，回退到算法选择器');
+                plugin.logger?.info('RSS: AI选择器未返回结果，回退到算法选择器');
 
                 // 使用更短的二级超时
                 const algorithmTimeoutPromise = new Promise<NewsItem | null>((resolve) => {
@@ -1300,7 +1299,7 @@ class NewsService {
                 selectedNews = await Promise.race([algorithmPromise, algorithmTimeoutPromise]);
 
                 if (!selectedNews) {
-                    log.warn('RSS: 两种选择器均未返回结果');
+                    plugin.logger?.warn('RSS: 两种选择器均未返回结果');
                 }
             }
 
@@ -1311,7 +1310,7 @@ class NewsService {
 
             return selectedNews;
         } catch (error) {
-            log.error(`获取新闻失败: ${error instanceof Error ? error.message : String(error)}`);
+            plugin.logger?.error(`获取新闻失败: ${error instanceof Error ? error.message : String(error)}`);
             return null;
         }
     }
@@ -1406,7 +1405,7 @@ class NewsService {
                 ? `${error.name}: ${error.message}`
                 : String(error);
 
-            log.warn(`RSS源状态检查失败: ${url} - ${errorMessage}`);
+            plugin.logger?.warn(`RSS源状态检查失败: ${url} - ${errorMessage}`);
 
             return {
                 status: 'error',
@@ -1426,7 +1425,7 @@ class NewsService {
         try {
             return await fetchRSS(url);
         } catch (error) {
-            log.error(`获取RSS源失败: ${url} - ${error}`);
+            plugin.logger?.error(`获取RSS源失败: ${url} - ${error}`);
             throw error;
         }
     }

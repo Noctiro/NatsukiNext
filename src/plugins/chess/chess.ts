@@ -1,6 +1,5 @@
 import type { BotPlugin, CommandContext } from '../../features';
 import { html } from '@mtcute/bun';
-import { log } from '../../log';
 
 // 导入类型和类
 import { GameStatus, PieceColor } from './models/ChessTypes';
@@ -31,6 +30,12 @@ const plugin: BotPlugin = {
     name: 'chess',
     description: '中国象棋游戏，支持玩家对战和AI对战',
     version: '1.0.0',
+
+    // 添加onLoad钩子，初始化BoardRenderer的logger
+    async onLoad() {
+        // 初始化BoardRenderer的logger
+        BoardRenderer.setLogger(this.logger);
+    },
 
     commands: [
         {
@@ -196,7 +201,7 @@ async function startAiGame(ctx: CommandContext) {
 async function acceptChallenge(ctx: CommandContext) {
     const targetUserId = ctx.message.sender.id;
     const invite = gameManager.getInvite(targetUserId);
-    
+
     if (!invite) {
         await ctx.message.replyText('您没有收到任何象棋邀请');
         return;
@@ -220,7 +225,7 @@ async function acceptChallenge(ctx: CommandContext) {
 async function declineChallenge(ctx: CommandContext) {
     const targetUserId = ctx.message.sender.id;
     const invite = gameManager.getInvite(targetUserId);
-    
+
     if (!invite) {
         await ctx.message.replyText('您没有收到任何象棋邀请');
         return;
@@ -282,7 +287,7 @@ async function renderAndSendBoard(game: Game, ctx: CommandContext, caption: stri
             { caption: html(caption) }
         );
     } catch (error) {
-        log.error('棋盘图片渲染失败:', error);
+        plugin.logger?.error('棋盘图片渲染失败:', error);
         const boardHtml = BoardRenderer.renderBoardHTML(game);
         await ctx.message.replyText(html`${html(boardHtml)}<br>${caption}`);
     }
@@ -319,7 +324,8 @@ async function processAIMove(game: Game, ctx: CommandContext) {
     try {
         const aiDifficulty = (game as any).aiDifficulty || AI_DIFFICULTY_LEVELS.normal;
         const useCloudLibrary = aiDifficulty === AI_DIFFICULTY_LEVELS.hard;
-        const chessAI = new ChessAI(aiDifficulty, useCloudLibrary);
+        // 创建AI实例时传入logger
+        const chessAI = new ChessAI(aiDifficulty, useCloudLibrary, 60000, plugin.logger);
         const aiMove = await chessAI.getMove(game);
 
         if (thinkingMessageId) {
@@ -336,10 +342,10 @@ async function processAIMove(game: Game, ctx: CommandContext) {
 
         game.move(aiMove.from, aiMove.to);
 
-        const statusMessage = game.status === GameStatus.FINISHED 
-            ? 'AI获胜了！' 
+        const statusMessage = game.status === GameStatus.FINISHED
+            ? 'AI获胜了！'
             : '轮到您行动';
-            
+
         const caption = `第 ${Math.floor(game.history.length / 2) + 1} 回合 - ${statusMessage}${game.lastMove ? ` | AI走法：${game.lastMove}` : ''}`;
         await renderAndSendBoard(game, ctx, caption);
     } catch (error) {
@@ -347,7 +353,7 @@ async function processAIMove(game: Game, ctx: CommandContext) {
             try {
                 await ctx.client.deleteMessagesById(ctx.chatId, [thinkingMessageId]);
             } catch (deleteError) {
-                log.error('Failed to delete thinking message:', deleteError);
+                plugin.logger?.error('Failed to delete thinking message:', deleteError);
             }
         }
         throw error;

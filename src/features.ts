@@ -189,6 +189,8 @@ export interface BotPlugin {
     status?: PluginStatus;
     // 出错时的错误信息
     error?: string;
+    // 插件专用日志记录器
+    logger?: typeof log;
 }
 
 // 命令执行冷却记录 - 不再需要接口，直接使用 Map 结构
@@ -348,20 +350,21 @@ export class Features {
 
             // 如果插件已经启用，跳过
             if (plugin.status === PluginStatus.ACTIVE) {
-                log.debug(`Plugin ${name} is already enabled`);
+                plugin.logger?.debug(`插件已处于启用状态`);
                 return true;
             }
 
-            log.info(`Enabling plugin: ${name}`);
+            log.info(`正在启用插件: ${name}`);
 
             // 检查依赖
             if (plugin.dependencies && plugin.dependencies.length > 0) {
+                plugin.logger?.debug(`正在检查依赖: ${plugin.dependencies.join(', ')}`);
                 for (const dependency of plugin.dependencies) {
                     let dep = this.plugins.get(dependency);
 
                     // 如果依赖不存在并且允许自动加载
                     if (!dep && autoLoadDependencies) {
-                        log.info(`Auto-loading dependency plugin: ${dependency}`);
+                        plugin.logger?.info(`自动加载依赖插件: ${dependency}`);
                         const loadSuccess = await this.loadPlugin(dependency, true);
                         if (loadSuccess) {
                             dep = this.plugins.get(dependency);
@@ -370,19 +373,20 @@ export class Features {
 
                     // 确认依赖存在并已启用
                     if (!dep) {
-                        log.error(`Dependency ${dependency} not found for plugin ${name}`);
+                        plugin.logger?.error(`依赖插件 ${dependency} 未找到`);
                         plugin.status = PluginStatus.ERROR;
-                        plugin.error = `Dependency ${dependency} not found`;
+                        plugin.error = `依赖插件 ${dependency} 未找到`;
                         return false;
                     }
 
                     if (dep.status !== PluginStatus.ACTIVE) {
                         // 递归启用依赖
+                        plugin.logger?.debug(`启用依赖插件: ${dependency}`);
                         const success = await this.enablePlugin(dependency, autoLoadDependencies);
                         if (!success) {
-                            log.error(`Failed to enable dependency ${dependency} for plugin ${name}`);
+                            plugin.logger?.error(`启用依赖插件 ${dependency} 失败`);
                             plugin.status = PluginStatus.ERROR;
-                            plugin.error = `Failed to enable dependency ${dependency}`;
+                            plugin.error = `启用依赖插件 ${dependency} 失败`;
                             return false;
                         }
                     }
@@ -391,6 +395,7 @@ export class Features {
 
             // 执行插件的onLoad方法
             try {
+                plugin.logger?.debug(`正在初始化插件...`);
                 if (plugin.onLoad) {
                     await plugin.onLoad(this.client);
                 }
@@ -400,20 +405,20 @@ export class Features {
 
                 // 如果有命令，注册命令处理器
                 if (plugin.commands?.length) {
-                    log.debug(`Registering ${plugin.commands.length} commands for plugin ${name}`);
+                    plugin.logger?.debug(`注册了 ${plugin.commands.length} 个命令`);
                 }
 
                 // 设置插件状态为启用
                 plugin.status = PluginStatus.ACTIVE;
                 plugin.error = undefined;
 
-                log.info(`Plugin ${name} successfully enabled`);
+                plugin.logger?.info(`插件已成功启用 ${plugin.version ? `v${plugin.version}` : ''}`);
                 return true;
             } catch (err) {
                 const error = err instanceof Error ? err : new Error(String(err));
-                log.error(`Failed to initialize plugin ${name}: ${error.message}`);
+                plugin.logger?.error(`初始化失败: ${error.message}`);
                 if (error.stack) {
-                    log.debug(`Error stack: ${error.stack}`);
+                    plugin.logger?.debug(`错误堆栈: ${error.stack}`);
                 }
 
                 plugin.status = PluginStatus.ERROR;
@@ -422,7 +427,7 @@ export class Features {
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`Error enabling plugin ${name}: ${error.message}`);
+            log.error(`启用插件 ${name} 时出错: ${error.message}`);
             return false;
         }
     }
@@ -436,17 +441,17 @@ export class Features {
         try {
             const plugin = this.plugins.get(name);
             if (!plugin) {
-                log.warn(`Plugin ${name} not found`);
+                log.warn(`插件 ${name} 未找到`);
                 return false;
             }
 
             // 如果插件已经禁用，直接返回
             if (plugin.status === PluginStatus.DISABLED) {
-                log.debug(`Plugin ${name} is already disabled`);
+                plugin.logger?.debug(`插件已处于禁用状态`);
                 return true;
             }
 
-            log.info(`Disabling plugin: ${name}`);
+            plugin.logger?.info(`正在禁用插件...`);
 
             // 检查其他插件依赖
             for (const [otherName, otherPlugin] of this.plugins.entries()) {
@@ -457,13 +462,14 @@ export class Features {
 
                 // 如果另一个插件依赖此插件，无法禁用
                 if (otherPlugin.dependencies?.includes(name)) {
-                    log.warn(`Cannot disable plugin ${name}: plugin ${otherName} depends on it`);
+                    plugin.logger?.warn(`无法禁用: 插件 ${otherName} 依赖于此插件`);
                     return false;
                 }
             }
 
             // 调用插件的卸载回调
             try {
+                plugin.logger?.debug(`执行卸载回调...`);
                 if (plugin.onUnload) {
                     await plugin.onUnload();
                 }
@@ -475,13 +481,13 @@ export class Features {
                 plugin.status = PluginStatus.DISABLED;
                 plugin.error = undefined;
 
-                log.info(`Plugin ${name} successfully disabled`);
+                plugin.logger?.info(`插件已成功禁用`);
                 return true;
             } catch (err) {
                 const error = err instanceof Error ? err : new Error(String(err));
-                log.error(`Error disabling plugin ${name}: ${error.message}`);
+                plugin.logger?.error(`禁用失败: ${error.message}`);
                 if (error.stack) {
-                    log.debug(`Error stack: ${error.stack}`);
+                    plugin.logger?.debug(`错误堆栈: ${error.stack}`);
                 }
 
                 // 更新插件状态为错误
@@ -491,7 +497,7 @@ export class Features {
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`Error disabling plugin ${name}: ${error.message}`);
+            log.error(`禁用插件 ${name} 时出错: ${error.message}`);
             return false;
         }
     }
@@ -1203,6 +1209,9 @@ export class Features {
                 return false;
             }
 
+            // 为插件创建专用的日志记录器实例
+            plugin.logger = log.forPlugin(plugin.name);
+
             // 注册时使用传入的名称（可能包含子目录）作为插件的标识符
             // 这样可以确保不同路径的插件被正确区分，即使它们的内部名称相同
             const registeredName = name;
@@ -1218,7 +1227,7 @@ export class Features {
 
             // 注册插件
             this.plugins.set(registeredName, plugin);
-            log.info(`成功加载插件: ${registeredName} (${plugin.name}) ${plugin.version || ''}`);
+            plugin.logger.info(`成功加载插件: ${plugin.name} ${plugin.version || ''}`);
 
             // 注册插件的权限（如果有）
             if (plugin.permissions && plugin.permissions.length > 0) {
@@ -1226,10 +1235,10 @@ export class Features {
                     for (const permission of plugin.permissions) {
                         this.permissionManager.registerPermission(permission);
                     }
-                    log.debug(`为插件 ${registeredName} 注册了 ${plugin.permissions.length} 个权限`);
+                    plugin.logger.debug(`注册了 ${plugin.permissions.length} 个权限`);
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.warn(`为插件 ${registeredName} 注册权限失败: ${error.message}`);
+                    plugin.logger.warn(`注册权限失败: ${error.message}`);
                 }
             }
 

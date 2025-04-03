@@ -1,6 +1,5 @@
 import { md } from "@mtcute/markdown-parser";
 import type { BotPlugin, CommandContext } from "../features";
-import { log } from "../log";
 
 // 类型定义
 type WikiLang = 'zh' | 'en' | 'jp' | 'kr' | 'fr' | 'de' | 'ru';
@@ -116,7 +115,7 @@ const plugin: BotPlugin = {
                 // 回复等待消息
                 const waitMsg = await ctx.message.replyText("🔍 正在查询中...");
                 if (!waitMsg?.id) {
-                    log.error("无法发送等待消息");
+                    plugin.logger?.error("无法发送等待消息");
                     return;
                 }
 
@@ -213,7 +212,7 @@ const plugin: BotPlugin = {
                         message: waitMsg.id,
                         text: errorMsg.join('\n')
                     }).catch(e => {
-                        log.error(`无法更新错误消息: ${e}`);
+                        plugin.logger?.error(`无法更新错误消息: ${e}`);
                     });
                 }
             }

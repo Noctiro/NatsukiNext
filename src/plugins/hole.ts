@@ -1,6 +1,5 @@
 import { html } from '@mtcute/bun';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext, PluginEvent } from '../features';
-import { log } from '../log';
 
 const plugin: BotPlugin = {
     name: 'hole',
@@ -51,7 +50,7 @@ export function getTextFromAPI(retry = 3): Promise<string> {
         })
         .catch((e) => {
             if (retry) return getTextFromAPI(--retry);
-            log.error(e);
+            plugin.logger?.error(e);
             throw e;
         })
 }
