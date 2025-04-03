@@ -1,171 +1,279 @@
+import { md, type TextWithEntities } from "@mtcute/bun";
 import { getFastAI } from "../ai/AiManager";
 import type { BotPlugin, CommandContext } from "../features";
 
-// ASCII 艺术图集合
+// New ASCII Art Collection (incorporating existing, improved, and new ones)
 const asciiArts: Record<string, string> = {
+    // Animals
     cat: `
   /\\_/\\  
  ( o.o ) 
   > ^ <  
-    `,
-    dog: `
-  / \\__
- (    @\\___
- /         O
-/   (_____/
-/_____/   U
-    `,
-    rabbit: `
-  (\\(\\ 
- (='.') 
- (")_(")
-    `,
-    bear: `
- ʕ•ᴥ•ʔ
-    `,
-    panda: `
- ⟋⏝⟋
- (•ㅅ•)
- / 　 \\
-(ノ^ヮ^)ノ
-    `,
-    penguin: `
-   _
-  (o)_
- //(")\\
- ^^~~~^^
-    `,
-    heart: `
-  /\\  /\\ 
- /  \\/  \\
-|        |
- \\      /
-  \\    /
-   \\  /
-    \\/
-    `,
-    fish: `
-    ><(((('>
-    `,
-    coffee: `
-   ( (
-    ) )
-  .........
-  |       |]
-  \\     /
-   -----
-    `,
-    castle: `
-       _~^~^~_
-   \\) /  o o  \\ (/
-     '_   v   _'
-     / '-----' \\
-  /~~|         |~~\\
- /   |         |   \\
-|    |         |    |
-|    |_________|    |
-|    |         |    |
-|    |         |    |
-|====|         |====|
-^^^^^|_________|^^^^^
-     (____|____)     
-     (____|____)     
-     (____|____)
-     (____|____)
-    `,
-    sword: `
-      />
-      />
-     (:)
-     (:)
-     |~|
-     |~|
-     |~|
-     |~|
-     |~|
-     |~|
-     |~|
-     |~|
-     |~|
-     |~|
- /~~~~~~~\\
- |       |
- |       |
- |/\\/\\/\\/|
-     |
-     |
-     |
-    `,
+    `, // Kept original
+    // Memes
+    doge: `
+       ▄              ▄
+      ▌▒█           ▄▀▒▌
+      ▌▒▒█        ▄▀▒▒▒▐
+     ▐▄▀▒▒▀▀▀▀▄▄▄▀▒▒▒▒▒▐
+   ▄▄▀▒░▒▒▒▒▒▒▒▒▒█▒▒▄█▒▐
+ ▄▀▒▒▒░░░▒▒▒░░░▒▒▒▀██▀▒▌
+▐▒▒▒▄▄▒▒▒▒░░░▒▒▒▒▒▒▒▀▄▒▒▐
+▌░░▌█▀▒▒▒▒▒▄▀█▄▒▒▒▒▒▒▒█▒▐
+▐░░░▒▒▒▒▒▒▒▒▌██▀▒▒░░░▒▒▒▀▄▌
+▌░▒▄██▄▒▒▒▒▒▒▒▒▐░░░░░░▒▒▒▒▌
+▀▒▀▐▄█▄█▌▄░▀▒▒░░░░░░░░░░▒▒▒▐
+▐▒▒▐▀▐▀▒░▄▄▒▄▒▒▒▒▒▒░▒░▒░▒▒▒▒▌
+▐▒▒▒▀▀▄▄▒▒▒▄▒▒▒▒▒▒▒▒░▒░▒▒▒▒▐
+▌▒▒▒▒▒▒▀▀▀▒▒▒▒▒▒░▒░▒░▒▒▒▒▌
+▐▒▒▒▒▒▒▒▒▒▒▒▒▒▒░▒░▒░▒▒▒▒▐
+▀▄▒▒▒▒▒▒▒▒▒▒▄▄▄▀▒▒▒▒▄▀
+  ▀▄▒▒▒▒▒▒▒▒▒▒▒█▀▒▄▀▒▐
+    ▀▄▄▒▒▒▒▒▒▒▒▄▀▒▒▒▒▐
+       ▀▄▄▄▄▄▄▀▀▒▒▒▄▀
+    `, // Added Doge
+    nyan_cat: `
++      o     +              o
+    +             o     +       +
+o          +
+    o  +           +        +
++        o     o       +        o
+-_-_-_-_-_-_-_,------,      o
+_-_-_-_-_-_-_-|   /\_/\  |     +
+-_-_-_-_-_-_-~|__( ^ .^) |
+_-_-_-_-_-_-_-""  ""      
++      o         o   +       o
+    +         +
+o        +         o      o     +
+    o           +
++      +     o        o      +
+    `, // Added Nyan Cat
     cat2: `
- /\\_/\\
-( o.o )
- > ^ <
-    `,
-    piano: `
-    ♫ ┏━┓ ┏━┓ ♪
-       ┃  ┃ ┃  ┃  
-       ┗━┛ ┗━┛  
-    `,
-    hug: `
-     (つ ◕_◕ )つ
-    `,
-    moon: `
-         _..._
-       .:::::::.
-      :::::::::::
-      :::::::::::
-      \`:::::::::'
-        \`':::'
-    `,
-    stars: `
-       ✧  　  · 
-    　   ✦  　 · 
-      · *  
-       　 ⋆ 　✦   
-         · ✫ 
+  _                        
+  \\\`*-.                    
+   )  _\`-.                 
+  .  : \`. .                
+  : _   '  \               
+  ; *\` _.   \`*-._          
+  \`-.-'          \`-.       
+    ;       \`       \`.     
+    :.       .        \    
+    . \  .   :   .-'   .   
+    '  \`+.;  ;  '      :   
+    :  '  |    ;       ;-. 
+    ; '   : :\`-:     _.\`* ;
+ .*' /  .*' ; .*\`- +'  \`*' 
+ \`*-*   \`*-*  \`*-*'
     `,
 };
 
-// ASCII 对话气泡 - 右上角显示的美化版本
-const asciiBubble = (text: string): string => {
-    const lines = text.split('\n');
-    const width = Math.max(...lines.map(line => line.length || 0));
-    const paddedWidth = Math.min(width, 25); // 限制最大宽度，防止气泡过大
+interface PositionedBubble {
+    lines: string[];
+    startY: number;
+    position?: 'top' | 'right' | 'bottom' | 'left';
+}
 
-    // 创建对话气泡，不含左侧填充（用于组合时添加）
-    let bubble = '';
+// ASCII 对话气泡 - 根据文本和参照物(ASCII Art)计算气泡内容和位置
+const createPositionedBubble = (asciiArt: string, text: string, styleIndex: number = 0): PositionedBubble | null => {
+    const textLines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+    if (textLines.length === 0) return null; // No text, no bubble
 
-    // 顶部边框
-    bubble += ` ${'_'.repeat(paddedWidth + 2)}\n`;
+    // 优化: 更精确地计算气泡宽度，考虑多字节字符（如中文、表情符号等）
+    const bubbleWidth = Math.max(...textLines.map(line => {
+        // 使用更精确的方法计算字符串显示宽度
+        return [...line].reduce((width, char) => {
+            // 更全面的宽度计算：
+            // - ASCII和半角字符占1个宽度
+            // - 全角字符（包括中文、日文、韩文等）占2个宽度
+            // - Emoji和特殊符号可能占2个或更多
+            const code = char.codePointAt(0) || 0;
+            
+            // 使用字符范围判断
+            if (code <= 0x7F) return width + 1; // ASCII字符
+            if (
+                (code >= 0x3000 && code <= 0x9FFF) || // CJK统一表意文字及符号
+                (code >= 0xFF00 && code <= 0xFFEF) || // 全角ASCII、半角片假名等
+                (code >= 0x20000 && code <= 0x2FA1F) // CJK扩展
+            ) return width + 2; // 中日韩文字
+            
+            // 其他Unicode字符，包括Emoji等
+            return width + (code > 0xFFFF ? 2 : 1);
+        }, 0);
+    }));
 
-    if (lines.length === 1) {
-        // 单行文本使用更简洁的样式
-        bubble += `< ${lines[0]?.padEnd(paddedWidth, ' ') || ''} >\n`;
-        bubble += ` ${'‾'.repeat(paddedWidth + 2)}\n`;
-        bubble += `  \\\n`;
-        bubble += `   \\\n`;
-    } else {
-        // 多行文本使用更美观的气泡样式
-        bubble += `/ ${lines[0]?.padEnd(paddedWidth, ' ') || ''} \\\n`;
-
-        // 中间行
-        for (let i = 1; i < lines.length - 1; i++) {
-            const line = lines[i] || '';
-            bubble += `| ${line.padEnd(paddedWidth, ' ')} |\n`;
+    // --- 生成改进的气泡形状 ---
+    // 允许选择不同的气泡风格
+    const bubbleStyles = [
+        { // 标准气泡
+            top: '  .' + '-'.repeat(bubbleWidth + 2) + '.',
+            middle: (line: string) => {
+                // 优化填充方法，考虑多字节字符
+                const displayWidth = [...line].reduce((w, c) => {
+                    const code = c.codePointAt(0) || 0;
+                    if (code <= 0x7F) return w + 1; // ASCII
+                    if (
+                        (code >= 0x3000 && code <= 0x9FFF) ||
+                        (code >= 0xFF00 && code <= 0xFFEF) ||
+                        (code >= 0x20000 && code <= 0x2FA1F)
+                    ) return w + 2; // CJK
+                    return w + (code > 0xFFFF ? 2 : 1); // 其他
+                }, 0);
+                
+                // 计算需要的填充空格数
+                const padding = bubbleWidth - displayWidth;
+                return ` / ${line}${' '.repeat(padding)} \\`;
+            },
+            bottom: '  `' + '-'.repeat(bubbleWidth + 2) + '\''
+        },
+        { // 圆角气泡
+            top: '  ╭' + '─'.repeat(bubbleWidth + 2) + '╮',
+            middle: (line: string) => {
+                // 优化填充方法，考虑多字节字符
+                const displayWidth = [...line].reduce((w, c) => {
+                    const code = c.codePointAt(0) || 0;
+                    if (code <= 0x7F) return w + 1;
+                    if (
+                        (code >= 0x3000 && code <= 0x9FFF) ||
+                        (code >= 0xFF00 && code <= 0xFFEF) ||
+                        (code >= 0x20000 && code <= 0x2FA1F)
+                    ) return w + 2;
+                    return w + (code > 0xFFFF ? 2 : 1);
+                }, 0);
+                
+                const padding = bubbleWidth - displayWidth;
+                return ` │ ${line}${' '.repeat(padding)} │`;
+            },
+            bottom: '  ╰' + '─'.repeat(bubbleWidth + 2) + '╯'
+        },
+        { // 方角气泡
+            top: '  ┌' + '─'.repeat(bubbleWidth + 2) + '┐',
+            middle: (line: string) => {
+                // 优化填充方法，考虑多字节字符
+                const displayWidth = [...line].reduce((w, c) => {
+                    const code = c.codePointAt(0) || 0;
+                    if (code <= 0x7F) return w + 1;
+                    if (
+                        (code >= 0x3000 && code <= 0x9FFF) ||
+                        (code >= 0xFF00 && code <= 0xFFEF) ||
+                        (code >= 0x20000 && code <= 0x2FA1F)
+                    ) return w + 2;
+                    return w + (code > 0xFFFF ? 2 : 1);
+                }, 0);
+                
+                const padding = bubbleWidth - displayWidth;
+                return ` │ ${line}${' '.repeat(padding)} │`;
+            },
+            bottom: '  └' + '─'.repeat(bubbleWidth + 2) + '┘'
         }
+    ];
+    
+    // 选择气泡样式 - 基于用户参数
+    // 确保样式索引在有效范围内
+    const validStyleIndex = Math.min(Math.max(0, styleIndex), bubbleStyles.length - 1);
+    const bubbleStyle = bubbleStyles[validStyleIndex];
+    
+    if (!bubbleStyle) {
+        // 如果发生异常，返回null
+        return null;
+    }
+    
+    const rawBubbleLines: string[] = [];
+    rawBubbleLines.push(bubbleStyle.top); // 顶部边框
+    textLines.forEach(line => {
+        // 对每行文本应用气泡样式
+        rawBubbleLines.push(bubbleStyle.middle(line));
+    });
+    rawBubbleLines.push(bubbleStyle.bottom); // 底部边框
 
-        // 最后一行
-        if (lines.length > 1) {
-            const lastLine = lines[lines.length - 1] || '';
-            bubble += `\\ ${lastLine.padEnd(paddedWidth, ' ')} /\n`;
+    // --- 计算位置 (基于 ASCII 艺术) ---
+    const asciiLines = asciiArt.split('\n');
+    let minX = Infinity, maxX = 0, minY = Infinity, maxY = -1; // Initialize maxY to -1
+
+    // 用安全的方式处理数组项，避免TypeScript错误
+    for (let y = 0; y < asciiLines.length; y++) {
+        const line = asciiLines[y] || '';
+        const trimmedLine = line.trimEnd();
+        if (trimmedLine.length > 0) {
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            const firstCharIndex = line.search(/\S/);
+            if (firstCharIndex !== -1 && firstCharIndex < minX) minX = firstCharIndex;
+            if (trimmedLine.length > maxX) maxX = trimmedLine.length;
         }
-
-        bubble += ` ${'‾'.repeat(paddedWidth + 2)}\n`;
-        bubble += `  \\\n`;
-        bubble += `   \\\n`;
     }
 
-    return bubble;
+    // 如果ASCII艺术为空或只有空白，设置默认位置
+    if (minY === Infinity) {
+        minY = 0;
+        maxY = 0;
+        minX = 0;
+        maxX = 0;
+    }
+
+    // 自适应气泡位置策略
+    const asciiHeight = (maxY - minY) + 1;
+    const bubbleHeight = rawBubbleLines.length;
+    
+    // 智能决定气泡位置 (上/下/左/右)
+    type BubblePosition = 'top' | 'right' | 'bottom' | 'left';
+    let bubblePosition: BubblePosition = 'right'; // 默认右侧
+    
+    // 如果艺术很高，考虑上方或下方放置
+    if (asciiHeight > 10 && maxX < 30) {
+        bubblePosition = minY > 5 ? 'top' : 'bottom';
+    }
+    
+    // 根据位置确定气泡开始坐标
+    let bubbleStartY = 0;
+    let bubbleStartX = 0;
+    
+    // 根据不同位置添加不同样式的尖角，并调整位置
+    switch (bubblePosition) {
+        case 'top':
+            // 上方气泡，不再添加尖角
+            bubbleStartY = Math.max(0, minY - bubbleHeight); // 不需要额外空间
+            bubbleStartX = minX;
+            break;
+        case 'bottom':
+            // 下方气泡，不再添加尖角
+            bubbleStartY = maxY + 1;
+            bubbleStartX = minX;
+            break;
+        case 'left' as BubblePosition:
+            // 左侧气泡，不再添加尖角
+            bubbleStartY = minY;
+            bubbleStartX = Math.max(0, minX - bubbleWidth - 3);
+            break;
+        case 'right':
+        default:
+            // 右侧气泡，不再添加尖角
+            
+            // 计算相关ASCII宽度
+            let relevantAsciiWidth = 0;
+            const bubbleVerticalRange = Math.min(minY + bubbleHeight, asciiLines.length);
+            for (let y = minY; y < bubbleVerticalRange; y++) {
+                const line = asciiLines[y] || '';
+                relevantAsciiWidth = Math.max(relevantAsciiWidth, line.trimEnd().length);
+            }
+            
+            // 回退策略
+            if (relevantAsciiWidth < minX && minY !== Infinity) {
+                relevantAsciiWidth = maxX;
+            }
+            
+            bubbleStartY = minY;
+            bubbleStartX = relevantAsciiWidth + 2;
+            break;
+    }
+
+    // 应用填充
+    const positionedBubbleLines = rawBubbleLines.map(line => ' '.repeat(bubbleStartX) + line);
+
+    return {
+        lines: positionedBubbleLines,
+        startY: bubbleStartY,
+        position: bubblePosition
+    };
 };
 
 // 随机整数函数
@@ -174,7 +282,7 @@ function randomInt(min: number, max: number): number {
 }
 
 // 将ASCII艺术和说话内容转换为消息格式，避免Markdown解析错误
-const formatAsciiOutput = (content: string, extraInfo?: string): string => {
+const formatAsciiOutput = (content: string, extraInfo?: string): TextWithEntities => {
     // 限制内容长度，防止消息过长
     const MAX_CONTENT_LENGTH = 2000; // Telegram消息的安全长度上限
     let truncatedContent = content;
@@ -188,77 +296,69 @@ const formatAsciiOutput = (content: string, extraInfo?: string): string => {
 
     // 如果有额外信息，单独添加
     if (extraInfo) {
-        return codeBlock + '\n' + extraInfo;
+        return md(codeBlock + '\n' + extraInfo);
     }
 
-    return codeBlock;
+    return md(codeBlock);
 };
 
-// 将ASCII艺术和对话气泡组合在一起，气泡在右上角
-const combineAsciiAndBubble = (asciiArt: string, speakText: string): string => {
-    // 将ASCII艺术和气泡分别分成行
+// 将ASCII艺术和预先定位好的对话气泡组合在一起
+const combineAsciiAndBubble = (asciiArt: string, speakText: string, bubbleStyle: number = 0): string => {
+    // Create the positioned bubble based on the art and text
+    const positionedBubble = createPositionedBubble(asciiArt, speakText, bubbleStyle);
+
+    // If no bubble was created (e.g., empty text), return original art
+    if (!positionedBubble) {
+        return asciiArt;
+    }
+
     const asciiLines = asciiArt.split('\n');
-    const bubbleLines = asciiBubble(speakText).split('\n');
+    const { lines: bubbleLines, startY: bubbleStartY } = positionedBubble;
+    const bubbleHeight = bubbleLines.length;
 
-    // 移除首尾的空行
-    const trimmedAsciiLines = [];
-    let startIndex = 0;
-    let endIndex = asciiLines.length - 1;
-
-    // 找到第一个非空行
-    while (startIndex < asciiLines.length && (asciiLines[startIndex]?.trim() === '' || asciiLines[startIndex] === undefined)) {
-        startIndex++;
+    // --- 优化：更高效地合并行 ---
+    // 计算需要的最终高度
+    const requiredHeight = Math.max(asciiLines.length, bubbleStartY + bubbleHeight);
+    const combinedLines: string[] = new Array(requiredHeight);
+    
+    // 先复制原始ASCII行
+    for (let i = 0; i < asciiLines.length; i++) {
+        combinedLines[i] = asciiLines[i] || '';
+    }
+    
+    // 确保剩余行填充为空字符串
+    for (let i = asciiLines.length; i < requiredHeight; i++) {
+        combinedLines[i] = '';
     }
 
-    // 找到最后一个非空行
-    while (endIndex >= 0 && (asciiLines[endIndex]?.trim() === '' || asciiLines[endIndex] === undefined)) {
-        endIndex--;
-    }
-
-    // 提取有效的ASCII行
-    for (let i = startIndex; i <= endIndex; i++) {
-        trimmedAsciiLines.push(asciiLines[i] || '');
-    }
-
-    if (trimmedAsciiLines.length === 0) {
-        return asciiArt; // 没有有效行，返回原始ASCII
-    }
-
-    // 确定气泡显示的行数和ASCII艺术的最大宽度
-    const maxBubbleLines = Math.min(bubbleLines.length, 5); // 最多显示5行气泡
-    const maxAsciiWidth = Math.max(...trimmedAsciiLines.map(line => line.length));
-
-    // 为了确保气泡在右侧，添加足够的空格
-    const spacedBubbleLines = bubbleLines.map(line => ' '.repeat(maxAsciiWidth + 2) + line);
-
-    // 组合结果
-    let result = '';
-
-    // 添加顶部气泡行
-    for (let i = 0; i < Math.min(maxBubbleLines, trimmedAsciiLines.length); i++) {
-        if (i < trimmedAsciiLines.length) {
-            const asciiLine = trimmedAsciiLines[i] || '';
-            const bubbleLine = spacedBubbleLines[i] || '';
-
-            // 将ASCII行与气泡行组合
-            result += asciiLine.padEnd(maxAsciiWidth, ' ') + bubbleLine.substring(maxAsciiWidth) + '\n';
-        } else {
-            // 如果ASCII行数不足，单独添加气泡行
-            result += ' '.repeat(maxAsciiWidth) + bubbleLines[i] + '\n';
+    // --- 优化：更安全地合并气泡 ---
+    for (let i = 0; i < bubbleLines.length; i++) {
+        const bubbleLine = bubbleLines[i];
+        // 安全检查：确保气泡行存在
+        if (!bubbleLine) continue;
+        
+        const targetY = bubbleStartY + i;
+        if (targetY >= 0 && targetY < combinedLines.length) { // 安全检查
+            const existingLine = combinedLines[targetY] || ''; // 确保行存在，否则使用空字符串
+            
+            // 查找气泡内容开始的位置
+            const bubbleStartX = bubbleLine.search(/\S/);
+            if (bubbleStartX === -1) continue; // 跳过空行
+            
+            // 取现有行的前缀部分
+            const prefix = existingLine.substring(0, bubbleStartX);
+            // 确保前缀有足够的空格
+            const paddedPrefix = prefix.padEnd(bubbleStartX, ' ');
+            
+            // 取气泡行的非空格部分
+            const bubbleContent = bubbleLine.substring(bubbleStartX);
+            
+            // 组合：前缀 + 气泡内容
+            combinedLines[targetY] = paddedPrefix + bubbleContent;
         }
     }
 
-    // 添加剩余的ASCII行
-    for (let i = maxBubbleLines; i < trimmedAsciiLines.length; i++) {
-        result += trimmedAsciiLines[i] + '\n';
-    }
-
-    // 添加原始ASCII的尾部空行
-    for (let i = endIndex + 1; i < asciiLines.length; i++) {
-        result += (asciiLines[i] || '') + '\n';
-    }
-
-    return result;
+    return combinedLines.join('\n');
 };
 
 const plugin: BotPlugin = {
@@ -269,61 +369,142 @@ const plugin: BotPlugin = {
     commands: [
         {
             name: 'ascii',
-            description: '生成ASCII艺术图或让ASCII图案说话\n用法：\n/ascii 列表 - 查看所有可用图案\n/ascii 猫 - 显示猫的ASCII图案\n/ascii 猫 你好 - 让猫说"你好"\n/ascii 你好 - 随机选择图案说"你好"',
+            description: '生成ASCII艺术或让其说话\n用法:\n/ascii list - 显示可用的艺术名称\n/ascii <art_name> [text] - 显示特定艺术，可选择让其说话\n/ascii [text] - 显示随机艺术说话\n/ascii <art_name> -s=1 [text] - 使用样式1的气泡（0=标准，1=圆角，2=方角）',
             async handler(ctx: CommandContext) {
-                // 如果参数是"列表"，显示所有可用的ASCII艺术
-                if (ctx.content?.trim().toLowerCase() === '列表') {
+                // 如果没有提供内容，显示帮助信息
+                if (!ctx.content || ctx.content.trim() === '') {
                     const artList = Object.keys(asciiArts).join(', ');
-                    await ctx.message.replyText(`可用的ASCII图案列表：\n${artList}\n\n使用方法：\n/ascii [图案名] - 显示指定图案\n/ascii [图案名] [文本] - 让指定图案说话\n/ascii [文本] - 让随机图案说话`);
+                    await ctx.message.replyText(`请提供艺术名称或让艺术说话的文本：\n\n可用艺术: ${artList}\n\n使用 "/ascii list" 获取详细信息`);
                     return;
                 }
 
-                if (!ctx.content) {
-                    // 如果没有参数，显示帮助和可用的ASCII艺术列表
+                const content = ctx.content.trim();
+
+                // 处理列表命令
+                if (content.toLowerCase() === 'list' || content.toLowerCase() === '列表') {
                     const artList = Object.keys(asciiArts).join(', ');
-                    await ctx.message.replyText(`请输入要显示的ASCII图案名称或想让图案说的话：\n\n可用图案: ${artList}\n\n使用 "/ascii 列表" 查看详细说明`);
+                    await ctx.message.replyText(`可用的ASCII艺术: \n${artList}\n\n用法:\n/ascii <艺术名称> [文本]\n/ascii [文本] (随机艺术)\n/ascii <艺术名称> -s=1 [文本] (使用样式1的气泡：0=标准,1=圆角,2=方角)`);
                     return;
                 }
 
-                // 检查是否请求了预定义的ASCII艺术
-                const contentParts = ctx.content?.split(' ') || [];
-                const requestedArt = contentParts[0]?.trim().toLowerCase() || '';
-
-                if (asciiArts[requestedArt]) {
-                    // 获取ASCII艺术
-                    let result = asciiArts[requestedArt];
-
-                    // 如果有额外文本，将其添加到ASCII艺术的气泡中
-                    if (contentParts.length > 1) {
-                        const speakText = contentParts.slice(1).join(' ');
-                        result = combineAsciiAndBubble(result, speakText);
+                // 分割内容为艺术名和文本
+                let contentParts = content.split(' ');
+                const firstPart = contentParts[0]?.toLowerCase() || '';
+                let speakText = '';
+                let selectedArtKey = '';
+                let selectedArt: string = '';
+                let isRandom = false;
+                
+                // 解析气泡样式参数
+                let bubbleStyleIndex = 0; // 默认样式
+                // 查找形如 -s=1 的样式参数
+                const styleParamIndex = contentParts.findIndex(part => /^-s=\d+$/.test(part));
+                if (styleParamIndex >= 0) {
+                    const styleParam = contentParts[styleParamIndex] || '';
+                    if (styleParam) {
+                        const styleMatch = styleParam.match(/^-s=(\d+)$/);
+                        if (styleMatch && styleMatch[1]) {
+                            bubbleStyleIndex = parseInt(styleMatch[1], 10);
+                            // 从内容部分移除样式参数
+                            contentParts = contentParts.filter((_, i) => i !== styleParamIndex);
+                        }
                     }
-
-                    await ctx.message.replyText(formatAsciiOutput(result));
-                    return;
                 }
 
-                // 否则显示随机ASCII艺术并让它说话
-                const artKeys = Object.keys(asciiArts);
-                const randomArtKey = artKeys[Math.floor(Math.random() * artKeys.length)];
+                // 重新获取第一部分（如果样式参数是第一个，可能会变）
+                const newFirstPart = contentParts[0]?.toLowerCase() || '';
 
-                // 确保我们能够获取到有效的ASCII艺术
-                if (randomArtKey && asciiArts[randomArtKey]) {
-                    const randomArt = asciiArts[randomArtKey];
+                // 检查第一部分是否是有效的艺术名称
+                if (newFirstPart && newFirstPart in asciiArts) {
+                    // 使用指定的艺术
+                    selectedArtKey = newFirstPart;
+                    const art = asciiArts[newFirstPart];
+                    if (typeof art === 'string') {
+                        selectedArt = art;
 
-                    // 添加用户文本到随机ASCII艺术的气泡中
-                    let result = randomArt;
-                    if (ctx.content) {
-                        result = combineAsciiAndBubble(randomArt, ctx.content);
+                        // 如果有额外的文本，用于说话
+                        if (contentParts.length > 1) {
+                            speakText = contentParts.slice(1).join(' ');
+                        }
                     }
-
-                    const extraInfo = `(随机选择了: ${randomArtKey}，输入 /ascii 列表 查看所有图案)`;
-                    await ctx.message.replyText(formatAsciiOutput(result, extraInfo));
                 } else {
-                    // 如果出现意外情况，显示简单消息
-                    await ctx.message.replyText('无法生成ASCII艺术，请稍后再试');
+                    // 使用随机艺术，整个内容作为说话文本
+                    isRandom = true;
+                    speakText = contentParts.join(' '); // 重新组合所有内容作为说话文本
+                    
+                    const artKeys = Object.keys(asciiArts);
+
+                    if (artKeys.length === 0) {
+                        await ctx.message.replyText('没有可用的ASCII艺术。');
+                        return;
+                    }
+
+                    // 优化随机选择，加权选择较小的艺术（更符合聊天界面）
+                    const artSizes = artKeys.map((key, index) => {
+                        // 为key添加类型保护
+                        if (typeof key !== 'string') return Infinity;
+                        
+                        const art = asciiArts[key];
+                        // 计算艺术的大小因子（行数 × 平均每行长度）
+                        if (typeof art !== 'string') return Infinity;
+                        
+                        const lines = art.split('\n');
+                        // 安全计算总长度
+                        const totalLength = lines.reduce((sum, line) => {
+                            return sum + (line ? line.length : 0);
+                        }, 0);
+                        
+                        // 避免除以零
+                        const avgLineLength = lines.length > 0 ? totalLength / lines.length : 0;
+                        return lines.length * avgLineLength || 1; // 确保返回正数
+                    });
+                    
+                    // 基于大小的反比例权重计算
+                    const weights = artSizes.map(size => 1 / Math.sqrt(size));
+                    const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+                    
+                    // 随机选择（权重）
+                    let random = Math.random() * totalWeight;
+                    let selectedIndex = 0;
+                    
+                    for (let i = 0; i < weights.length; i++) {
+                        const weight = weights[i] || 0; // 添加安全检查，避免undefined
+                        random -= weight;
+                        if (random <= 0) {
+                            selectedIndex = i;
+                            break;
+                        }
+                    }
+                    
+                    const key = artKeys[selectedIndex];
+                    if (key) {
+                        selectedArtKey = key;
+                        const art = asciiArts[key];
+                        if (typeof art === 'string') {
+                            selectedArt = art;
+                            speakText = content; // 使用整个内容作为说话文本
+                        }
+                    }
                 }
-                return;
+
+                // 处理艺术输出
+                if (selectedArt) {
+                    let outputContent = selectedArt;
+
+                    // 如果有说话文本，将其与艺术组合，传入气泡样式
+                    if (speakText) {
+                        outputContent = combineAsciiAndBubble(outputContent, speakText, bubbleStyleIndex);
+                    }
+
+                    // 为随机选择的艺术添加额外信息
+                    const extraInfo = isRandom ? `(随机选择: ${selectedArtKey}, 使用 /ascii list 查看所有)` : undefined;
+
+                    // 回复格式化后的输出
+                    await ctx.message.replyText(formatAsciiOutput(outputContent, extraInfo));
+                } else {
+                    // 如果出现问题导致没有艺术被选择
+                    await ctx.message.replyText('无法生成ASCII艺术，请重试。');
+                }
             }
         },
 
@@ -509,43 +690,6 @@ const plugin: BotPlugin = {
         },
 
         {
-            name: 'magic8',
-            description: '魔法8球，回答是/否问题\n用法：\n/magic8 我今天会遇到好事吗？ - 随机给出一个预测回答',
-            async handler(ctx: CommandContext) {
-                if (!ctx.content) {
-                    await ctx.message.replyText('请输入一个问题');
-                    return;
-                }
-
-                const answers = [
-                    "是的，绝对如此！✅",
-                    "确定是这样。🟢",
-                    "毫无疑问。✅",
-                    "迹象表明是的。🟢",
-                    "看起来不错。👍",
-                    "很有可能。🔮",
-                    "前景光明。✨",
-                    "是的。👌",
-                    "回答模糊，请再试一次。🔄",
-                    "过会儿再问。⏳",
-                    "现在不方便透露。🤐",
-                    "无法预测。❓",
-                    "专心提问，再问一次。🧠",
-                    "不要指望它。❌",
-                    "我的回答是否定的。🔴",
-                    "我的消息来源说不行。🚫",
-                    "前景不太好。☹️",
-                    "很成疑。❓"
-                ];
-
-                const randomIndex = Math.floor(Math.random() * answers.length);
-                const answer = answers[randomIndex];
-
-                await ctx.message.replyText(`🎱 问题: ${ctx.content}\n\n${answer}`);
-            }
-        },
-
-        {
             name: 'choose',
             description: '从多个选项中随机选择一个\n用法：\n/choose 选项1 选项2 选项3 - 从多个选项中随机选一个\n也支持用逗号、或字分隔：选项1,选项2或选项3',
             async handler(ctx: CommandContext) {
@@ -569,4 +713,4 @@ const plugin: BotPlugin = {
     ]
 };
 
-export default plugin; 
+export default plugin;

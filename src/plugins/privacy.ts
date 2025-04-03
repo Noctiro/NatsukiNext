@@ -1364,10 +1364,7 @@ const plugin: BotPlugin = {
 
                     // 如果找到并解析了链接，且有实际修改，则删除原消息并发送新消息
                     if (foundLinks && processedText !== messageText && processedCount > 0) {
-                        // 格式化新消息
-                        const senderName = ctx.message.sender.displayName || '用户';
-
-                        const content = `${senderName} 分享内容（隐私保护，已移除跟踪参数）:\n${processedText}`;
+                        const content = html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName}</a> 分享内容（隐私保护，已移除跟踪参数）:\n${processedText}`;
 
                         // 发送新消息（如果存在回复消息则保持回复关系）
                         try {
