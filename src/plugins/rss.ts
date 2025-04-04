@@ -533,7 +533,10 @@ class AiNewsSelector extends NewsSelector {
                 ? n.title.substring(0, MAX_TITLE_LENGTH) + '...'
                 : n.title;
             const date = n.pubDate
-                ? new Date(n.pubDate).toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' })
+                ? new Date(n.pubDate).toLocaleString('zh-CN', { 
+                    year: 'numeric', month: 'numeric', day: 'numeric',
+                    hour: 'numeric', minute: 'numeric' 
+                })
                 : '';
             return `${i + 1}. ${title}${date ? ` (${date})` : ''}`;
         }).join('\n');

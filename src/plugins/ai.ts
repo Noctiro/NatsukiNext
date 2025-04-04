@@ -1,7 +1,6 @@
 import { html, TelegramClient } from '@mtcute/bun';
 import { getHighQualityAI, getFastAI } from '../ai/AiManager';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext } from '../features';
-import { log } from '../log';
 import {
     search,
     OrganicResult,
@@ -267,45 +266,39 @@ class MessageManager {
  * 关键词生成类 - 处理搜索关键词的生成
  */
 class KeywordGenerator {
-    private static readonly SEARCH_KEYWORDS_GENERATION_PROMPT = `作为AI搜索助手，您的任务是基于用户问题生成最少且最有效的搜索关键词，以获取最相关的搜索结果。
+    private static readonly SEARCH_KEYWORDS_GENERATION_PROMPT = `作为一名智能搜索优化助手，您的任务是深入理解用户的查询意图，并生成最精准、高效的搜索查询，以获取最相关的搜索结果。
 
 当前时间：CURRENT_DATETIME
 
-请分析以下用户问题，并生成1-3个高质量搜索查询（每行一个），确保涵盖最全面的信息：
+请分析以下用户问题，推理其核心需求，并生成 1-3 个最优搜索查询（每行一个），确保搜索结果精准全面：
 
 "$USER_QUESTION$"
 
-优化原则：
-1. **智能判断语言需求**：
-   - **本地信息**（如天气、地方新闻、本地服务等）仅使用相关地区的主要语言
-   - **技术、科学、国际事件**等全球性话题，优先提供英文版本，并根据话题相关国家的语言补充查询
-   - **涉及特定国家的查询**（如政策、文化、法律等），应包含该国的主要语言查询（如查询法国税收政策时提供法语关键词）
-
-2. **少而精**：
-   - 生成的不同语言版本的关键词总数不超过3个
-   - 避免冗余，优先提供最权威、最有效的查询
-
-3. **精准表达**：
-   - 查询应包含关键概念、实体、专业术语，避免过于宽泛的词汇
-   - 对于**技术、科学、国际事件**等，优先提供英文关键词
-   - 对于**中国本地、文化或地区性话题**，优先或仅提供中文关键词
-   - 对于**需要最新信息的查询**，添加相关的日期或年份或其他格式
-
-4. **提高结果质量**：
-   - 适当添加"官方"、"权威"、"official"、"政府"等修饰词，以获取高质量来源
-   - 若查询涉及学术、研究、医疗等领域，可考虑"论文"、"研究报告"、"PubMed"、"Google Scholar"等关键词
-
-5. **多语言覆盖优化**：
-   - **国际新闻、外交政策等**，优先提供**目标国家+英语**的查询（如"日本外交政策"提供日语和英语关键词）
-   - **特定国家的法律、政府政策等**，优先提供该国主要语言的关键词
-   - **科技、学术等前沿领域**，主要提供**英文**查询
-   - **涉及特定机构（如欧盟、联合国等）**，可直接使用机构官方语言（如联合国相关问题可优先提供英语或法语查询）
+### 生成原则：
+1. **理解用户意图**：
+   - 判断用户是在寻找**事实性信息**、**深入研究**，还是**寻找特定网站或资源**。
+   - 考虑用户可能的上下文需求，如时间范围、地域、行业术语等。
+   
+2. **精准搜索表达**：
+   - 生成完整的搜索查询，而不是单独的关键词拼凑。
+   - 使用自然语言短语，确保查询符合搜索引擎的最佳实践。
+   - 结合**专业术语、权威来源**，避免过于宽泛的词汇。
+   
+3. **智能调整语言**：
+   - **本地信息**（如天气、新闻、政府服务等）优先使用该地区的主要语言。
+   - **国际性主题**（如科技、学术、经济、外交等）优先提供英文查询，并结合相关国家的语言。
+   - **特定国家的政策、法律、文化等**，优先提供该国主要语言的查询。
+   
+4. **优化查询结构**：
+   - **添加限定词**：使用"最新"、"官方"、"PDF"、"研究报告"等提高结果质量。
+   - **结合高信赖来源**：可加入"site:gov"、"site:edu"、"Google Scholar"、"PubMed"等。
+   - **时间筛选**：适当添加年份或"最近"类词汇，确保获取最新信息。
 
 ### 输出格式：
-- 每行一个优化后的查询，不添加编号或引号
-- 不添加任何说明或评论，直接输出查询词
-- 查询词应保持简洁，通常不超过6个单词
-- 不同语言的查询分行列出，避免重复`;
+- 每行一个优化后的搜索查询，不添加编号或引号。
+- 直接输出查询词，无需额外说明或注释。
+- 查询应精炼、可执行，通常不超过 8 个单词。
+- 不同语言的查询分行列出，避免冗余。`;
 
     /**
      * 生成搜索关键词
@@ -343,11 +336,6 @@ class KeywordGenerator {
      * 备用关键词生成方法
      */
     static generateFallbackKeywords(userQuestion: string): string {
-        // 检测问题是否包含英文字符
-        const hasEnglish = /[a-zA-Z]/.test(userQuestion);
-        // 检测问题是否包含中文字符
-        const hasChinese = /[\u4e00-\u9fa5]/.test(userQuestion);
-
         // 简单地将问题分割成多个部分作为关键词
         const words = userQuestion
             .replace(/[.,?!;:"']/g, '')
@@ -376,32 +364,6 @@ class KeywordGenerator {
             }
         }
 
-        // 如果问题同时包含中英文，尝试添加单语言版本关键词
-        if (hasChinese && hasEnglish) {
-            // 尝试提取主要英文部分
-            const englishWords = userQuestion.match(/[a-zA-Z]+(?:\s+[a-zA-Z]+)*/g);
-            if (englishWords && englishWords.length > 0) {
-                const englishPhrase = englishWords
-                    .filter(word => word.length > 3)
-                    .slice(0, 3)
-                    .join(' ');
-
-                if (englishPhrase && englishPhrase.length > 3 && !keywordPhrases.includes(englishPhrase)) {
-                    keywordPhrases.push(englishPhrase);
-                }
-            }
-
-            // 尝试提取主要中文部分
-            const chineseWords = userQuestion.match(/[\u4e00-\u9fa5]+/g);
-            if (chineseWords && chineseWords.length > 0) {
-                const chinesePhrase = chineseWords.join('');
-
-                if (chinesePhrase && chinesePhrase.length > 1 && !keywordPhrases.includes(chinesePhrase)) {
-                    keywordPhrases.push(chinesePhrase);
-                }
-            }
-        }
-
         // 限制最多返回3个关键词短语
         const limitedPhrases = keywordPhrases.slice(0, 3);
 
@@ -422,19 +384,6 @@ class KeywordGenerator {
 
         // 使用通用函数格式化预览文本
         if (keywordLines.length > 1) {
-            // 检查是否包含多语言关键词
-            const hasMultiLang = keywordLines.some(kw => {
-                // 检测一行中是否同时包含中文和英文或其他语言
-                const hasChinese = /[\u4e00-\u9fa5]/.test(kw);
-                const hasEnglish = /[a-zA-Z]/.test(kw);
-                return hasChinese && hasEnglish;
-            });
-
-            // 如果包含多语言关键词，提供更多信息
-            if (hasMultiLang) {
-                return `正在使用多语言关键词搜索(${keywordLines.length}个)`;
-            }
-
             const firstKeyword = keywordLines[0] || '';
             const keywordPreview = this.truncateText(firstKeyword, 25, 22);
             return `${keywordPreview} 等${keywordLines.length}个关键词`;
@@ -520,17 +469,7 @@ class SearchService {
             return [];
         }
 
-        // 智能检测是否需要多语言搜索
-        const languageAnalysis = this.analyzeSearchLanguages(keywordLines);
-        const hasMultiLang = languageAnalysis.isMultiLingual;
-
-        if (hasMultiLang) {
-            plugin.logger?.info(`检测到多语言搜索需求: ${languageAnalysis.languages.join(', ')}`);
-        }
-
-        // 过滤不必要的多语言关键词（如天气查询）
-        const filteredKeywords = this.filterUnnecessaryMultilingualKeywords(keywordLines);
-        plugin.logger?.info(`开始搜索，关键词数量: ${filteredKeywords.length}，多语言=${hasMultiLang}`);
+        plugin.logger?.info(`开始搜索，关键词数量: ${keywordLines.length}`);
 
         const results = [];
         let totalResults = 0;
@@ -543,9 +482,9 @@ class SearchService {
         while (searchAttempts < MAX_SEARCH_ATTEMPTS) {
             searchAttempts++;
 
-            // 第一轮使用过滤后的关键词，第二轮使用备用关键词
+            // 第一轮使用原始关键词，第二轮使用备用关键词
             const currentKeywords: string[] = searchAttempts === 1 ?
-                filteredKeywords :
+                keywordLines :
                 this.generateBackupSearchKeywords(keywordLines, 3 - results.length);
 
             if (searchAttempts > 1 && currentKeywords.length > 0) {
@@ -641,83 +580,6 @@ class SearchService {
     }
 
     /**
-     * 分析搜索关键词的语言情况
-     */
-    private analyzeSearchLanguages(keywords: string[]): { isMultiLingual: boolean, languages: string[] } {
-        const languages = new Set<string>();
-
-        // 检查每个关键词的语言
-        for (const keyword of keywords) {
-            if (/[\u4e00-\u9fa5]/.test(keyword)) {
-                languages.add('中文');
-            }
-
-            if (/[a-zA-Z]/.test(keyword)) {
-                languages.add('英文');
-            }
-
-            if (/[\u3040-\u30ff]/.test(keyword)) {
-                languages.add('日文');
-            }
-
-            if (/[\uac00-\ud7a3]/.test(keyword)) {
-                languages.add('韩文');
-            }
-        }
-
-        // 判断是否是多语言查询
-        // 1. 检查是否有多个不同语言的关键词
-        const hasMultipleLanguages = languages.size > 1;
-
-        // 2. 检查单个关键词中是否混合了多种语言
-        const hasMixedLanguageKeyword = keywords.some(kw => {
-            let langCount = 0;
-            if (/[\u4e00-\u9fa5]/.test(kw)) langCount++;
-            if (/[a-zA-Z]{2,}/.test(kw)) langCount++; // 英文至少2个字母才算
-            if (/[\u3040-\u30ff]/.test(kw)) langCount++;
-            if (/[\uac00-\ud7a3]/.test(kw)) langCount++;
-            return langCount > 1;
-        });
-
-        return {
-            isMultiLingual: hasMultipleLanguages || hasMixedLanguageKeyword,
-            languages: Array.from(languages)
-        };
-    }
-
-    /**
-     * 过滤不必要的多语言关键词
-     */
-    private filterUnnecessaryMultilingualKeywords(keywords: string[]): string[] {
-        if (keywords.length <= 1) return keywords;
-
-        // 检查是否是本地信息查询（天气、地点等）
-        const isLocalInfoQuery = keywords.some(kw => {
-            const lowerKw = kw.toLowerCase();
-            return (
-                // 天气相关
-                lowerKw.includes('天气') || lowerKw.includes('weather') ||
-                lowerKw.includes('气温') || lowerKw.includes('temperature') ||
-                // 本地信息
-                lowerKw.includes('附近') || lowerKw.includes('nearby') ||
-                lowerKw.includes('交通') || lowerKw.includes('traffic') ||
-                lowerKw.includes('餐厅') || lowerKw.includes('restaurant')
-            );
-        });
-
-        if (isLocalInfoQuery) {
-            // 对于本地信息，优先保留中文关键词
-            const chineseKeywords = keywords.filter(kw => /[\u4e00-\u9fa5]/.test(kw));
-            if (chineseKeywords.length > 0) {
-                plugin.logger?.info('检测到本地信息查询，优先使用中文关键词');
-                return chineseKeywords;
-            }
-        }
-
-        return keywords;
-    }
-
-    /**
      * 生成备用搜索关键词
      */
     private generateBackupSearchKeywords(originalKeywords: string[], count: number): string[] {
@@ -773,34 +635,23 @@ class ResponseFormatter {
         try {
             // 应用Markdown转换规则，符合 @mtcute/html-parser 支持的实体
             const markdownRules = [
-                // 标题（转为粗体）
-                { pattern: /^#+ (.+)$/gm, replacement: '<b>$1</b>' },
-
                 // 基本格式
+                { pattern: /^#+ (.+)$/gm, replacement: '<b>$1</b>' },             // 标题转为粗体
                 { pattern: /\*\*(.+?)\*\*/g, replacement: '<b>$1</b>' },         // 粗体
                 { pattern: /\*(.+?)\*/g, replacement: '<i>$1</i>' },             // 斜体
                 { pattern: /__(.+?)__/g, replacement: '<u>$1</u>' },             // 下划线
                 { pattern: /~~(.+?)~~/g, replacement: '<s>$1</s>' },             // 删除线
                 { pattern: /`([^`]+)`/g, replacement: '<code>$1</code>' },       // 行内代码
-
-                // 链接
-                { pattern: /\[(.+?)\]\((.+?)\)/g, replacement: '<a href="$2">$1</a>' },
-
-                // 列表（转为普通文本，带有项目符号）
-                { pattern: /^- (.+)$/gm, replacement: '• $1' },
-                { pattern: /^\d+\. (.+)$/gm, replacement: '• $1' },
-
-                // 分隔线和引用
+                { pattern: /\[(.+?)\]\((.+?)\)/g, replacement: '<a href="$2">$1</a>' }, // 链接
+                { pattern: /^- (.+)$/gm, replacement: '• $1' },                   // 无序列表
+                { pattern: /^\d+\. (.+)$/gm, replacement: '• $1' },               // 有序列表
                 { pattern: /^---+$/gm, replacement: '<br>' },                    // 分隔线转为换行
                 { pattern: /^> (.+)$/gm, replacement: '❝ <i>$1</i>' }            // 引用转为斜体带引号
             ];
 
             // 处理代码块（使用 <pre> 标签）
             let htmlText = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, language, code) => {
-                if (language) {
-                    return `<pre language="${language}">${code}</pre>`;
-                }
-                return `<pre>${code}</pre>`;
+                return language ? `<pre language="${language}">${code}</pre>` : `<pre>${code}</pre>`;
             });
 
             // 应用转换规则
@@ -1174,8 +1025,6 @@ class SearchResultFormatter {
 
         // 处理有机搜索结果
         if (uniqueResults.length) {
-            output += `网络搜索结果:\n\n`;
-
             // 选择结果
             const highQualityResults = uniqueResults.filter(item => item.quality > 5);
             const lowQualityResults = uniqueResults.filter(item => item.quality <= 5);
@@ -1204,7 +1053,7 @@ class SearchResultFormatter {
                 // 格式化现有结果
                 let resultIndex = 1;
                 selectedResults.forEach((item) => {
-                    output += `[结果 ${resultIndex++}] -----\n`;
+                    output += `[结果 ${resultIndex++}] `;
                     output += this.formatSearchResultItem(item.result);
                 });
 
@@ -1247,137 +1096,19 @@ class SearchResultFormatter {
     private static processSpecialResults(results: any, initialText: string = ''): string {
         if (!results) return initialText;
 
-        const output = [];
+        const output: string[] = [];
 
         try {
-            // 检查结果是否是数组，如果是数组，在数组中查找特殊结果
+            // 处理数组类型结果
             if (Array.isArray(results)) {
-                // 如果是数组，尝试在其中找到特殊结果的对象
                 for (const result of results) {
                     if (!result) continue;
-
-                    // 查找可能包含特殊结果的对象
-                    if (result.type === 'dictionary' || result.dictionary) {
-                        const dictionary = result.dictionary || result;
-                        const term = dictionary.term || result.term || '未知术语';
-                        const definition = dictionary.definition || result.definition || '无定义';
-                        output.push(`📚 字典解释: ${term} - ${definition}`);
-                    } else if (result.type === 'translate' || result.translate) {
-                        const translate = result.translate || result;
-                        const source = translate.source || result.source || '未知';
-                        const target = translate.target || result.target || '未知';
-                        const sourceText = translate.sourceText || result.sourceText || translate.source_text || result.source_text || '无原文';
-                        const targetText = translate.targetText || result.targetText || translate.target_text || result.target_text || '无译文';
-
-                        output.push(`🌐 翻译结果: ${source} → ${target}`);
-                        output.push(`原文: ${sourceText}`);
-                        output.push(`译文: ${targetText}`);
-                    } else if (result.type === 'time' || result.time) {
-                        const time = result.time || result;
-                        const timeDisplay = time.display || time.time_display || result.display || '未知时间';
-                        output.push(`⏰ 时间信息: ${timeDisplay}`);
-                    } else if (result.type === 'currency' || result.currency) {
-                        const currency = result.currency || result;
-                        const fromAmount = currency.fromAmount || currency.from_amount || result.fromAmount || result.from_amount || '?';
-                        const fromCode = currency.fromCode || currency.from_code || result.fromCode || result.from_code || '?';
-                        const toAmount = currency.toAmount || currency.to_amount || result.toAmount || result.to_amount || '?';
-                        const toCode = currency.toCode || currency.to_code || result.toCode || result.to_code || '?';
-
-                        output.push(`💱 货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
-                    } else if (result.type === 'weather' || result.weather) {
-                        const weather = result.weather || result;
-                        const location = weather.location || result.location || '未知地点';
-                        const condition = weather.condition || result.condition || '未知天气';
-                        const temperature = weather.temperature || result.temperature || '';
-
-                        output.push(`🌤️ 天气信息: ${location} - ${condition}${temperature ? ` ${temperature}` : ''}`);
-                    }
+                    this.extractSpecialResult(result, output);
                 }
-            } else if (typeof results === 'object') {
-                // 非数组情况下的处理
-
-                // 字典解释
-                if (results.dictionary) {
-                    const term = results.dictionary.term || '未知术语';
-                    const definition = results.dictionary.definition || '无定义';
-                    output.push(`📚 字典解释: ${term} - ${definition}`);
-                }
-
-                // 直接在对象中查找
-                if (results.term && results.definition) {
-                    output.push(`📚 字典解释: ${results.term} - ${results.definition}`);
-                }
-
-                // 翻译结果
-                if (results.translate) {
-                    const source = results.translate.source || '未知';
-                    const target = results.translate.target || '未知';
-                    const sourceText = results.translate.sourceText || results.translate.source_text || '无原文';
-                    const targetText = results.translate.targetText || results.translate.target_text || '无译文';
-
-                    output.push(`🌐 翻译结果: ${source} → ${target}`);
-                    output.push(`原文: ${sourceText}`);
-                    output.push(`译文: ${targetText}`);
-                }
-
-                // 直接检查翻译字段
-                if (results.source && results.target && (results.sourceText || results.source_text) && (results.targetText || results.target_text)) {
-                    const sourceText = results.sourceText || results.source_text;
-                    const targetText = results.targetText || results.target_text;
-
-                    output.push(`🌐 翻译结果: ${results.source} → ${results.target}`);
-                    output.push(`原文: ${sourceText}`);
-                    output.push(`译文: ${targetText}`);
-                }
-
-                // 时间信息
-                if (results.time?.display || results.time?.time_display) {
-                    output.push(`⏰ 时间信息: ${results.time.display || results.time.time_display}`);
-                }
-
-                // 直接在对象中查找时间信息
-                if (results.display && results.type === 'time') {
-                    output.push(`⏰ 时间信息: ${results.display}`);
-                }
-
-                // 货币转换
-                if (results.currency) {
-                    const fromAmount = results.currency.fromAmount || results.currency.from_amount || '?';
-                    const fromCode = results.currency.fromCode || results.currency.from_code || '?';
-                    const toAmount = results.currency.toAmount || results.currency.to_amount || '?';
-                    const toCode = results.currency.toCode || results.currency.to_code || '?';
-
-                    output.push(`💱 货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
-                }
-
-                // 直接在对象中查找货币信息
-                if ((results.fromAmount || results.from_amount) &&
-                    (results.fromCode || results.from_code) &&
-                    (results.toAmount || results.to_amount) &&
-                    (results.toCode || results.to_code)) {
-
-                    const fromAmount = results.fromAmount || results.from_amount;
-                    const fromCode = results.fromCode || results.from_code;
-                    const toAmount = results.toAmount || results.to_amount;
-                    const toCode = results.toCode || results.to_code;
-
-                    output.push(`💱 货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
-                }
-
-                // 天气信息
-                if (results.weather) {
-                    const location = results.weather.location || '未知地点';
-                    const condition = results.weather.condition || '未知天气';
-                    const temperature = results.weather.temperature || '';
-
-                    output.push(`🌤️ 天气信息: ${location} - ${condition}${temperature ? ` ${temperature}` : ''}`);
-                }
-
-                // 直接在对象中查找天气信息
-                if (results.location && results.condition && results.type === 'weather') {
-                    const temperature = results.temperature || '';
-                    output.push(`🌤️ 天气信息: ${results.location} - ${results.condition}${temperature ? ` ${temperature}` : ''}`);
-                }
+            }
+            // 处理对象类型结果
+            else if (typeof results === 'object') {
+                this.extractSpecialResult(results, output);
             }
 
             return output.length > 0 ? output.join('\n') : initialText;
@@ -1388,56 +1119,129 @@ class SearchResultFormatter {
     }
 
     /**
+     * 从结果对象中提取特殊结果
+     */
+    private static extractSpecialResult(result: any, output: string[]): void {
+        // 字典解释
+        if (result.type === 'dictionary' || result.dictionary) {
+            const dictionary = result.dictionary || result;
+            const term = dictionary.term || result.term || '未知术语';
+            const definition = dictionary.definition || result.definition || '无定义';
+            output.push(`📚 字典解释: ${term} - ${definition}`);
+        }
+        // 翻译结果
+        else if (result.type === 'translate' || result.translate) {
+            const translate = result.translate || result;
+            const source = translate.source || result.source || '未知';
+            const target = translate.target || result.target || '未知';
+            const sourceText = translate.sourceText || result.sourceText || translate.source_text || result.source_text || '无原文';
+            const targetText = translate.targetText || result.targetText || translate.target_text || result.target_text || '无译文';
+
+            output.push(`🌐 翻译结果: ${source} → ${target}`);
+            output.push(`原文: ${sourceText}`);
+            output.push(`译文: ${targetText}`);
+        }
+        // 时间信息
+        else if (result.type === 'time' || result.time) {
+            const time = result.time || result;
+            const timeDisplay = time.display || time.time_display || result.display || '未知时间';
+            output.push(`⏰ 时间信息: ${timeDisplay}`);
+        }
+        // 货币转换
+        else if (result.type === 'currency' || result.currency) {
+            const currency = result.currency || result;
+            const fromAmount = currency.fromAmount || currency.from_amount || result.fromAmount || result.from_amount || '?';
+            const fromCode = currency.fromCode || currency.from_code || result.fromCode || result.from_code || '?';
+            const toAmount = currency.toAmount || currency.to_amount || result.toAmount || result.to_amount || '?';
+            const toCode = currency.toCode || currency.to_code || result.toCode || result.to_code || '?';
+
+            output.push(`💱 货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
+        }
+        // 天气信息
+        else if (result.type === 'weather' || result.weather) {
+            const weather = result.weather || result;
+            const location = weather.location || result.location || '未知地点';
+            const condition = weather.condition || result.condition || '未知天气';
+            const temperature = weather.temperature || result.temperature || '';
+
+            output.push(`🌤️ 天气信息: ${location} - ${condition}${temperature ? ` ${temperature}` : ''}`);
+        }
+        // 处理纯对象中的特殊字段
+        else {
+            // 检查是否直接包含字典、翻译等字段
+            if (result.term && result.definition) {
+                output.push(`📚 字典解释: ${result.term} - ${result.definition}`);
+            }
+
+            if (result.source && result.target &&
+                (result.sourceText || result.source_text) &&
+                (result.targetText || result.target_text)) {
+                const sourceText = result.sourceText || result.source_text;
+                const targetText = result.targetText || result.target_text;
+
+                output.push(`🌐 翻译结果: ${result.source} → ${result.target}`);
+                output.push(`原文: ${sourceText}`);
+                output.push(`译文: ${targetText}`);
+            }
+
+            if (result.display && result.type === 'time') {
+                output.push(`⏰ 时间信息: ${result.display}`);
+            }
+
+            if ((result.fromAmount || result.from_amount) &&
+                (result.fromCode || result.from_code) &&
+                (result.toAmount || result.to_amount) &&
+                (result.toCode || result.to_code)) {
+
+                const fromAmount = result.fromAmount || result.from_amount;
+                const fromCode = result.fromCode || result.from_code;
+                const toAmount = result.toAmount || result.to_amount;
+                const toCode = result.toCode || result.to_code;
+
+                output.push(`💱 货币转换: ${fromAmount} ${fromCode} = ${toAmount} ${toCode}`);
+            }
+
+            if (result.location && result.condition && result.type === 'weather') {
+                const temperature = result.temperature || '';
+                output.push(`🌤️ 天气信息: ${result.location} - ${result.condition}${temperature ? ` ${temperature}` : ''}`);
+            }
+        }
+    }
+
+    /**
      * 格式化单个搜索结果项
      */
     private static formatSearchResultItem(searchResult: any): string {
         if (!searchResult) return '';
 
         try {
-            // 提取各种可能的结果字段
-            const title = searchResult.title || searchResult.name || '';
+            // 提取基础字段
+            const title = searchResult.title || searchResult.name || '(无标题)';
             const link = searchResult.link || searchResult.url || '';
-            const snippet = searchResult.snippet || searchResult.description || searchResult.content || '';
-            const sitelinks = searchResult.sitelinks || [];
 
-            let resultText = '';
-
-            // 添加标题
-            resultText += title
-                ? `标题: ${title}\n`
-                : `标题: (无标题)\n`;
-
-            // 添加链接
-            if (link) {
-                resultText += `链接: ${link}\n`;
-            }
-
-            // 处理摘要
-            if (snippet) {
+            // 获取摘要内容
+            let snippet = searchResult.snippet || searchResult.description || searchResult.content || '';
+            if (!snippet) {
+                // 尝试提取备用摘要
+                snippet = this.extractAlternativeSnippet(searchResult) || '(无摘要)';
+            } else if (snippet.length > 250) {
                 // 智能截断长摘要
-                let formattedSnippet = snippet;
-                if (snippet.length > 200) {
-                    const endPos = snippet.substr(0, 200).lastIndexOf('。');
-                    formattedSnippet = endPos > 100
-                        ? snippet.substr(0, endPos + 1) + '...'
-                        : snippet.substr(0, 197) + '...';
-                }
-                resultText += `内容摘要: ${formattedSnippet}\n`;
-            } else {
-                // 尝试从其他可能包含摘要内容的字段提取
-                const alternativeSnippet = this.extractAlternativeSnippet(searchResult);
-                if (alternativeSnippet) {
-                    resultText += `内容摘要: ${alternativeSnippet}\n`;
-                } else {
-                    resultText += `内容摘要: (无摘要)\n`;
-                }
+                const endPos = snippet.substr(0, 300).lastIndexOf('。');
+                snippet = endPos > 200
+                    ? snippet.substr(0, endPos + 1) + '...'
+                    : snippet.substr(0, 297) + '...';
             }
 
-            // 添加相关链接
-            if (Array.isArray(sitelinks) && sitelinks.length > 0) {
-                const linkTitles = sitelinks
+            // 拼接结果文本
+            let resultText = `标题: ${title}\n`;
+            if (link) resultText += `链接: ${link}\n`;
+            resultText += `内容摘要: ${snippet}\n`;
+
+            // 添加相关链接（如果有）
+            if (Array.isArray(searchResult.sitelinks) && searchResult.sitelinks.length > 0) {
+                const linkTitles = searchResult.sitelinks
                     .filter(Boolean)
-                    .map(link => link.title || "(无标题)")
+                    .map((link: any) => link.title || "(无标题)")
                     .filter(Boolean)
                     .join(', ');
 
@@ -1455,46 +1259,27 @@ class SearchResultFormatter {
     }
 
     /**
-     * 尝试从搜索结果的各种字段中提取替代摘要
+     * 从搜索结果中提取备用摘要
      */
     private static extractAlternativeSnippet(result: any): string {
-        // 按优先级检查各种可能包含摘要的字段
-        const possibleFields = [
-            'abstract', 'summary', 'text', 'extract', 'description',
-            'rich_snippet', 'meta_description', 'pagemap.metatags.description'
-        ];
+        if (!result || typeof result !== 'object') return '';
 
-        for (const field of possibleFields) {
-            if (field.includes('.')) {
-                // 处理嵌套字段 (例如 pagemap.metatags.description)
-                const parts = field.split('.');
-                let value = result;
+        // 常见的可能包含摘要的字段
+        const simpleFields = ['abstract', 'summary', 'text', 'extract', 'description'];
 
-                for (const part of parts) {
-                    if (value && typeof value === 'object' && part in value) {
-                        value = value[part];
-                    } else {
-                        value = null;
-                        break;
-                    }
-                }
-
-                if (value && typeof value === 'string' && value.trim()) {
-                    return value.trim();
-                }
-            } else if (result[field] && typeof result[field] === 'string' && result[field].trim()) {
+        // 检查简单字段
+        for (const field of simpleFields) {
+            if (result[field] && typeof result[field] === 'string' && result[field].trim()) {
                 return result[field].trim();
             }
         }
 
-        // 尝试从 pagemap 获取信息
-        if (result.pagemap) {
-            if (result.pagemap.metatags?.[0]?.['og:description']) {
-                return result.pagemap.metatags[0]['og:description'];
-            }
-
-            if (result.pagemap.metatags?.[0]?.['description']) {
-                return result.pagemap.metatags[0]['description'];
+        // 检查嵌套字段 - pagemap
+        if (result.pagemap?.metatags?.[0]) {
+            const metatags = result.pagemap.metatags[0];
+            const metaDescription = metatags['og:description'] || metatags['description'];
+            if (metaDescription && typeof metaDescription === 'string') {
+                return metaDescription.trim();
             }
         }
 
@@ -1507,35 +1292,29 @@ class SearchResultFormatter {
     private static createBackupResults(searchResultsArray: any[], requiredCount: number = 5): string {
         if (!searchResultsArray?.length) return "";
 
-        // 收集所有可能有用的结果
-        const allPotentialResults = [];
+        // 收集所有可能有用的结果和特殊结果
+        const allPotentialResults: any[] = [];
         const specialResults: string[] = [];
 
-        // 收集所有结果
+        // 处理所有结果项
         for (const resultItem of searchResultsArray) {
             if (!resultItem?.results) continue;
 
-            // 收集特殊结果
+            // 处理特殊结果
             const specialText = this.processSpecialResults(resultItem.results, '');
             if (specialText) specialResults.push(specialText);
 
-            // 处理搜索结果 - 修正：检查是否为数组类型
-            const searchResults = resultItem.results;
-
-            if (Array.isArray(searchResults)) {
-                // 如果是数组类型的结果，直接处理数组中的每个结果
-                for (const result of searchResults) {
+            // 收集标准搜索结果
+            if (Array.isArray(resultItem.results)) {
+                resultItem.results.forEach((result: any) => {
                     if (result && (result.title || result.snippet || result.link)) {
                         allPotentialResults.push(result);
                     }
-                }
-            } else if (searchResults && typeof searchResults === 'object') {
-                // 如果是对象类型，检查是否有特殊结果而没有普通搜索结果
-                // 特殊结果已在上面处理过，不需要在这里再次添加
+                });
             }
         }
 
-        // 如果没有结果，返回空
+        // 如果没有任何结果，返回空字符串
         if (allPotentialResults.length === 0 && specialResults.length === 0) {
             return "";
         }
@@ -1548,66 +1327,28 @@ class SearchResultFormatter {
             backupOutput += specialResults.join('\n\n') + '\n\n';
         }
 
-        // 如果没有有机结果，直接返回特殊结果
+        // 如果没有标准结果，只返回特殊结果
         if (allPotentialResults.length === 0) {
             return specialResults.length > 0 ? backupOutput : "";
         }
 
-        // 对结果进行排序（优先选择有标题和摘要的结果）
-        allPotentialResults.sort((a, b) => {
-            const aScore = (a.title ? 2 : 0) + (a.snippet ? 1 : 0);
-            const bScore = (b.title ? 2 : 0) + (b.snippet ? 1 : 0);
-            return bScore - aScore;
-        });
-
-        // 去重并选择结果
-        let finalResults = [];
-
-        // 如果总数少于等于所需数量，直接使用所有结果（不进行筛选）
-        if (allPotentialResults.length <= requiredCount) {
-            finalResults = [...allPotentialResults];
-            plugin.logger?.info(`备用结果数量(${allPotentialResults.length})不超过所需数量(${requiredCount})，不进行筛选`);
-        } else {
-            // 否则进行去重筛选
-            const processedLinks = new Set<string>();
-            const processedContents = new Set<string>();
-
-            for (const result of allPotentialResults) {
-                // 检查是否已达到所需数量
-                if (finalResults.length >= requiredCount) break;
-
-                // 链接去重
-                if (result.link) {
-                    if (processedLinks.has(result.link)) {
-                        // 如果链接已存在，检查内容是否不同
-                        if (!result.snippet || processedContents.has(result.snippet.substring(0, 50))) {
-                            continue;
-                        }
-                    } else {
-                        processedLinks.add(result.link);
-                    }
-                }
-
-                // 内容去重
-                if (result.snippet) {
-                    const snippetStart = result.snippet.substring(0, 50);
-                    if (processedContents.has(snippetStart)) continue;
-                    processedContents.add(snippetStart);
-                }
-
-                finalResults.push(result);
-            }
-        }
+        // 选择最相关的结果
+        let selectedResults = allPotentialResults
+            .sort((a, b) => {
+                // 优先选择有标题和摘要的结果
+                const aScore = (a.title ? 2 : 0) + (a.snippet ? 1 : 0);
+                const bScore = (b.title ? 2 : 0) + (b.snippet ? 1 : 0);
+                return bScore - aScore;
+            })
+            .slice(0, requiredCount);
 
         // 格式化结果
-        finalResults.forEach((result, index) => {
+        selectedResults.forEach((result, index) => {
             backupOutput += `[结果 ${index + 1}] -----\n`;
             backupOutput += this.formatSearchResultItem(result);
         });
 
-        plugin.logger?.info(`备选搜索结果：共显示${finalResults.length}个结果，从${allPotentialResults.length}条结果中筛选`);
-
-        // 添加注意提示
+        // 添加提示信息
         backupOutput += "\n⚠️ 注意：这些搜索结果可能与问题相关性不高，请结合AI知识回答。\n";
 
         return backupOutput;
@@ -1702,50 +1443,13 @@ class AIPromptGenerator {
         const safeSearchResults = typeof searchResults === 'string' ? searchResults : '';
         const safeUserQuestion = typeof userQuestion === 'string' ? userQuestion : '请回答用户问题';
 
-        // 检查搜索结果中包含的结果数量
-        const resultCount = (safeSearchResults.match(/\[结果 \d+\]/g) || []).length;
-
-        // 判断搜索结果有效性 - 只要有任何结果就视为有效
-        const hasAnyResults = resultCount > 0 ||
-            (safeSearchResults && safeSearchResults.length > 5);
-
-        plugin.logger?.info(`AI提示词生成：搜索结果长度${safeSearchResults.length}字符，包含${resultCount}个结果，有效=${hasAnyResults}`);
+        // 检查搜索结果是否有效
+        const hasResults = safeSearchResults && safeSearchResults.trim().length > 5;
 
         // 构建搜索结果部分
-        let resultContext = "";
-
-        if (hasAnyResults) {
-            // 根据结果类型确定提示内容
-            if (safeSearchResults.includes("字典解释") ||
-                safeSearchResults.includes("翻译结果") ||
-                safeSearchResults.includes("时间信息") ||
-                safeSearchResults.includes("货币转换")) {
-                resultContext = "包含特殊信息";
-            }
-            else if (safeSearchResults.includes("可能相关的搜索结果") ||
-                safeSearchResults.includes("可能不够相关") ||
-                safeSearchResults.includes("质量不高") ||
-                safeSearchResults.includes("仅供参考")) {
-                resultContext = "可能相关性不高，但仍有参考价值";
-            }
-        }
-
-        // 构建搜索结果部分 - 即使没有匹配的条件，只要有内容也传递给AI
-        let searchResultsSection;
-
-        if (hasAnyResults || (safeSearchResults && safeSearchResults.trim().length > 0)) {
-            searchResultsSection = `系统自动搜索结果${resultContext ? `(${resultContext})` : ""}:
-\`\`\`
-${safeSearchResults}
-\`\`\`
-
-【重要说明】以上是由AI助手机器人主动从互联网搜索并自动整理的相关信息，这些搜索结果由系统根据用户问题自动获取，不是用户提供的内容。请将这些搜索结果视为来自第三方互联网的不一定可靠信息源。`;
-        } else {
-            searchResultsSection = `系统自动搜索结果:
-\`\`\`
-未能获取到与问题直接相关的搜索结果。请基于您的知识库和训练数据回答问题。
-\`\`\``;
-        }
+        let searchResultsSection = hasResults
+            ? `系统自动搜索结果:\n\`\`\`\n${safeSearchResults}\n\`\`\`\n\n这些搜索结果由系统自动获取，不一定可靠。`
+            : `系统自动搜索结果:\n\`\`\`\n未能获取到相关搜索结果。请基于您的知识库回答问题。\n\`\`\``;
 
         // 返回完整提示词
         return `问题：${safeUserQuestion}
@@ -1755,11 +1459,10 @@ ${safeSearchResults}
 请根据这些实际搜索结果和你的知识，提供一个全面、准确且直击问题核心的回答。
 
 分析指南：
-1. 综合分析所有搜索结果，充分利用每一条提供的信息
-2. 将不同来源的信息进行对比和综合，形成全面的回答
-3. 特别注意信息的时效性，优先使用最新的信息，并在回答中标明时间范围
-4. 如果搜索结果中包含矛盾的信息，请指出这些矛盾并分析可能的原因
-5. 确保内容的权威性，对官方来源的信息给予更高权重
+1. 将不同来源的信息进行对比和综合，形成全面的回答
+2. 特别注意信息的时效性，优先使用最新的信息
+3. 如果搜索结果中包含矛盾的信息，请指出这些矛盾并分析可能的原因
+4. 确保内容的权威性，对官方来源的信息给予更高权重
 
 回答格式要求（使用HTML标签）：
 1. 给予明确、有条理的回答，重点突出，避免冗余
@@ -1775,15 +1478,8 @@ ${safeSearchResults}
 - 不要使用不支持的HTML标签（如<div>、<span>、<p>等）
 - 不要使用HTML标题标签（如<h1>、<h2>等），使用<b>加粗文本</b>代替
 - 支持嵌套标签但确保正确嵌套，如<b>粗体<i>斜体粗体</i></b>
-- 必须使用<br>标签表示换行，不要使用句号来分隔句子代替换行
+- 必须使用<br>标签表示换行，不要使用句号来分隔句子代替换行，比如应该使用<br>来替换\\n
 - 段落之间必须用<br><br>分隔，不要只依赖句号作为段落分隔
-
-信息可信度评估原则：
-- 官方网站(.gov、.edu、.org)和权威机构的信息通常更可靠
-- 有明确出处、数据支持和详细解释的信息更可信
-- 近期发布的信息通常比旧信息更具时效性
-- 多个独立来源一致的信息比单一来源的信息更可靠
-- 搜索结果中的内容是由系统自动获取的客观信息，应视为可靠的参考来源
 
 ${searchResultsSection}
 
