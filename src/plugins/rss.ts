@@ -863,7 +863,7 @@ class NewsService {
         try {
             // 设置整体超时
             const timeoutPromise = new Promise<null>((resolve) => {
-                setTimeout(() => resolve(null), 20000); // 20秒总超时
+                setTimeout(() => resolve(null), 30000); // 30秒总超时
             });
 
             // 从所有分类中获取新闻，带超时处理
@@ -1049,7 +1049,7 @@ class NewsService {
 
             // 添加超时处理
             const timeoutPromise = new Promise<string>((_, reject) => {
-                setTimeout(() => reject(new Error('AI摘要生成超时')), 40000); // 超时时间
+                setTimeout(() => reject(new Error('AI摘要生成超时')), 60000); // 超时时间
             });
 
             const aiPromise = getHighQualityAI().get(prompt, false);
@@ -1079,7 +1079,7 @@ class NewsService {
 
             // 添加超时处理
             const timeoutPromise = new Promise<string>((_, reject) => {
-                setTimeout(() => reject(new Error('AI评论生成超时')), 40000); // 超时时间
+                setTimeout(() => reject(new Error('AI评论生成超时')), 60000); // 超时时间
             });
 
             const aiPromise = getHighQualityAI().get(prompt, false);
