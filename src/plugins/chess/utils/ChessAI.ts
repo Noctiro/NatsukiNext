@@ -76,7 +76,7 @@ export class ChessAI {
 
     /**
      * 创建象棋AI实例
-     * @param difficultyLevel 难度等级(1-6)，默认为3（初级）
+     * @param difficultyLevel 难度等级(1-6)，默认为3（简单）
      * @param useCloudLibrary 是否使用云库API (仅对最高难度有效)
      * @param maxThinkingTime 最大思考时间（毫秒），默认1分钟
      * @param logger 日志记录器
@@ -101,17 +101,17 @@ export class ChessAI {
 
         // 根据难度设置搜索深度
         switch (this.difficultyLevel) {
-            case 3: // 初级 - 5步思考
+            case 3: // 简单 - 5步思考
                 this.maxDepth = 5;
                 break;
-            case 5: // 中级 - 9步思考
+            case 5: // 普通 - 9步思考
                 this.maxDepth = 9;
                 break;
-            case 6: // 高级 - 12步思考或使用云库
+            case 6: // 困难 - 12步思考或使用云库
                 this.maxDepth = 12;
                 break;
             default:
-                this.maxDepth = 5; // 默认使用初级深度
+                this.maxDepth = 5; // 默认使用简单深度
         }
 
         // 初始化历史表 (10行×9列×10行×9列)
@@ -136,7 +136,7 @@ export class ChessAI {
         const board = game.getBoardObject();
         const aiColor = PieceColor.BLACK; // AI总是使用黑方
 
-        // 高级难度且启用云库时，优先使用云库API
+        // 困难难度且启用云库时，优先使用云库API
         if (this.useCloudLibrary && this.difficultyLevel >= 6) {
             try {
                 const cloudMove = await this.getCloudLibraryMove(game);
@@ -363,7 +363,7 @@ export class ChessAI {
             return null;
         }
 
-        // 先检查高级策略
+        // 先检查困难策略
         const strategicMove = this.applyAdvancedStrategies(board, aiColor, possibleMoves);
         if (strategicMove) {
             return strategicMove;
@@ -1171,7 +1171,7 @@ export class ChessAI {
     }
 
     /**
-     * 应用高级策略，根据局面阶段选择合适的走法
+     * 应用困难策略，根据局面阶段选择合适的走法
      * 用于顶级难度级别的AI
      */
     private applyAdvancedStrategies(board: Board, aiColor: PieceColor, moves: { from: Position, to: Position }[]): { from: Position, to: Position } | null {

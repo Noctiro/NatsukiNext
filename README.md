@@ -1,17 +1,6 @@
 # NatsukiMiyu Next
 
-NatsukiMiyu Next 是一个基于 [mtcute](https://github.com/mtcute/mtcute) 构建的模块化、可扩展的 Telegram 机器人框架。
-
-## 核心特性
-
-- **插件化架构**: 通过独立的插件来组织和管理机器人的功能，易于扩展和维护。
-- **强大的事件系统**: 支持消息、命令、回调查询等多种事件类型，并提供优先级和过滤器。
-- **灵活的命令处理**: 支持命令别名、冷却时间、权限控制和参数解析。
-- **精细的权限管理**: 内置权限系统，可以定义和管理用户及用户组的权限。
-- **配置管理**: 每个插件都可以拥有独立的配置文件，并支持默认配置。
-- **依赖管理**: 插件可以声明对其他插件的依赖，确保加载顺序。
-- **插件专用日志**: 为每个插件提供专用的日志记录器，自动标记插件来源，便于调试和问题排查。
-- **TypeScript 支持**: 使用 TypeScript 编写，提供类型安全和更好的开发体验。
+多功能的第三代 NatsukiMiyu 机器人
 
 ## 快速开始
 
@@ -26,410 +15,771 @@ cd NatsukiMiyu-Next
 bun install
 ```
 
-### 配置
+### 环境变量
 
-1. 复制示例配置文件
-```bash
-cp config/config.example.json config/config.json
-```
+```env
+TZ=Asia/Shanghai
 
-2. 编辑配置文件，填入必要信息
-```json
-{
-  "apiId": 123456,           // 替换为你的API ID
-  "apiHash": "your_api_hash", // 替换为你的API Hash
-  "botToken": "bot_token",    // 替换为你的Bot Token
-  "adminUsers": [123456789],  // 管理员用户ID
-  "logLevel": "info"          // 日志级别 (debug, info, warn, error)
-}
+TG_API_ID=xxxxx
+TG_API_HASH=xxxxx
+TG_TOKEN=xxxxx
+
+MANAGER_IDS=1111,22222
+ENABLE_CHATS=-33333
+AI_OPENROUTER_API_KEY=sk-or-v1-xxx,sk-or-v1-xxxxx
 ```
 
 ### 运行
 
 ```bash
-# 使用Bun运行(推荐)
 bun start
-
-# 或使用Node运行
-npm start
 ```
 
-初次运行时，程序会自动扫描并加载`src/plugins`目录中的所有插件。
+## 基础命令
 
-### 基本使用
+- `/help` - 显示命令列表
+- `/plugins` - 查看已加载插件
+- `/plugin <name>` - 查看插件详情
+- `/admin` - 管理员面板
 
-机器人启动后，可以使用以下命令进行基本操作：
-
-- `/help` - 显示可用命令列表
-- `/plugins` - 查看已加载的插件
-- `/plugin <plugin_name>` - 查看指定插件的详细信息
-- `/admin` - 访问管理员面板(仅管理员可用)
-
-## 插件开发指南
-
-插件是NatsukiMiyu Next的核心构建块。每个插件都是独立的功能模块，可以自由组合。
+## 插件开发详解
 
 ### 基本结构
 
 ```typescript
 import type { BotPlugin } from "../features";
 
-// 插件定义
 const plugin: BotPlugin = {
   // 基础信息
-  name: "example",              // [必需] 唯一标识符
-  description: "示例插件",       // [可选] 插件描述
-  version: "1.0.0",             // [可选] 版本号
-  
+  name: "example", // 必需，唯一标识符
+  description: "示例插件", // 可选，插件描述
+  version: "1.0.0", // 可选，版本号
+
   // 依赖关系
-  dependencies: ["system"],     // [可选] 依赖的其他插件
-  
+  dependencies: ["system"], // 可选，依赖的其他插件
+
   // 权限声明
-  permissions: [                // [可选] 插件所需的权限
+  permissions: [
+    // 可选，插件定义的权限
     {
       name: "example.use",
-      description: "使用插件的基本功能"
-    }
+      description: "使用插件基本功能",
+      parent: "basic", // 可选，继承自父权限
+    },
   ],
-  
+
   // 生命周期钩子
-  async onLoad(client) {        // [可选] 加载时执行
-    // 加载配置、初始化资源等
-    const config = await client.features.getPluginConfig("example", defaultConfig);
+  async onLoad(client) {
+    // 可选，插件加载时调用
+    const config = await client.features.getPluginConfig("example");
+    // 初始化资源、设置事件监听等
   },
-  
-  async onUnload() {            // [可选] 卸载时执行
-    // 清理资源、保存状态等
+
+  async onUnload() {
+    // 可选，插件卸载时调用
+    // 清理资源、取消事件监听等
   },
-  
+
   // 命令定义
-  commands: [                   // [可选] 斜杠命令
+  commands: [
     {
-      name: "example",
-      description: "示例命令",
-      aliases: ["ex"],
-      cooldown: 5,
+      name: "example", // 命令名称（不含/）
+      description: "示例命令", // 命令描述
+      aliases: ["ex", "eg"], // 命令别名
+      cooldown: 5, // 冷却时间（秒）
+      requiredPermission: "example.use", // 所需权限
       async handler(ctx) {
-        await ctx.message.replyText("示例命令已执行");
-      }
-    }
+        await ctx.message.replyText("命令已执行");
+      },
+    },
   ],
-  
+
   // 事件处理
-  events: [                    // [可选] 事件处理器
+  events: [
     {
-      type: "message",
-      filter: ctx => ctx.message.text?.includes("关键词"),
+      type: "message", // 事件类型
+      filter: (ctx) => ctx.message.text?.includes("关键词"), // 过滤条件
+      priority: 10, // 优先级，数值越大越先处理
       async handler(ctx) {
-        this.logger?.info("收到消息");
         await ctx.message.replyText("检测到关键词");
-      }
-    }
-  ]
+      },
+    },
+  ],
 };
 
 export default plugin;
+```
+
+### 命令处理
+
+#### 基础命令定义
+
+```typescript
+commands: [
+  {
+    name: "greet", // 命令名称
+    description: "向用户打招呼", // 命令描述（在帮助中显示）
+    aliases: ["hi", "hello"], // 命令别名
+    cooldown: 10, // 冷却时间（秒）
+    requiredPermission: "basic.chat", // 执行所需权限
+    async handler(ctx) {
+      const username = ctx.message.sender.displayName;
+      await ctx.message.replyText(`你好，${username}！`);
+    },
+  },
+];
+```
+
+#### 命令参数解析
+
+```typescript
+{
+  name: "echo",
+  description: "复读消息",
+  async handler(ctx) {
+    // ctx.content - 完整参数字符串
+    // ctx.args - 参数数组
+    // ctx.rawText - 原始消息文本
+
+    if (!ctx.content) {
+      await ctx.message.replyText("请输入要复读的内容");
+      return;
+    }
+
+    await ctx.message.replyText(`你说：${ctx.content}`);
+  }
+}
+```
+
+#### 命令冷却与权限检查
+
+冷却和权限检查自动实现，无需手动编写。当用户触发命令时：
+
+1. 框架检查用户是否有命令要求的权限
+2. 检查用户是否在冷却时间内
+3. 通过检查后，执行命令处理程序
+
+### 事件系统
+
+#### 支持的事件类型
+
+```typescript
+// 消息事件
+{
+  type: "message",
+  async handler(ctx: MessageEventContext) {
+    // 处理新消息
+  }
+}
+
+// 回调查询事件（按钮点击）
+{
+  type: "callback",
+  name: "action",  // 匹配回调数据中的功能名
+  async handler(ctx: CallbackEventContext) {
+    // 处理按钮点击
+  }
+}
+
+// 内联查询事件
+{
+  type: "inline",
+  async handler(ctx: InlineEventContext) {
+    // 处理内联查询
+  }
+}
+
+// 用户加入聊天事件
+{
+  type: "chat_join",
+  async handler(ctx: ChatJoinEventContext) {
+    // 处理用户加入
+  }
+}
+
+// 用户离开聊天事件
+{
+  type: "chat_leave",
+  async handler(ctx: ChatLeaveEventContext) {
+    // 处理用户离开
+  }
+}
+```
+
+#### 事件过滤器
+
+```typescript
+// 仅处理特定用户的消息
+{
+  type: "message",
+  filter: ctx => ctx.message.sender.id === 123456789,
+  async handler(ctx) {
+    await ctx.message.replyText("收到您的消息");
+  }
+}
+
+// 仅处理包含特定关键词的消息
+{
+  type: "message",
+  filter: ctx => {
+    const text = ctx.message.text;
+    return text ? /关键词/.test(text) : false;
+  },
+  async handler(ctx) {
+    await ctx.message.replyText("检测到关键词");
+  }
+}
+
+// 仅处理群组中的消息
+{
+  type: "message",
+  filter: ctx => ctx.message.chat.type !== "private",
+  async handler(ctx) {
+    await ctx.message.replyText("收到群组消息");
+  }
+}
+```
+
+#### 事件优先级
+
+```typescript
+// 高优先级事件处理器（先执行）
+{
+  type: "message",
+  priority: 100,
+  async handler(ctx) {
+    // 先执行的逻辑
+  }
+}
+
+// 低优先级事件处理器（后执行）
+{
+  type: "message",
+  priority: 10,
+  async handler(ctx) {
+    // 后执行的逻辑
+  }
+}
 ```
 
 ### 配置管理
 
-提供方便的API管理插件配置：
+#### 读取与保存配置
 
 ```typescript
-// 读取配置(会自动合并默认值)
-const config = await client.features.getPluginConfig<Config>("plugin_name", defaultConfig);
+// 定义配置类型
+interface MyPluginConfig {
+  enabled: boolean;
+  defaultValue: string;
+  options: string[];
+}
 
-// 保存配置
-await client.features.savePluginConfig("plugin_name", config);
-```
+// 默认配置
+const defaultConfig: MyPluginConfig = {
+  enabled: true,
+  defaultValue: "default",
+  options: ["option1", "option2"]
+};
 
-### 日志系统
+// 在onLoad中读取配置
+async onLoad(client) {
+  // 读取配置，自动合并默认值
+  const config = await client.features.getPluginConfig<MyPluginConfig>(
+    "my-plugin",
+    defaultConfig
+  );
 
-每个插件都有独立的日志记录器，自动注入到`logger`属性：
+  // 使用配置
+  if (config.enabled) {
+    this.logger?.info(`插件已启用，默认值: ${config.defaultValue}`);
+  }
 
-```typescript
-// 在插件对象内部
-this.logger?.info("插件已加载");  // 普通信息
-this.logger?.error("出现错误");   // 错误信息
-this.logger?.debug("调试信息");   // 调试信息
+  // 修改配置
+  config.options.push("option3");
 
-// 在外部函数中
-plugin.logger?.info("处理完成");
-
-// 高级用法
-this.logger?.error("API错误", { 
-  remote: true,                 // 发送到管理员
-  tags: ["api", "error"],       // 添加标签
-  metadata: { status: 404 }     // 附加元数据
-});
+  // 保存配置
+  await client.features.savePluginConfig("my-plugin", config);
+}
 ```
 
 ### 权限管理
 
-插件可以声明和使用权限控制用户访问：
+#### 声明权限
 
 ```typescript
-// 声明权限(在插件对象中)
 permissions: [
   {
-    name: "example.use",
-    description: "使用示例插件的基本功能",
-    parent: "basic"             // 继承自basic权限
-  }
-]
-
-// 检查权限(在事件处理中)
-if (!ctx.hasPermission("example.use")) {
-  await ctx.message.replyText("您没有权限执行此操作");
-              return;
-            }
-```
-
-### 回调数据解析器
-
-NatsukiMiyu Next提供两种处理回调数据的方式：简单解析器和结构化构建器。
-
-#### 简单解析器 (parseData)
-
-`CallbackEventContext`的内置解析器，适用于基本场景：
-
-```typescript
-// 基本使用方式
-const action = ctx.parseData.getCommand();       // 获取第一部分
-const subAction = ctx.parseData.getSubCommand(); // 获取第二部分
-const userId = ctx.parseData.getIntPart(2);      // 获取第三部分并转为数字
-```
-
-主要方法：
-- `hasPrefix(prefix)` - 检查前缀
-- `getPart(index)` - 获取指定部分
-- `getIntPart(index, default = 0)` - 获取并转换为数字
-- `parseAsObject<T>(schema, startIndex = 1)` - 解析为对象
-
-#### 结构化构建器 (CallbackDataBuilder)
-
-类型安全的回调数据构建和解析工具：
-
-```typescript
-// 1. 定义构建器
-const DeleteButton = new CallbackDataBuilder<{
-  itemId: number;
-  userId: number;
-}>('myPlugin', 'delete', ['itemId', 'userId']);
-
-// 2. 生成回调数据
-const data = DeleteButton.build({ itemId: 123, userId: 456 });
-// 结果: "myPlugin:delete:123:456"
-
-// 3. 处理回调 - 方式一：使用name属性(推荐)
-{
-  type: 'callback',
-  name: 'delete',  // 匹配功能名
-  async handler(ctx) {
-    // 自动解析并注入ctx.match
-    const { _param0, _param1 } = ctx.match; // _param0=itemId, _param1=userId
-    console.log(`删除项目${_param0}，由用户${_param1}发起`);
-  }
-}
-
-// 3. 处理回调 - 方式二：使用filter方法
-{
-  type: 'callback',
-  filter: DeleteButton.filter(), // 或带条件: DeleteButton.filter({userId: 123})
-  async handler(ctx) {
-    const { itemId, userId } = ctx.match;
-    console.log(`删除项目${itemId}，由用户${userId}发起`);
-  }
-}
-```
-
-#### 最佳实践
-
-- **选择合适的方式**：简单场景用`name`属性，复杂场景用`filter`方法
-- **数据格式**：始终使用`插件名:功能名:参数1:参数2...`的标准格式
-- **参数设计**：重要参数靠前，使用数字ID替代字符串，总长度控制在64字节内
-- **权限检查**：包含用户ID用于权限验证，处理前先验证权限
-- **组织管理**：使用工厂函数统一管理同一插件的回调构建器
-
-### 创建新插件
-
-按照以下步骤快速创建一个新插件：
-
-1. 在`src/plugins`目录下创建文件，如`my-plugin.ts`
-2. 使用基本框架实现插件功能：
-
-```typescript
-import type { BotPlugin } from "../features";
-
-// 定义插件对象
-const plugin: BotPlugin = {
-  name: "my-plugin",
-  description: "我的自定义插件",
-  version: "1.0.0",
-  
-  // 实现加载逻辑
-  async onLoad(client) {
-    this.logger?.info("插件已加载");
+    name: "myplugin.basic", // 基础权限
+    description: "基本插件使用权",
   },
-  
-  // 添加命令
+  {
+    name: "myplugin.admin", // 管理权限
+    description: "管理插件设置",
+    parent: "myplugin.basic", // 继承基础权限
+  },
+  {
+    name: "myplugin.super", // 超级权限
+    description: "高级功能使用权",
+    parent: "admin", // 继承系统admin权限
+  },
+];
+```
+
+#### 检查权限
+
+```typescript
+// 在命令或事件处理器中检查权限
+async handler(ctx) {
+  // 检查用户是否有特定权限
+  if (!ctx.hasPermission("myplugin.admin")) {
+    await ctx.message.replyText("您没有权限执行此操作");
+    return;
+  }
+
+  // 执行需要权限的操作
+  await ctx.message.replyText("管理操作已执行");
+}
+```
+
+### 日志系统
+
+#### 基础日志
+
+```typescript
+// 基础日志级别
+this.logger?.debug("调试信息"); // 调试级别
+this.logger?.info("一般信息"); // 信息级别
+this.logger?.warn("警告信息"); // 警告级别
+this.logger?.error("错误信息"); // 错误级别
+
+// 带上下文的日志
+this.logger?.info("处理请求", {
+  user: userId,
+  action: "login",
+});
+```
+
+#### 高级日志功能
+
+```typescript
+// 发送日志到管理员
+this.logger?.error("严重错误", {
+  remote: true, // 发送给管理员
+  tags: ["api", "error"], // 标签分类
+  metadata: {
+    // 详细元数据
+    status: 500,
+    endpoint: "/api/data",
+    response: "服务器错误",
+  },
+});
+
+// 带错误堆栈的日志
+try {
+  throw new Error("API错误");
+} catch (error) {
+  this.logger?.error("请求失败", { error });
+}
+```
+
+### 回调数据处理
+
+#### 创建回调按钮
+
+```typescript
+import { CallbackDataBuilder } from "../../utils/callback";
+
+// 创建回调数据构建器
+const VoteCallback = new CallbackDataBuilder<{
+  postId: number;
+  action: string; // "up" 或 "down"
+  userId: number;
+}>("vote", "action", ["postId", "action", "userId"]);
+
+// 创建投票按钮
+const createVoteButtons = (postId: number, userId: number) => {
+  return [
+    BotKeyboard.callback(
+      "👍 赞同",
+      VoteCallback.build({
+        postId,
+        action: "up",
+        userId,
+      })
+    ),
+    BotKeyboard.callback(
+      "👎 反对",
+      VoteCallback.build({
+        postId,
+        action: "down",
+        userId,
+      })
+    ),
+  ];
+};
+
+// 在插件中使用
+events: [
+  {
+    type: "callback",
+    name: "action", // 匹配 'vote:action:*:*:*' 格式的数据
+    async handler(ctx) {
+      // 从ctx.match中获取解析后的数据
+      const { postId, action, userId } = ctx.match;
+
+      // 检查当前用户是否为原始用户
+      if (ctx.query.user.id !== userId) {
+        await ctx.query.answer({
+          text: "这不是您的投票按钮",
+          alert: true,
+        });
+        return;
+      }
+
+      // 处理投票
+      if (action === "up") {
+        await processUpvote(postId);
+        await ctx.query.answer({ text: "已赞同" });
+      } else if (action === "down") {
+        await processDownvote(postId);
+        await ctx.query.answer({ text: "已反对" });
+      }
+    },
+  },
+];
+```
+
+### 消息编辑与交互式 UI
+
+#### 发送和编辑消息
+
+```typescript
+// 发送纯文本消息
+await ctx.message.replyText("Hello World");
+
+// 发送HTML格式消息
+await ctx.message.replyText(html`
+  <b>粗体文字</b>
+  <i>斜体文字</i>
+  <code>代码</code>
+  <a href="https://example.com">链接</a>
+`);
+
+// 发送带引用的消息
+await ctx.message.replyText("引用回复", {
+  replyToMessageId: ctx.message.id,
+});
+
+// 编辑消息
+await ctx.client.editMessage({
+  chatId: ctx.chatId,
+  message: messageId,
+  text: "新的消息内容",
+});
+```
+
+#### 发送媒体文件
+
+```typescript
+// 发送图片
+await ctx.message.replyMedia(
+  {
+    type: "photo",
+    file: "./assets/image.jpg", // 本地文件路径
+    fileName: "image.jpg",
+  },
+  {
+    caption: "图片描述", // 可选的图片说明
+  }
+);
+
+// 发送文件
+await ctx.message.replyMedia(
+  {
+    type: "document",
+    file: Buffer.from("文件内容"), // 内存中的文件数据
+    fileName: "document.txt",
+  },
+  {
+    caption: "文件描述",
+  }
+);
+
+// 发送视频
+await ctx.message.replyMedia({
+  type: "video",
+  file: "https://example.com/video.mp4", // 远程URL
+  fileName: "video.mp4",
+});
+```
+
+### 用户和聊天操作
+
+#### 用户信息获取
+
+```typescript
+// 获取用户信息
+const user = await ctx.client.getUser("username"); // 通过用户名
+const userById = await ctx.client.getUserById(123456789); // 通过ID
+
+// 在事件处理中直接获取
+const senderId = ctx.message.sender.id;
+const senderName = ctx.message.sender.displayName;
+const username = ctx.message.sender.username;
+```
+
+#### 聊天管理
+
+```typescript
+// 获取聊天信息
+const chat = await ctx.client.getChat(chatId);
+
+// 发送聊天操作
+await ctx.client.sendChatAction(ctx.chatId, "typing"); // 显示"正在输入"
+
+// 获取聊天成员
+const chatMember = await ctx.client.getChatMember(ctx.chatId, userId);
+
+// 踢出用户
+await ctx.client.kickChatMember(ctx.chatId, userId);
+
+// 限制用户权限
+await ctx.client.restrictChatMember(ctx.chatId, userId, {
+  untilDate: Math.floor(Date.now() / 1000) + 3600, // 1小时
+  permissions: {
+    canSendMessages: false,
+  },
+});
+```
+
+### 插件间通信
+
+#### 直接调用其他插件的方法
+
+```typescript
+// 在onLoad中获取其他插件
+async onLoad(client) {
+  // 获取其他插件实例
+  const otherPlugin = client.features.getPlugin("other-plugin");
+
+  if (otherPlugin && typeof otherPlugin.publicMethod === "function") {
+    // 调用其他插件的方法
+    const result = await otherPlugin.publicMethod("param");
+    this.logger?.info(`调用结果: ${result}`);
+  }
+}
+
+// 公开方法以供其他插件调用
+publicMethod(param: string): string {
+  return `处理了参数: ${param}`;
+}
+```
+
+#### 使用事件进行解耦通信
+
+```typescript
+// 插件A: 发布事件
+client.features.dispatcher.emit("custom:data-updated", {
+  source: "plugin-a",
+  data: { key: "value" }
+});
+
+// 插件B: 监听事件
+async onLoad(client) {
+  client.features.dispatcher.on("custom:data-updated", (data) => {
+    this.logger?.info(`收到数据更新: ${JSON.stringify(data)}`);
+  });
+}
+```
+
+### 完整插件示例：投票系统
+
+```typescript
+import type {
+  BotPlugin,
+  CommandContext,
+  CallbackEventContext,
+} from "../features";
+import { html, BotKeyboard } from "@mtcute/bun";
+import { CallbackDataBuilder } from "../utils/callback";
+
+// 定义投票回调构建器
+const VoteCallback = new CallbackDataBuilder<{
+  pollId: number;
+  optionId: number;
+  userId: number;
+}>("poll", "vote", ["pollId", "optionId", "userId"]);
+
+// 定义投票配置
+interface PollConfig {
+  activePolls: number;
+  allowMultipleVotes: boolean;
+}
+
+// 内存中的投票数据
+const polls = new Map();
+
+const plugin: BotPlugin = {
+  name: "poll",
+  description: "简单的投票系统",
+  version: "1.0.0",
+
+  permissions: [
+    {
+      name: "poll.create",
+      description: "创建投票",
+    },
+    {
+      name: "poll.vote",
+      description: "参与投票",
+    },
+  ],
+
+  async onLoad(client) {
+    // 加载配置
+    const config = await client.features.getPluginConfig<PollConfig>("poll", {
+      activePolls: 10,
+      allowMultipleVotes: false,
+    });
+
+    this.logger?.info(`投票插件已加载，最大活跃投票数: ${config.activePolls}`);
+  },
+
   commands: [
     {
-      name: "myplugin",
-      description: "我的插件命令",
-      async handler(ctx) {
-        await ctx.message.replyText("命令已执行");
-      }
-    }
+      name: "poll",
+      description: "创建新投票",
+      requiredPermission: "poll.create",
+      async handler(ctx: CommandContext) {
+        if (!ctx.content) {
+          await ctx.message.replyText(`
+使用方法: /poll 问题?|选项1|选项2|选项3...
+例如: /poll 你喜欢哪种水果?|苹果|香蕉|橙子
+`);
+          return;
+        }
+
+        // 解析投票内容
+        const parts = ctx.content.split("|");
+        if (parts.length < 3) {
+          await ctx.message.replyText(
+            "格式错误：需要至少提供一个问题和两个选项"
+          );
+          return;
+        }
+
+        const question = parts[0].trim();
+        const options = parts
+          .slice(1)
+          .map((o) => o.trim())
+          .filter(Boolean);
+
+        // 创建投票
+        const pollId = Date.now();
+        polls.set(pollId, {
+          id: pollId,
+          creator: ctx.message.sender.id,
+          question,
+          options: options.map((text, i) => ({ id: i, text, votes: 0 })),
+          voters: new Set(),
+        });
+
+        // 创建投票键盘
+        const keyboard = BotKeyboard.inline(
+          options.map((_, i) => [
+            BotKeyboard.callback(
+              `${i + 1}. ${_}`,
+              VoteCallback.build({
+                pollId,
+                optionId: i,
+                userId: ctx.message.sender.id,
+              })
+            ),
+          ])
+        );
+
+        // 发送投票消息
+        await ctx.message.replyText(
+          html`
+            <b>📊 投票</b>: ${question} ${options
+              .map((o, i) => `${i + 1}. ${o} (0票)`)
+              .join("\n")}
+
+            <i>0人已投票</i>
+          `,
+          { replyMarkup: keyboard }
+        );
+      },
+    },
   ],
-  
-  // 处理事件
+
   events: [
     {
-      type: "message",
-      filter: ctx => ctx.message.text?.includes("触发词"),
-      async handler(ctx) {
-        await ctx.message.replyText("已触发事件");
-      }
-    }
-  ]
+      type: "callback",
+      name: "vote",
+      async handler(ctx: CallbackEventContext) {
+        // 获取回调数据
+        const { pollId, optionId } = ctx.match;
+        const userId = ctx.query.user.id;
+
+        // 获取投票
+        const poll = polls.get(Number(pollId));
+        if (!poll) {
+          await ctx.query.answer({
+            text: "投票已过期或已删除",
+            alert: true,
+          });
+          return;
+        }
+
+        // 检查权限
+        if (!ctx.hasPermission("poll.vote")) {
+          await ctx.query.answer({
+            text: "您没有参与投票的权限",
+            alert: true,
+          });
+          return;
+        }
+
+        // 检查是否已投票
+        const config = await ctx.client.features.getPluginConfig<PollConfig>(
+          "poll"
+        );
+        if (!config.allowMultipleVotes && poll.voters.has(userId)) {
+          await ctx.query.answer({
+            text: "您已经投过票了",
+            alert: true,
+          });
+          return;
+        }
+
+        // 更新投票
+        poll.options[optionId].votes++;
+        poll.voters.add(userId);
+
+        // 更新消息
+        const totalVotes = poll.voters.size;
+        await ctx.client.editMessage({
+          chatId: ctx.chatId,
+          message: ctx.query.messageId,
+          text: html`
+            <b>📊 投票</b>: ${poll.question} ${poll.options
+              .map((o, i) => `${i + 1}. ${o.text} (${o.votes}票)`)
+              .join("\n")}
+
+            <i>${totalVotes}人已投票</i>
+          `,
+          replyMarkup: ctx.query.message.replyMarkup,
+        });
+
+        // 回复用户
+        await ctx.query.answer({
+          text: "投票成功！",
+        });
+      },
+    },
+  ],
 };
 
 export default plugin;
 ```
-
-3. 保存文件后重启机器人，插件会自动加载
-
-### 事件类型参考
-
-NatsukiMiyu支持以下主要事件类型：
-
-| 事件类型 | 上下文对象 | 说明 |
-|---------|----------|------|
-| `message` | `MessageEventContext` | 处理新消息 |
-| `callback` | `CallbackEventContext` | 处理按钮回调 |
-| `inline` | `InlineEventContext` | 处理内联查询 |
-| `chat_join` | `ChatJoinEventContext` | 处理用户加入聊天 |
-| `chat_leave` | `ChatLeaveEventContext` | 处理用户离开聊天 |
-
-### 插件交互示例
-
-#### 创建内联键盘
-
-  ```typescript
-// 在命令或事件处理函数中
-await ctx.message.replyText("请选择操作", {
-  reply_markup: {
-    inline_keyboard: [
-      [
-        { text: "选项A", callback_data: "plugin:optionA" },
-        { text: "选项B", callback_data: "plugin:optionB" }
-      ],
-      [
-        { text: "访问网站", url: "https://example.com" }
-      ]
-    ]
-  }
-});
-```
-
-#### 处理按钮点击
-
-  ```typescript
-// 在插件的events数组中
-{
-  type: "callback",
-  name: "optionA",  // 匹配callback_data中的功能名
-  async handler(ctx) {
-    await ctx.query.answer({ text: "已选择选项A" });
-    // 可以更新原消息
-    await ctx.client.editMessageText({
-      chat: ctx.chatId,
-      message: ctx.query.messageId,
-      text: "已选择选项A"
-    });
-  }
-}
-```
-
-#### 访问数据库
-
-  ```typescript
-// 在插件中使用数据库
-async function saveUserData(userId, data) {
-  const db = client.features.getDatabase();
-  
-  // 插入或更新数据
-  await db.collection("users").updateOne(
-    { userId },
-    { $set: { ...data, updatedAt: new Date() } },
-    { upsert: true }
-  );
-  
-  // 查询数据
-  const user = await db.collection("users").findOne({ userId });
-  return user;
-}
-```
-
-#### 使用HTTP请求
-
-```typescript
-// 发起HTTP请求
-import axios from "axios";
-
-async function fetchWeather(city) {
-  try {
-    const response = await axios.get(`https://api.example.com/weather`, {
-      params: { city, units: "metric" },
-      headers: { "Authorization": `Bearer ${apiKey}` }
-    });
-    return response.data;
-  } catch (error) {
-    this.logger?.error("获取天气数据失败", { 
-      remote: true,
-      metadata: { city, error: error.message }
-    });
-    return null;
-  }
-}
-```
-
-## 贡献指南
-
-我们欢迎并感谢任何形式的贡献！
-
-### 提交问题
-
-如果您发现了Bug或有新功能建议，请通过GitHub Issues提交，并尽可能提供以下信息：
-
-- 详细的问题描述或功能建议
-- 重现步骤（如果是Bug）
-- 预期的行为和实际行为
-- 日志或错误信息
-- 您认为可能有帮助的其他信息
-
-### 提交代码
-
-1. Fork本仓库
-2. 创建您的特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交您的更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 创建一个Pull Request
-
-### 编码规范
-
-- 遵循TypeScript的命名规范
-- 使用ESLint和Prettier保持代码风格一致
-- 为公共API提供适当的文档注释
-- 编写单元测试（如适用）
-
-## 许可证
-
-本项目采用MIT许可证 - 详情参见 [LICENSE](LICENSE) 文件
-
-## 致谢
-
-- [mtcute](https://github.com/mtcute/mtcute) - 提供了强大的Telegram客户端库
-- [Bun](https://bun.sh/) - 现代JavaScript运行时
-- 所有贡献者和用户 - 感谢您的支持和反馈

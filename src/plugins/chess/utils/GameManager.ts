@@ -11,12 +11,12 @@ export class GameManager {
 
     // 活跃的游戏列表
     private activeGames: Map<string, Game> = new Map();
-    
+
     // 等待中的邀请
     private pendingInvites: Map<number, IInvite> = new Map();
 
     // 私有构造函数，确保只能通过 getInstance 创建实例
-    private constructor() {}
+    private constructor() { }
 
     /**
      * 获取 GameManager 单例实例
@@ -45,11 +45,18 @@ export class GameManager {
     }
 
     /**
+     * 根据ID获取游戏（别名方法，保持API一致性）
+     */
+    getGameById(gameId: string): Game | undefined {
+        return this.getGame(gameId);
+    }
+
+    /**
      * 获取玩家当前参与的游戏
      */
     getPlayerActiveGame(playerId: number): Game | undefined {
-        return Array.from(this.activeGames.values()).find(game => 
-            (game.redPlayer === playerId || game.blackPlayer === playerId) && 
+        return Array.from(this.activeGames.values()).find(game =>
+            (game.redPlayer === playerId || game.blackPlayer === playerId) &&
             game.status === 'playing'
         );
     }
@@ -58,9 +65,9 @@ export class GameManager {
      * 获取当前轮到玩家行动的游戏
      */
     getPlayerTurnGame(playerId: number): Game | undefined {
-        return Array.from(this.activeGames.values()).find(game => 
-            ((game.redPlayer === playerId && game.currentTurn === PieceColor.RED) || 
-            (game.blackPlayer === playerId && game.currentTurn === PieceColor.BLACK)) && 
+        return Array.from(this.activeGames.values()).find(game =>
+            ((game.redPlayer === playerId && game.currentTurn === PieceColor.RED) ||
+                (game.blackPlayer === playerId && game.currentTurn === PieceColor.BLACK)) &&
             game.status === 'playing'
         );
     }
@@ -82,13 +89,13 @@ export class GameManager {
      */
     addInvite(targetUserId: number, inviterId: number): string {
         const gameId = `invite_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-        
+
         this.pendingInvites.set(targetUserId, {
             inviter: inviterId,
             gameId,
             expires: Date.now() + 5 * 60 * 1000 // 5分钟有效期
         });
-        
+
         return gameId;
     }
 
@@ -97,6 +104,14 @@ export class GameManager {
      */
     getInvite(userId: number): IInvite | undefined {
         return this.pendingInvites.get(userId);
+    }
+
+    /**
+     * 检查是否存在特定的邀请
+     */
+    hasInvite(targetId: number, inviterId: number): boolean {
+        const invite = this.pendingInvites.get(targetId);
+        return invite !== undefined && invite.inviter === inviterId;
     }
 
     /**

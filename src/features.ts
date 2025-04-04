@@ -744,7 +744,11 @@ export class Features {
                         // 使用超时保护，防止事件处理器无限阻塞
                         const timeoutPromise = new Promise<void>((_, reject) => {
                             setTimeout(() => {
-                                reject(new Error(`事件处理器超时 (${type})`));
+                                const pluginName = this.findPluginByEvent(handler);
+                                const handlerInfo = pluginName 
+                                    ? `插件 ${pluginName} 的事件处理器` 
+                                    : '未知插件的事件处理器';
+                                reject(new Error(`${handlerInfo}超时 (${type})`));
                             }, 10000); // 10秒超时
                         });
 
@@ -755,7 +759,19 @@ export class Features {
                         ]);
                     } catch (err) {
                         const error = err instanceof Error ? err : new Error(String(err));
-                        log.error(`事件处理器错误 (${type}): ${error.message}`);
+                        // 根据不同的事件类型获取用户ID
+                        let userId = 'unknown';
+                        if (context.type === 'message' || context.type === 'command') {
+                            userId = String((context as MessageEventContext | CommandContext).message.sender.id);
+                        } else if (context.type === 'callback') {
+                            userId = String((context as CallbackEventContext).query.user.id);
+                        }
+                        
+                        const chatId = context.chatId;
+                        const pluginName = this.findPluginByEvent(handler);
+                        const eventDetails = pluginName ? `插件 ${pluginName} 的 ${type} 事件处理器` : `${type} 事件处理器`;
+                        
+                        log.error(`${eventDetails}错误 (用户: ${userId}, 聊天: ${chatId}): ${error.message}`);
                         if (error.stack) {
                             log.debug(`错误堆栈: ${error.stack}`);
                         }
@@ -767,12 +783,15 @@ export class Features {
                     await Promise.all(tasks.map(task => task()));
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`优先级${priority}的事件处理组执行错误: ${error.message}`);
+                    log.error(`优先级 ${priority} 的事件处理组执行错误 (类型: ${type}, 处理器数量: ${handlersInPriority.length}): ${error.message}`);
+                    if (error.stack) {
+                        log.debug(`错误堆栈: ${error.stack}`);
+                    }
                 }
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`事件分发处理错误 (${type}): ${error.message}`);
+            log.error(`事件分发处理错误 (类型: ${type}, 处理器数量: ${this.eventHandlers.get(type)?.size || 0}): ${error.message}`);
             if (error.stack) {
                 log.debug(`错误堆栈: ${error.stack}`);
             }
@@ -816,7 +835,11 @@ export class Features {
                     await this.handleEvent('message', context);
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`消息处理错误: ${error.message}`);
+                    const userId = ctx.sender?.id || 'unknown';
+                    const chatId = ctx.chat?.id || 'unknown';
+                    const textPreview = ctx.text ? `${ctx.text.substring(0, 30)}${ctx.text.length > 30 ? '...' : ''}` : 'empty';
+                    
+                    log.error(`消息处理错误 (用户: ${userId}, 聊天: ${chatId}, 文本: ${textPreview}): ${error.message}`);
                     if (error.stack) {
                         log.debug(`错误堆栈: ${error.stack}`);
                     }
@@ -883,7 +906,11 @@ export class Features {
                     await this.handleEvent('callback', context);
                 } catch (err) {
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`回调查询处理错误: ${error.message}`);
+                    const userId = ctx.user.id;
+                    const chatId = ctx.chat?.id || 'unknown';
+                    const dataPreview = ctx.dataStr ? `${ctx.dataStr.substring(0, 30)}${ctx.dataStr.length > 30 ? '...' : ''}` : 'empty';
+                    
+                    log.error(`回调查询处理错误 (用户: ${userId}, 聊天: ${chatId}, 数据: ${dataPreview}): ${error.message}`);
                     if (error.stack) {
                         log.debug(`错误堆栈: ${error.stack}`);
                     }
@@ -942,7 +969,8 @@ export class Features {
         try {
             // 设置命令处理超时
             const timeoutId = setTimeout(() => {
-                rejectFn(new Error('命令处理超时'));
+                const messageText = ctx.text || '未知消息';
+                rejectFn(new Error(`用户 ${userId} 的命令处理超时: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}`));
             }, this.COMMAND_TIMEOUT);
 
             // 执行命令逻辑
@@ -1095,7 +1123,7 @@ export class Features {
                 // 使用Promise.race添加超时保护
                 const timeoutPromise = new Promise<void>((_, reject) => {
                     setTimeout(() => {
-                        reject(new Error('命令执行超时'));
+                        reject(new Error(`命令 ${command} 执行超时 (插件: ${plugin.name})`));
                     }, this.COMMAND_TIMEOUT);
                 });
 
@@ -1110,7 +1138,7 @@ export class Features {
                 }
             } catch (err) {
                 const error = err instanceof Error ? err : new Error(String(err));
-                log.error(`命令 ${command} 执行出错 (插件: ${plugin.name}): ${error.message}`);
+                log.error(`命令 ${command} 执行出错 (插件: ${plugin.name}, 用户: ${userId}, 聊天: ${context.chatId}, 参数: ${args.join(' ').substring(0, 30)}${args.join(' ').length > 30 ? '...' : ''}): ${error.message}`);
                 if (error.stack) {
                     log.debug(`错误堆栈: ${error.stack}`);
                 }
@@ -1119,7 +1147,8 @@ export class Features {
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`命令处理错误: ${error.message}`);
+            const messageText = ctx.text ? `${ctx.text.substring(0, 50)}${ctx.text.length > 50 ? '...' : ''}` : '未知消息';
+            log.error(`命令处理错误 (用户: ${ctx.sender?.id || 'unknown'}, 聊天: ${ctx.chat?.id || 'unknown'}, 文本: ${messageText}): ${error.message}`);
             if (error.stack) {
                 log.debug(`错误堆栈: ${error.stack}`);
             }
@@ -1259,12 +1288,14 @@ export class Features {
 
             // 处理可能包含子目录的路径 - 统一使用正斜杠
             const normalizedName = pathUtils.normalize(pluginName);
+            log.debug(`标准化插件名: ${normalizedName}`);
 
             // 确定实际插件名称（无扩展名）
             let actualName = normalizedName;
             if (actualName.endsWith('.ts') || actualName.endsWith('.js')) {
                 actualName = actualName.replace(/\.(ts|js)$/, '');
             }
+            log.debug(`实际插件名: ${actualName}`);
 
             // 查找插件文件路径
             let pluginPath = '';
@@ -1276,16 +1307,68 @@ export class Features {
                 let found = false;
 
                 for (const ext of possibleExts) {
+                    // 尝试直接使用完整的相对路径（支持子目录结构）
                     const testPath = path.join(this.pluginsDir, `${normalizedName}${ext}`);
+                    
+                    log.debug(`尝试查找插件文件: ${testPath}`);
+                    
                     if (await pathUtils.fileExists(testPath)) {
                         pluginPath = testPath;
                         found = true;
+                        log.debug(`找到插件文件: ${testPath}`);
                         break;
                     }
                 }
 
+                // 如果没有找到直接匹配的文件，尝试查找子目录中的插件文件
                 if (!found) {
-                    log.warn(`找不到插件文件: ${normalizedName}`);
+                    const dirPath = path.join(this.pluginsDir, normalizedName);
+                    
+                    // 检查是否存在该目录
+                    if (await pathUtils.dirExists(dirPath)) {
+                        log.debug(`检查子目录: ${dirPath}`);
+                        
+                        try {
+                            // 读取目录内容
+                            const files = await fs.readdir(dirPath);
+                            log.debug(`子目录中发现 ${files.length} 个文件`);
+                            
+                            // 按照优先级排序文件列表（优先考虑.ts文件）
+                            const sortedFiles = files.sort((a, b) => {
+                                if (a.endsWith('.ts') && !b.endsWith('.ts')) return -1;
+                                if (!a.endsWith('.ts') && b.endsWith('.ts')) return 1;
+                                return 0;
+                            });
+                            
+                            // 检查目录中的每个文件
+                            for (const file of sortedFiles) {
+                                if (file.endsWith('.ts') || file.endsWith('.js')) {
+                                    const fullPath = path.join(dirPath, file);
+                                    
+                                    log.debug(`尝试子目录中的文件: ${fullPath}`);
+                                    
+                                    // 验证是否是有效的插件文件
+                                    if (await this.isValidPluginFile(fullPath)) {
+                                        pluginPath = fullPath;
+                                        found = true;
+                                        log.debug(`在子目录中找到有效插件文件: ${fullPath}`);
+                                        break;
+                                    } else {
+                                        log.debug(`${fullPath} 不是有效的插件文件`);
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            const error = err instanceof Error ? err : new Error(String(err));
+                            log.debug(`读取目录 ${dirPath} 失败: ${error.message}`);
+                        }
+                    } else {
+                        log.debug(`子目录不存在: ${dirPath}`);
+                    }
+                }
+
+                if (!found) {
+                    log.warn(`找不到插件文件: ${normalizedName}，已检查直接匹配和子目录中的文件`);
                     return false;
                 }
             } else {
@@ -1295,11 +1378,12 @@ export class Features {
                     log.warn(`找不到插件文件: ${pluginPath}`);
                     return false;
                 }
+                log.debug(`使用指定插件文件: ${pluginPath}`);
             }
 
             // 标准化最终路径（确保在所有平台上都使用正斜杠）
             pluginPath = pathUtils.normalize(pluginPath);
-            log.debug(`插件路径: ${pluginPath}`);
+            log.debug(`最终插件路径: ${pluginPath}`);
 
             // 检查文件是否是有效插件
             if (!await this.isValidPluginFile(pluginPath)) {
@@ -1541,8 +1625,11 @@ export class Features {
         try {
             // 首先检查文件是否存在
             if (!filePath || !await pathUtils.fileExists(filePath)) {
+                log.debug(`文件不存在: ${filePath}`);
                 return false;
             }
+
+            log.debug(`验证插件文件: ${filePath}`);
 
             // Use dynamic import with a timestamp to bypass cache for checking
             const importPathWithCacheBust = `${filePath}?check=${Date.now()}`;
@@ -1552,23 +1639,42 @@ export class Features {
 
             // 检查是否有默认导出和必要属性
             const plugin = module.default;
-            if (!plugin ||
-                typeof plugin !== 'object' ||
-                !plugin.name) {
+            if (!plugin) {
+                log.debug(`文件 ${filePath} 没有默认导出`);
+                return false;
+            }
+            
+            if (typeof plugin !== 'object') {
+                log.debug(`文件 ${filePath} 的默认导出不是对象`);
+                return false;
+            }
+            
+            if (!plugin.name) {
+                log.debug(`文件 ${filePath} 的插件对象没有name属性`);
                 return false;
             }
 
             // 检查是否包含插件必要的功能
-            const hasPluginFeatures =
-                (plugin.commands && Array.isArray(plugin.commands)) ||
-                (plugin.events && Array.isArray(plugin.events)) ||
-                typeof plugin.onLoad === 'function';
+            const hasCommands = plugin.commands && Array.isArray(plugin.commands);
+            const hasEvents = plugin.events && Array.isArray(plugin.events);
+            const hasOnLoad = typeof plugin.onLoad === 'function';
+            
+            const hasPluginFeatures = hasCommands || hasEvents || hasOnLoad;
 
-            return hasPluginFeatures;
+            if (!hasPluginFeatures) {
+                log.debug(`文件 ${filePath} 的插件对象缺少必要功能属性(commands, events 或 onLoad)`);
+                return false;
+            }
+            
+            log.debug(`文件 ${filePath} 是有效的插件文件，名称: ${plugin.name}`);
+            return true;
         } catch (err) {
             // 导入出错，不是有效插件
             if (err instanceof Error && err.message) {
                 log.debug(`插件文件验证错误 (${filePath}): ${err.message}`);
+                if (err.stack) {
+                    log.debug(`错误堆栈: ${err.stack}`);
+                }
             }
             return false;
         }
@@ -1599,16 +1705,46 @@ export class Features {
             // 读取目录内容
             const files = await fs.readdir(dir);
 
+            // 调试日志 - 显示正在扫描的目录和找到的文件数
+            log.debug(`扫描目录: ${dir}, 发现 ${files.length} 个项目`);
+
             // 并行处理所有文件和子目录，提高性能
             const processPromises = files.map(async (file) => {
                 const fullPath = path.join(dir, file);
+                const results: { name: string; path: string }[] = [];
 
                 try {
                     // 检查是否是目录
-                    if (await pathUtils.dirExists(fullPath)) {
+                    const isDirectory = await pathUtils.dirExists(fullPath);
+                    
+                    if (isDirectory) {
                         // 递归扫描子目录
                         const subDirPlugins = await this.scanPluginsDir(fullPath);
-                        return subDirPlugins; // 返回子目录的结果
+                        if (subDirPlugins.length > 0) {
+                            log.debug(`在子目录 ${file} 中找到 ${subDirPlugins.length} 个插件`);
+                            return subDirPlugins;
+                        }
+                        
+                        // 如果子目录中没有找到插件，尝试检查是否有插件文件
+                        const dirFiles = await fs.readdir(fullPath);
+                        for (const dirFile of dirFiles) {
+                            if (dirFile.endsWith('.ts') || dirFile.endsWith('.js')) {
+                                const pluginFilePath = path.join(fullPath, dirFile);
+                                if (await this.isValidPluginFile(pluginFilePath)) {
+                                    // 获取相对于插件根目录的路径
+                                    const relativePath = path.relative(this.pluginsDir, pluginFilePath);
+                                    // 统一使用正斜杠，并移除扩展名
+                                    const pluginName = pathUtils.normalize(relativePath).replace(/\.(ts|js)$/, '');
+                                    
+                                    log.debug(`在目录 ${file} 中发现有效插件文件: ${pluginName} (${pluginFilePath})`);
+                                    results.push({ name: pluginName, path: pluginFilePath });
+                                }
+                            }
+                        }
+                        
+                        if (results.length > 0) {
+                            return results;
+                        }
                     }
                     // 只处理.ts和.js文件
                     else if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -1620,7 +1756,7 @@ export class Features {
                             // 统一使用正斜杠，并移除扩展名
                             const pluginName = pathUtils.normalize(relativePath).replace(/\.(ts|js)$/, '');
 
-                            log.debug(`发现有效插件: ${pluginName}`);
+                            log.debug(`发现有效插件: ${pluginName} (${fullPath})`);
                             return [{ name: pluginName, path: fullPath }];
                         } else {
                             log.debug(`跳过非插件文件: ${fullPath}`);
@@ -1642,6 +1778,11 @@ export class Features {
                 if (resultArray && resultArray.length) {
                     results.push(...resultArray);
                 }
+            }
+            
+            // 记录此目录中找到的插件数量
+            if (results.length > 0) {
+                log.debug(`在目录 ${dir} 中找到 ${results.length} 个插件`);
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
@@ -2605,5 +2746,20 @@ export class Features {
         this.commandQueue.clear();
 
         log.info('功能管理器资源清理完成');
+    }
+
+    /**
+     * 根据事件处理器查找对应的插件名称
+     * @param event 事件处理器
+     * @returns 插件名称，如果找不到则返回undefined
+     * @private
+     */
+    private findPluginByEvent(event: PluginEvent): string | undefined {
+        for (const [pluginName, plugin] of this.plugins.entries()) {
+            if (plugin.events && plugin.events.includes(event)) {
+                return pluginName;
+            }
+        }
+        return undefined;
     }
 }
