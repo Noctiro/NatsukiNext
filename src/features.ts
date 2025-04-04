@@ -12,7 +12,6 @@ import { log } from './log';
 import { enableChats, managerIds } from './app';
 import { PermissionManager, type Permission } from './permissions';
 import { embeddedPlugins, embeddedPluginsList } from './embedded-plugins';
-import { CallbackDataBuilder } from './utils/callback';
 
 // 扩展 TelegramClient 类型，以便在整个应用中访问features实例
 declare module '@mtcute/bun' {
