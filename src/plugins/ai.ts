@@ -659,10 +659,10 @@ class ResponseFormatter {
                 htmlText = htmlText.replace(rule.pattern, rule.replacement);
             }
 
-            // 处理换行，但根据AI实际情况还是会忍不住换行，所以注释掉这段
-            // htmlText = htmlText
-            //     .replace(/\n\n+/g, '<br><br>')  // 多个连续换行转为两个 <br>
-            //     .replace(/\n/g, '<br>');        // 单个换行转为 <br>
+            // 处理换行，但根据AI实际情况还是会忍不住换行，所以注释掉这段(之前使用deepseek r1有这个问题，但是现在用的gemini 2.5 pro 没有这个问题)
+            htmlText = htmlText
+                .replace(/\n\n+/g, '<br><br>')  // 多个连续换行转为两个 <br>
+                .replace(/\n/g, '<br>');        // 单个换行转为 <br>
 
             // 注意：不在这里调用cleanHTML，而是将HTML文本返回给调用者
             // 由调用者决定在最终组装完所有内容后一次性进行清理，避免多次清理
