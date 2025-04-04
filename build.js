@@ -151,7 +151,7 @@ async function main() {
   // 运行Bun编译命令
   console.log('开始编译...');
   try {
-    execSync('bun build src/app.ts --target=bun-linux-x64 --compile --outfile natsuki', {
+    execSync('bun build src/app.ts --compile --outfile natsuki', {
       stdio: 'inherit'
     });
     console.log('编译完成');

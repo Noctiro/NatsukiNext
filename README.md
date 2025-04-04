@@ -48,7 +48,8 @@ TG_TOKEN=xxxxx
 MANAGER_IDS=1111,22222
 ENABLE_CHATS=-33333
 
-# AI API密钥
+# AI API密钥 支持多个密钥
+# OpenRouter 密钥 (https://openrouter.ai/)
 AI_OPENROUTER_API_KEY=sk-or-v1-xxx,sk-or-v1-xxxxx
 ```
 
@@ -59,6 +60,15 @@ AI_OPENROUTER_API_KEY=sk-or-v1-xxx,sk-or-v1-xxxxx
 
 ```bash
 bun start
+```
+
+### 📦 打包为二进制文件
+
+> [!WARNING]
+> 实验性功能，可能存在不稳定因素
+
+```bash
+bun run build
 ```
 
 ---
