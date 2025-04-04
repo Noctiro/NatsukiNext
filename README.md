@@ -13,553 +13,423 @@ NatsukiMiyu Next 是一个基于 [mtcute](https://github.com/mtcute/mtcute) 构�
 - **插件专用日志**: 为每个插件提供专用的日志记录器，自动标记插件来源，便于调试和问题排查。
 - **TypeScript 支持**: 使用 TypeScript 编写，提供类型安全和更好的开发体验。
 
+## 快速开始
+
+### 安装
+
+```bash
+# 克隆仓库
+git clone https://github.com/yourusername/NatsukiMiyu-Next.git
+cd NatsukiMiyu-Next
+
+# 安装依赖
+bun install
+```
+
+### 配置
+
+1. 复制示例配置文件
+```bash
+cp config/config.example.json config/config.json
+```
+
+2. 编辑配置文件，填入必要信息
+```json
+{
+  "apiId": 123456,           // 替换为你的API ID
+  "apiHash": "your_api_hash", // 替换为你的API Hash
+  "botToken": "bot_token",    // 替换为你的Bot Token
+  "adminUsers": [123456789],  // 管理员用户ID
+  "logLevel": "info"          // 日志级别 (debug, info, warn, error)
+}
+```
+
+### 运行
+
+```bash
+# 使用Bun运行(推荐)
+bun start
+
+# 或使用Node运行
+npm start
+```
+
+初次运行时，程序会自动扫描并加载`src/plugins`目录中的所有插件。
+
+### 基本使用
+
+机器人启动后，可以使用以下命令进行基本操作：
+
+- `/help` - 显示可用命令列表
+- `/plugins` - 查看已加载的插件
+- `/plugin <plugin_name>` - 查看指定插件的详细信息
+- `/admin` - 访问管理员面板(仅管理员可用)
+
 ## 插件开发指南
 
-插件是 NatsukiMiyu Next 的核心。下面是一个详细的插件示例，展示了如何使用框架提供的各种功能。
+插件是NatsukiMiyu Next的核心构建块。每个插件都是独立的功能模块，可以自由组合。
+
+### 基本结构
 
 ```typescript
-// 导入必要的类型和模块
-import type {
-  BotPlugin,
-  CommandContext,
-  MessageEventContext,
-  CallbackEventContext,
-} from "../features"; // 从核心模块导入类型
-import { log } from "../log"; // 导入日志记录器
-import type { TelegramClient } from "@mtcute/bun"; // 导入 Telegram 客户端类型
+import type { BotPlugin } from "../features";
 
-// 1. 定义插件配置接口 (可选)
-// 用于定义插件的可配置选项及其类型
-interface MyPluginConfig {
-  enabled: boolean; // 插件是否启用
-  apiKey?: string; // 示例 API 密钥 (可选)
-  responseTimeout: number; // 响应超时时间 (秒)
-  allowedUsers: number[]; // 允许使用此插件的用户 ID 列表
-  greetingMessage: string; // 问候语
-}
-
-// 2. 定义插件的默认配置 (可选)
-// 当用户没有提供自定义配置时，将使用这些默认值
-const defaultConfig: MyPluginConfig = {
-  enabled: true,
-  responseTimeout: 30,
-  allowedUsers: [], // 默认允许所有用户 (如果权限检查依赖此配置)
-  greetingMessage: "你好！我是示例插件。",
-};
-
-// 3. 插件内部状态 (可选)
-// 用于存储插件运行时的配置或状态
-// 使用 let 声明，因为会在 onLoad 中被实际配置覆盖
-let config: MyPluginConfig = { ...defaultConfig };
-
-// 4. 定义插件对象 (必需)
-// 这是插件的核心，包含了插件的所有信息和逻辑
+// 插件定义
 const plugin: BotPlugin = {
-  // 4.1 基础信息 (必需 & 可选)
-  name: "example", // 插件名称 (必需, 唯一标识符, 建议使用小写字母和下划线)
-  description: "一个展示 NatsukiMiyu Next 插件功能的示例", // 插件描述 (可选)
-  version: "1.0.0", // 插件版本 (可选)
-  // 4.2 默认配置 (已移除)
-  // 默认配置现在直接在 onLoad 中通过 getPluginConfig 的第二个参数传入
-
-  // 4.3 依赖关系 (可选)
-  // 列出此插件运行所依赖的其他插件的名称
-  // 框架会确保依赖项在当前插件加载前被加载和启用
-  dependencies: ["system"], // 示例：依赖 'system' 插件
-
-  // 4.4 权限声明 (可选)
-  // 定义插件所需的权限
-  permissions: [
+  // 基础信息
+  name: "example",              // [必需] 唯一标识符
+  description: "示例插件",       // [可选] 插件描述
+  version: "1.0.0",             // [可选] 版本号
+  
+  // 依赖关系
+  dependencies: ["system"],     // [可选] 依赖的其他插件
+  
+  // 权限声明
+  permissions: [                // [可选] 插件所需的权限
     {
-      name: "example.use", // 权限名称 (建议格式: plugin_name.action)
-      description: "允许用户使用示例插件的基本功能", // 权限描述
-      isSystem: false, // 是否为系统权限 (通常为 false)
-      // allowedUsers: [] // 注意：这里通常不直接设置，而是在 onLoad 中根据配置更新
-    },
-    {
-      name: "example.admin", // 管理员权限
-      description: "允许用户管理示例插件的配置",
-      isSystem: false, // 可以设为 true 如果希望它继承自某个系统权限组
-      parent: "admin", // 示例：继承自 'admin' 权限组 (如果 'admin' 权限组存在)
-    },
-  ],
-
-  // 4.5 生命周期钩子: onLoad (可选)
-  // 4.5 生命周期钩子: onLoad (可选)
-  // 当插件被加载并启用时调用
-  // 通常用于初始化、加载配置、注册动态内容等
-  async onLoad(client: TelegramClient): Promise<void> {
-    // 加载插件配置: 传入插件名和默认配置对象
-    // getPluginConfig 会自动合并传入的默认配置、用户保存的配置
-    // 返回的 config 对象保证是非 null 的
-    config = await client.features.getPluginConfig<MyPluginConfig>(
-      "example",
-      defaultConfig
-    );
-
-    // 示例：根据配置更新权限
-    // 如果 allowedUsers 列表用于控制 'example.use' 权限
-    const permManager = client.features.getPermissionManager();
-    const usePermission = permManager.getPermission("example.use");
-    if (usePermission) {
-      usePermission.allowedUsers = config.allowedUsers; // 从配置中读取允许的用户列表
-      permManager.updatePermission(usePermission); // 更新权限设置
-      log.info(
-        `插件 'example' 的 'example.use' 权限已根据配置更新，允许 ${config.allowedUsers.length} 个用户。`
-      );
-    } else {
-      log.warn(`插件 'example' 无法找到权限 'example.use' 进行更新。`);
+      name: "example.use",
+      description: "使用插件的基本功能"
     }
-
-    log.info(`示例插件 (v${plugin.version}) 已加载并启用。`);
-    log.debug(`当前配置: ${JSON.stringify(config)}`);
-  },
-
-  // 4.6 生命周期钩子: onUnload (可选)
-  // 当插件被禁用或卸载时调用
-  // 用于清理资源、保存状态等
-  async onUnload(): Promise<void> {
-    // 可以在这里添加清理逻辑，例如取消定时任务、关闭连接等
-    log.info("示例插件已卸载。");
-  },
-
-  // 4.7 命令定义 (可选)
-  // 定义插件提供的斜杠命令 (/)
-  commands: [
-    {
-      name: "example", // 命令名称 (必需, 用户输入的命令，不含 /)
-      description: "示例插件的主命令", // 命令描述 (可选, 用于 /help 等场景)
-      aliases: ["ex", "sample"], // 命令别名 (可选, 用户也可以通过 /ex 或 /sample 触发)
-      requiredPermission: "example.use", // 执行此命令所需的权限 (可选)
-      cooldown: 5, // 命令冷却时间 (可选, 单位：秒)
-
-      // 命令处理器 (必需)
-      // 当用户输入匹配的命令时，此函数会被调用
-      async handler(ctx: CommandContext): Promise<void> {
-        // ctx (CommandContext) 包含了命令相关的所有信息:
-        // - ctx.client: TelegramClient 实例
-        // - ctx.message: 原始消息对象
-        // - ctx.command: 命令名称 (小写, 不含 /)
-        // - ctx.args: 参数数组 (字符串)
-        // - ctx.content: 参数拼接成的字符串
-        // - ctx.rawText: 完整的原始消息文本
-        // - ctx.chatId: 聊天 ID
-        // - ctx.permissionLevel: 用户的权限级别 (例如管理员=100)
-        // - ctx.hasPermission(permName): 检查用户是否有指定权限的函数
-
-        // 检查插件是否已启用 (通过配置)
-        if (!config.enabled) {
-          await ctx.message.replyText("❌ 示例插件当前已禁用。");
-          return;
-        }
-
-        // 解析子命令和参数
-        const subCommand = ctx.args[0]?.toLowerCase(); // 第一个参数作为子命令
-        const commandArgs = ctx.args.slice(1); // 剩余部分作为子命令的参数
-
-        // 如果没有子命令，显示帮助信息
-        if (!subCommand) {
-          await ctx.message.replyText(`
-📚 **示例插件帮助** (${plugin.name} v${plugin.version})
-
-${config.greetingMessage}
-
-可用子命令:
- • \`/example status\` - 查看插件当前状态和配置
- • \`/example greet\` - 发送问候语
- • \`/example set <key> <value>\` - 修改配置项 (需要管理员权限: example.admin)
- • \`/example reset\` - 重置配置为默认值 (需要管理员权限: example.admin)
-
-冷却时间: ${this.cooldown} 秒
-需要权限: ${this.requiredPermission}
-`);
-          return;
-        }
-
-        // 处理不同的子命令
-        switch (subCommand) {
-          case "status":
-            // 回复插件状态信息
-            await ctx.message.replyText(`
-📊 **插件状态 (${plugin.name})**
-
- • 状态: ${config.enabled ? "✅ 已启用" : "❌ 已禁用"}
- • API 密钥: ${config.apiKey ? "已设置" : "未设置"}
- • 超时时间: ${config.responseTimeout} 秒
- • 允许的用户数: ${config.allowedUsers.length}
- • 问候语: "${config.greetingMessage}"
-`);
-            break;
-
-          case "greet":
-            // 发送配置的问候语
-            await ctx.message.replyText(config.greetingMessage);
-            break;
-
-          case "set":
-            // 修改配置项 (需要管理员权限)
-            if (!ctx.hasPermission("example.admin")) {
-              await ctx.message.replyText(
-                "❌ 您没有权限修改配置。需要权限: example.admin"
-              );
-              return;
-            }
-
-            const key = commandArgs[0]?.toLowerCase(); // 配置项名称
-            const value = commandArgs.slice(1).join(" "); // 配置项的值
-
-            if (!key || value === undefined) {
-              await ctx.message.replyText(
-                "❌ 用法: `/example set <key> <value>`\n可用 Key: enabled, apiKey, timeout, greeting, allowedUsers"
-              );
-              return;
-            }
-
-            try {
-              let updateMessage = "";
-              // 更新配置对象
-              switch (key) {
-                case "enabled":
-                  const newEnabled = value.toLowerCase() === "true";
-                  if (typeof newEnabled === "boolean") {
-                    config.enabled = newEnabled;
-                    updateMessage = `插件状态已设置为: ${
-                      config.enabled ? "启用" : "禁用"
-                    }`;
-                  } else {
-                    throw new Error("无效的布尔值 (true/false)");
-                  }
-                  break;
-                case "apikey":
-                  config.apiKey = value;
-                  updateMessage = `API 密钥已更新。`;
-                  break;
-                case "timeout":
-                  const newTimeout = parseInt(value);
-                  if (!isNaN(newTimeout) && newTimeout > 0) {
-                    config.responseTimeout = newTimeout;
-                    updateMessage = `响应超时时间已设置为: ${config.responseTimeout} 秒`;
-                  } else {
-                    throw new Error("无效的超时时间 (需要正整数)");
-                  }
-                  break;
-                case "greeting":
-                  config.greetingMessage = value;
-                  updateMessage = `问候语已更新为: "${config.greetingMessage}"`;
-                  break;
-                case "allowedusers":
-                  // 示例：设置允许的用户列表 (输入为逗号分隔的 ID)
-                  const ids = value
-                    .split(",")
-                    .map((id) => parseInt(id.trim()))
-                    .filter((id) => !isNaN(id));
-                  config.allowedUsers = ids;
-                  // 更新权限系统中的用户列表
-                  const permManager =
-                    ctx.client.features.getPermissionManager();
-                  const usePermission =
-                    permManager.getPermission("example.use");
-                  if (usePermission) {
-                    usePermission.allowedUsers = config.allowedUsers;
-                    permManager.updatePermission(usePermission);
-                  }
-                  updateMessage = `允许的用户列表已更新 (${config.allowedUsers.length} 个用户)。`;
-                  break;
-                default:
-                  await ctx.message.replyText(`❌ 未知的配置项: ${key}`);
-                  return;
-              }
-
-              // 保存更新后的配置到文件
-              const saveSuccess = await ctx.client.features.savePluginConfig(
-                "example",
-                config
-              );
-              if (saveSuccess) {
-                await ctx.message.replyText(
-                  `✅ 配置更新成功！\n${updateMessage}`
-                );
-              } else {
-                await ctx.message.replyText(
-                  `⚠️ 配置已在内存中更新，但保存到文件失败。`
-                );
-              }
-            } catch (err) {
-              const error = err instanceof Error ? err : new Error(String(err));
-              await ctx.message.replyText(`❌ 设置失败: ${error.message}`);
-              log.error(`配置设置失败: ${error.stack}`);
-            }
-            break;
-
-          case "reset":
-            // 重置配置 (需要管理员权限)
-            if (!ctx.hasPermission("example.admin")) {
-              await ctx.message.replyText(
-                "❌ 您没有权限重置配置。需要权限: example.admin"
-              );
-              return;
-            }
-
-            config = { ...defaultConfig }; // 恢复为默认配置
-            // 保存重置后的配置
-            const resetSuccess = await ctx.client.features.savePluginConfig(
-              "example",
-              config
-            );
-            // 更新权限 (如果需要)
-            const permManager = ctx.client.features.getPermissionManager();
-            const usePermission = permManager.getPermission("example.use");
-            if (usePermission) {
-              usePermission.allowedUsers = config.allowedUsers;
-              permManager.updatePermission(usePermission);
-            }
-
-            if (resetSuccess) {
-              await ctx.message.replyText("✅ 配置已成功重置为默认值。");
-            } else {
-              await ctx.message.replyText(
-                "⚠️ 配置已在内存中重置，但保存到文件失败。"
-              );
-            }
-            break;
-
-          default:
-            await ctx.message.replyText(`❌ 未知的子命令: ${subCommand}`);
-        }
-      },
-    },
-    // 可以添加更多命令...
   ],
-
-  // 4.8 事件处理器定义 (可选)
-  // 定义插件如何响应不同的 Telegram 事件
-  events: [
+  
+  // 生命周期钩子
+  async onLoad(client) {        // [可选] 加载时执行
+    // 加载配置、初始化资源等
+    const config = await client.features.getPluginConfig("example", defaultConfig);
+  },
+  
+  async onUnload() {            // [可选] 卸载时执行
+    // 清理资源、保存状态等
+  },
+  
+  // 命令定义
+  commands: [                   // [可选] 斜杠命令
     {
-      // 4.8.1 消息事件处理器
-      type: "message", // 事件类型 (必需)
-      priority: 10, // 处理优先级 (可选, 数字越大优先级越高, 默认 0)
-
-      // 事件过滤器 (可选)
-      // 返回 true 时，handler 才会被调用
-      filter: (ctx) => {
-        // 首先确保事件类型正确 (虽然框架会做，但显式检查更安全)
-        if (ctx.type !== "message") return false;
-
-        // 检查插件是否启用
-        if (!config.enabled) return false;
-
-        // 示例：只处理来自特定用户的文本消息
-        // return config.allowedUsers.includes(ctx.message.sender.id) && !!ctx.message.text;
-
-        // 示例：只处理包含特定关键词的文本消息
-        return (
-          !!ctx.message.text && ctx.message.text.toLowerCase().includes("示例")
-        );
-      },
-
-      // 事件处理器函数 (必需)
-      async handler(ctx: MessageEventContext): Promise<void> {
-        // ctx (MessageEventContext) 包含了消息事件的信息:
-        // - ctx.client: TelegramClient 实例
-        // - ctx.message: 原始消息对象
-        // - ctx.chatId: 聊天 ID
-        // - ctx.hasPermission(permName): 检查用户是否有指定权限的函数
-
-        const text = ctx.message.text;
-        if (!text) return; // 再次确认文本存在
-
-        log.debug(
-          `示例插件消息事件处理器被触发: ChatID=${ctx.chatId}, UserID=${ctx.message.sender.id}, Text="${text}"`
-        );
-
-        // 根据消息内容进行响应
-        if (text.toLowerCase().includes("你好")) {
-          await ctx.message.replyText(`${config.greetingMessage} 👋`);
-        } else {
-          await ctx.message.replyText(`我收到了包含 "示例" 的消息！`);
-        }
-      },
-    },
-    {
-      // 4.8.2 回调查询事件处理器
-      type: "callback", // 事件类型 (必需)
-      priority: 0, // 优先级 (可选)
-
-      // 过滤器 (可选)
-      filter: (ctx) => {
-        if (ctx.type !== "callback") return false;
-        // 只处理 data 以 'example:' 开头的回调
-        return ctx.data?.startsWith("example:");
-      },
-
-      // 事件处理器函数 (必需)
-      async handler(ctx: CallbackEventContext): Promise<void> {
-        // ctx (CallbackEventContext) 包含回调查询的信息:
-        // - ctx.client: TelegramClient 实例
-        // - ctx.query: 原始回调查询对象
-        // - ctx.data: 回调数据 (字符串)
-        // - ctx.chatId: 聊天 ID
-        // - ctx.hasPermission(permName): 检查用户是否有指定权限的函数
-
-        log.debug(
-          `示例插件回调事件处理器被触发: ChatID=${ctx.chatId}, UserID=${ctx.query.user.id}, Data="${ctx.data}"`
-        );
-
-        // 解析回调数据
-        const action = ctx.data.split(":")[1]; // 获取 'example:' 后面的部分
-
-        try {
-          switch (action) {
-            case "show_info":
-              // 回答回调查询 (在按钮旁边显示短暂提示)
-              await ctx.query.answer({ text: "正在显示信息..." });
-              // 在聊天中回复消息
-              await ctx.client.sendText(
-                ctx.chatId,
-                "这是来自示例插件回调的信息。",
-                {
-                  replyTo: ctx.query.messageId, // 回复原始包含按钮的消息
-                }
-              );
-              break;
-            case "update_config":
-              // 示例：通过回调更新配置 (需要权限)
-              if (!ctx.hasPermission("example.admin")) {
-                await ctx.query.answer({ text: "❌ 无权限操作", alert: true }); // 显示警告弹窗
-                return;
-              }
-              // 假设 data 格式为 'example:update_config:enabled:false'
-              const parts = ctx.data.split(":");
-              if (parts.length === 4) {
-                const key = parts[2];
-                const value = parts[3];
-                // ... (类似 /example set 的逻辑来更新 config)
-                config.enabled = value === "true";
-                await ctx.client.features.savePluginConfig("example", config);
-                await ctx.query.answer({ text: `✅ 配置 ${key} 已更新` });
-                // 可以选择编辑原始消息来更新按钮状态
-                // await ctx.client.editMessageText(...)
-              } else {
-                await ctx.query.answer({ text: "❌ 无效的回调数据格式" });
-              }
-              break;
-            default:
-              await ctx.query.answer({ text: `未知操作: ${action}` });
-          }
-        } catch (err) {
-          const error = err instanceof Error ? err : new Error(String(err));
-          log.error(`处理回调查询失败: ${error.stack}`);
-          await ctx.query.answer({ text: "❌ 处理回调时出错", alert: true });
-        }
-      },
-    },
-    // 可以添加更多事件处理器...
+      name: "example",
+      description: "示例命令",
+      aliases: ["ex"],
+      cooldown: 5,
+      async handler(ctx) {
+        await ctx.message.replyText("示例命令已执行");
+      }
+    }
   ],
+  
+  // 事件处理
+  events: [                    // [可选] 事件处理器
+    {
+      type: "message",
+      filter: ctx => ctx.message.text?.includes("关键词"),
+      async handler(ctx) {
+        this.logger?.info("收到消息");
+        await ctx.message.replyText("检测到关键词");
+      }
+    }
+  ]
 };
 
-// 5. 导出插件对象 (必需)
-// 确保使用 default export 导出插件对象
 export default plugin;
 ```
 
-### 插件结构详解
-
-1. **配置接口 (`interface MyPluginConfig`)**: (可选) 定义插件配置的结构和类型。这有助于类型检查和代码提示。
-2. **默认配置 (`const defaultConfig`)**: (可选) 提供插件的默认设置。当用户没有自定义配置时，框架会使用这些值。`getPluginConfig` 会自动将用户配置与默认配置合并。
-3. **插件状态 (`let config`)**: (可选) 用于存储从配置文件加载或在运行时修改的配置。通常在 `onLoad` 中初始化。
-4. **插件定义 (`const plugin: BotPlugin`)**: (必需) 这是插件的核心对象。
-   - `name`: (必需) 插件的唯一标识符，用于加载、依赖管理和配置存储。
-   - `description`, `version`: (可选) 插件的描述信息。
-   - `dependencies`: (可选) 声明此插件依赖的其他插件名称数组。框架会确保依赖项先加载。
-   - `permissions`: (可选) 声明插件所需的权限列表。每个权限包含名称、描述、是否系统权限以及可选的父权限。
-   - `logger`: (自动注入) 插件专用的日志记录器，由框架自动创建并注入，用于记录插件相关日志。
-   - `onLoad`: (可选) 异步函数，在插件加载并启用时调用。适合执行初始化任务，如加载配置、连接外部服务、注册动态路由等。接收 `TelegramClient` 实例作为参数。
-   - `onUnload`: (可选) 异步函数，在插件禁用或卸载时调用。适合执行清理任务，如保存状态、断开连接等。
-   - `commands`: (可选) 命令定义数组。每个命令对象包含：
-     - `name`: (必需) 命令触发词 (不含 `/`)。
-     - `description`: (可选) 命令描述。
-     - `aliases`: (可选) 命令别名数组。
-     - `requiredPermission`: (可选) 执行此命令所需的权限名称。
-     - `cooldown`: (可选) 命令冷却时间 (秒)。
-     - `handler`: (必需) 异步函数，处理命令逻辑。接收 `CommandContext` 对象，包含消息、参数、权限检查等信息。
-   - `events`: (可选) 事件处理器数组。每个事件对象包含：
-     - `type`: (必需) 事件类型 (`'message'`, `'callback'`, 等)。
-     - `priority`: (可选) 处理优先级 (数字越大越高)。
-     - `filter`: (可选) 函数，用于过滤事件。返回 `true` 时 `handler` 才会被调用。接收 `EventContext` (根据 `type` 可能是 `MessageEventContext`, `CallbackEventContext` 等)。
-     - `handler`: (必需) 异步函数，处理事件逻辑。接收对应事件类型的上下文对象。
-5. **导出插件 (`export default plugin`)**: (必需) 必须使用 `export default` 将插件对象导出，以便框架能够加载它。
-
-### 使用日志记录器
-
-框架为每个插件提供了专用的日志记录器，由系统自动注入到插件对象的 `logger` 属性中。这使得不同插件的日志可以清晰区分，便于调试和问题排查。
-
-- **在插件生命周期方法中使用**:
-
-  ```typescript
-  // 在onLoad、onUnload等方法中使用this.logger
-  async onLoad(client: TelegramClient): Promise<void> {
-    this.logger?.info(`插件已加载 v${this.version}`);
-    this.logger?.debug("配置加载完成", { remote: false });
-  }
-  ```
-
-- **在事件处理器中使用**:
-
-  ```typescript
-  // 在事件处理器中，需要使用plugin引用
-  async handler(ctx: MessageEventContext): Promise<void> {
-    plugin.logger?.debug(`收到消息: ${ctx.message.text}`);
-    // ...处理逻辑
-  }
-  ```
-
-- **在外部函数中使用**:
-
-  ```typescript
-  // 在插件外部定义的函数中，需要通过plugin引用调用
-  function processData(data: any) {
-    plugin.logger?.info(`处理数据: ${data.length} 条记录`);
-    // ...处理逻辑
-  }
-  ```
-
-- **日志级别**:
-  - `logger.debug()`: 调试信息，仅在开发环境显示
-  - `logger.info()`: 普通信息，默认级别
-  - `logger.warn()`: 警告信息
-  - `logger.error()`: 错误信息，通常会自动发送到管理员
-  - `logger.fatal()`: 致命错误，会导致程序退出
-
-- **特殊选项**:
-
-  ```typescript
-  // 强制发送到Telegram管理员
-  this.logger?.info("重要通知消息", { remote: true });
-  
-  // 添加标签，便于过滤
-  this.logger?.debug("数据结构", { tags: ["data", "structure"] });
-  
-  // 添加元数据，便于排查问题
-  this.logger?.error("API调用失败", { 
-    metadata: { 
-      statusCode: 404, 
-      endpoint: "/users" 
-    } 
-  });
-  ```
-
-- **最佳实践**:
-  - 不要在插件中导入全局`log`对象，使用插件专用的`logger`
-  - 对于关键操作和错误处理，使用`{ remote: true }`选项确保管理员能收到通知
-  - 使用适当的日志级别，避免过多调试信息干扰正常日志，没必要的日志不要输出
-
 ### 配置管理
 
-- **加载配置**: 使用 `client.features.getPluginConfig<ConfigType>('plugin_name', optionalDefaultConfig)`。
-  - `plugin_name`: 插件的名称 (string)。
-  - `optionalDefaultConfig`: (可选) 在调用时直接传入的默认配置对象。
-  - 该方法会按以下优先级合并配置：用户保存在 `config/plugin_name.json` 的配置 > 调用时传入的 `optionalDefaultConfig` > 空对象 `{}`。
-  - 它总是返回一个合并后的配置对象 (类型为 `ConfigType`)，即使文件不存在或解析失败，也会基于传入的默认值（或空对象）返回。
-- **保存配置**: 使用 `client.features.savePluginConfig('plugin_name', configObject)` 将配置对象保存到 `config/plugin_name.json`。
+提供方便的API管理插件配置：
 
-将插件文件放在 `src/plugins/` 目录下 (或子目录)，框架启动时会自动扫描并加载。
+```typescript
+// 读取配置(会自动合并默认值)
+const config = await client.features.getPluginConfig<Config>("plugin_name", defaultConfig);
+
+// 保存配置
+await client.features.savePluginConfig("plugin_name", config);
+```
+
+### 日志系统
+
+每个插件都有独立的日志记录器，自动注入到`logger`属性：
+
+```typescript
+// 在插件对象内部
+this.logger?.info("插件已加载");  // 普通信息
+this.logger?.error("出现错误");   // 错误信息
+this.logger?.debug("调试信息");   // 调试信息
+
+// 在外部函数中
+plugin.logger?.info("处理完成");
+
+// 高级用法
+this.logger?.error("API错误", { 
+  remote: true,                 // 发送到管理员
+  tags: ["api", "error"],       // 添加标签
+  metadata: { status: 404 }     // 附加元数据
+});
+```
+
+### 权限管理
+
+插件可以声明和使用权限控制用户访问：
+
+```typescript
+// 声明权限(在插件对象中)
+permissions: [
+  {
+    name: "example.use",
+    description: "使用示例插件的基本功能",
+    parent: "basic"             // 继承自basic权限
+  }
+]
+
+// 检查权限(在事件处理中)
+if (!ctx.hasPermission("example.use")) {
+  await ctx.message.replyText("您没有权限执行此操作");
+              return;
+            }
+```
+
+### 回调数据解析器
+
+NatsukiMiyu Next提供两种处理回调数据的方式：简单解析器和结构化构建器。
+
+#### 简单解析器 (parseData)
+
+`CallbackEventContext`的内置解析器，适用于基本场景：
+
+```typescript
+// 基本使用方式
+const action = ctx.parseData.getCommand();       // 获取第一部分
+const subAction = ctx.parseData.getSubCommand(); // 获取第二部分
+const userId = ctx.parseData.getIntPart(2);      // 获取第三部分并转为数字
+```
+
+主要方法：
+- `hasPrefix(prefix)` - 检查前缀
+- `getPart(index)` - 获取指定部分
+- `getIntPart(index, default = 0)` - 获取并转换为数字
+- `parseAsObject<T>(schema, startIndex = 1)` - 解析为对象
+
+#### 结构化构建器 (CallbackDataBuilder)
+
+类型安全的回调数据构建和解析工具：
+
+```typescript
+// 1. 定义构建器
+const DeleteButton = new CallbackDataBuilder<{
+  itemId: number;
+  userId: number;
+}>('myPlugin', 'delete', ['itemId', 'userId']);
+
+// 2. 生成回调数据
+const data = DeleteButton.build({ itemId: 123, userId: 456 });
+// 结果: "myPlugin:delete:123:456"
+
+// 3. 处理回调 - 方式一：使用name属性(推荐)
+{
+  type: 'callback',
+  name: 'delete',  // 匹配功能名
+  async handler(ctx) {
+    // 自动解析并注入ctx.match
+    const { _param0, _param1 } = ctx.match; // _param0=itemId, _param1=userId
+    console.log(`删除项目${_param0}，由用户${_param1}发起`);
+  }
+}
+
+// 3. 处理回调 - 方式二：使用filter方法
+{
+  type: 'callback',
+  filter: DeleteButton.filter(), // 或带条件: DeleteButton.filter({userId: 123})
+  async handler(ctx) {
+    const { itemId, userId } = ctx.match;
+    console.log(`删除项目${itemId}，由用户${userId}发起`);
+  }
+}
+```
+
+#### 最佳实践
+
+- **选择合适的方式**：简单场景用`name`属性，复杂场景用`filter`方法
+- **数据格式**：始终使用`插件名:功能名:参数1:参数2...`的标准格式
+- **参数设计**：重要参数靠前，使用数字ID替代字符串，总长度控制在64字节内
+- **权限检查**：包含用户ID用于权限验证，处理前先验证权限
+- **组织管理**：使用工厂函数统一管理同一插件的回调构建器
+
+### 创建新插件
+
+按照以下步骤快速创建一个新插件：
+
+1. 在`src/plugins`目录下创建文件，如`my-plugin.ts`
+2. 使用基本框架实现插件功能：
+
+```typescript
+import type { BotPlugin } from "../features";
+
+// 定义插件对象
+const plugin: BotPlugin = {
+  name: "my-plugin",
+  description: "我的自定义插件",
+  version: "1.0.0",
+  
+  // 实现加载逻辑
+  async onLoad(client) {
+    this.logger?.info("插件已加载");
+  },
+  
+  // 添加命令
+  commands: [
+    {
+      name: "myplugin",
+      description: "我的插件命令",
+      async handler(ctx) {
+        await ctx.message.replyText("命令已执行");
+      }
+    }
+  ],
+  
+  // 处理事件
+  events: [
+    {
+      type: "message",
+      filter: ctx => ctx.message.text?.includes("触发词"),
+      async handler(ctx) {
+        await ctx.message.replyText("已触发事件");
+      }
+    }
+  ]
+};
+
+export default plugin;
+```
+
+3. 保存文件后重启机器人，插件会自动加载
+
+### 事件类型参考
+
+NatsukiMiyu支持以下主要事件类型：
+
+| 事件类型 | 上下文对象 | 说明 |
+|---------|----------|------|
+| `message` | `MessageEventContext` | 处理新消息 |
+| `callback` | `CallbackEventContext` | 处理按钮回调 |
+| `inline` | `InlineEventContext` | 处理内联查询 |
+| `chat_join` | `ChatJoinEventContext` | 处理用户加入聊天 |
+| `chat_leave` | `ChatLeaveEventContext` | 处理用户离开聊天 |
+
+### 插件交互示例
+
+#### 创建内联键盘
+
+  ```typescript
+// 在命令或事件处理函数中
+await ctx.message.replyText("请选择操作", {
+  reply_markup: {
+    inline_keyboard: [
+      [
+        { text: "选项A", callback_data: "plugin:optionA" },
+        { text: "选项B", callback_data: "plugin:optionB" }
+      ],
+      [
+        { text: "访问网站", url: "https://example.com" }
+      ]
+    ]
+  }
+});
+```
+
+#### 处理按钮点击
+
+  ```typescript
+// 在插件的events数组中
+{
+  type: "callback",
+  name: "optionA",  // 匹配callback_data中的功能名
+  async handler(ctx) {
+    await ctx.query.answer({ text: "已选择选项A" });
+    // 可以更新原消息
+    await ctx.client.editMessageText({
+      chat: ctx.chatId,
+      message: ctx.query.messageId,
+      text: "已选择选项A"
+    });
+  }
+}
+```
+
+#### 访问数据库
+
+  ```typescript
+// 在插件中使用数据库
+async function saveUserData(userId, data) {
+  const db = client.features.getDatabase();
+  
+  // 插入或更新数据
+  await db.collection("users").updateOne(
+    { userId },
+    { $set: { ...data, updatedAt: new Date() } },
+    { upsert: true }
+  );
+  
+  // 查询数据
+  const user = await db.collection("users").findOne({ userId });
+  return user;
+}
+```
+
+#### 使用HTTP请求
+
+```typescript
+// 发起HTTP请求
+import axios from "axios";
+
+async function fetchWeather(city) {
+  try {
+    const response = await axios.get(`https://api.example.com/weather`, {
+      params: { city, units: "metric" },
+      headers: { "Authorization": `Bearer ${apiKey}` }
+    });
+    return response.data;
+  } catch (error) {
+    this.logger?.error("获取天气数据失败", { 
+      remote: true,
+      metadata: { city, error: error.message }
+    });
+    return null;
+  }
+}
+```
+
+## 贡献指南
+
+我们欢迎并感谢任何形式的贡献！
+
+### 提交问题
+
+如果您发现了Bug或有新功能建议，请通过GitHub Issues提交，并尽可能提供以下信息：
+
+- 详细的问题描述或功能建议
+- 重现步骤（如果是Bug）
+- 预期的行为和实际行为
+- 日志或错误信息
+- 您认为可能有帮助的其他信息
+
+### 提交代码
+
+1. Fork本仓库
+2. 创建您的特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交您的更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 创建一个Pull Request
+
+### 编码规范
+
+- 遵循TypeScript的命名规范
+- 使用ESLint和Prettier保持代码风格一致
+- 为公共API提供适当的文档注释
+- 编写单元测试（如适用）
+
+## 许可证
+
+本项目采用MIT许可证 - 详情参见 [LICENSE](LICENSE) 文件
+
+## 致谢
+
+- [mtcute](https://github.com/mtcute/mtcute) - 提供了强大的Telegram客户端库
+- [Bun](https://bun.sh/) - 现代JavaScript运行时
+- 所有贡献者和用户 - 感谢您的支持和反馈

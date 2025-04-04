@@ -12,6 +12,7 @@ import { log } from './log';
 import { enableChats, managerIds } from './app';
 import { PermissionManager, type Permission } from './permissions';
 import { embeddedPlugins, embeddedPluginsList } from './embedded-plugins';
+import { CallbackDataBuilder } from './utils/callback';
 
 // 扩展 TelegramClient 类型，以便在整个应用中访问features实例
 declare module '@mtcute/bun' {
@@ -136,6 +137,65 @@ export interface CallbackEventContext extends BaseContext {
     type: 'callback';
     query: CallbackQueryContext;
     data: string;
+    parseData: CallbackDataParser; // 添加回调数据解析器
+    match?: {
+        [key: string]: any;
+        _pluginName?: string; // 匹配的插件名
+        _actionType?: string; // 匹配的操作类型
+    }; // 添加匹配结果属性，包含基础元数据
+}
+
+/**
+ * 回调数据解析器接口
+ */
+export interface CallbackDataParser {
+    /**
+     * 检查回调数据是否以指定前缀开头
+     * @param prefix 回调前缀
+     * @returns 是否匹配前缀
+     */
+    hasPrefix(prefix: string): boolean;
+    
+    /**
+     * 获取回调数据的部分
+     * @param index 部分索引
+     * @returns 指定索引的部分或undefined
+     */
+    getPart(index: number): string | undefined;
+    
+    /**
+     * 获取回调数据的整数部分
+     * @param index 部分索引
+     * @param defaultValue 默认值，当部分不存在或无法解析为整数时返回
+     * @returns 解析为整数的部分或默认值
+     */
+    getIntPart(index: number, defaultValue?: number): number;
+    
+    /**
+     * 获取所有回调数据部分
+     * @returns 所有部分数组
+     */
+    getParts(): string[];
+    
+    /**
+     * 获取回调数据的命令部分（通常是第一部分）
+     * @returns 命令部分
+     */
+    getCommand(): string;
+    
+    /**
+     * 获取回调数据的子命令部分（通常是第二部分）
+     * @returns 子命令部分
+     */
+    getSubCommand(): string | undefined;
+    
+    /**
+     * 解析回调数据为对象
+     * @param schema 解析模式，例如 {userId: 'int', text: 'string'}
+     * @param startIndex 开始解析的索引，默认为1
+     * @returns 解析后的对象
+     */
+    parseAsObject<T>(schema: Record<string, 'int' | 'string' | 'boolean'>, startIndex?: number): T;
 }
 
 // 事件上下文联合类型
@@ -148,6 +208,8 @@ export type EventHandler<T extends EventContext = EventContext> = (context: T) =
 export interface PluginEvent<T extends EventContext = EventContext> {
     type: T['type'];
     filter?: (ctx: EventContext) => boolean;
+    // 对于回调事件, name用于匹配功能名（与CallbackDataBuilder中的actionType对应)
+    name?: string;
     handler: EventHandler<T>;
     // 优先级，数值越大优先级越高
     priority?: number;
@@ -630,6 +692,54 @@ export class Features {
                         if (handler.filter && !handler.filter(context)) {
                             return;
                         }
+                        
+                        // 检查回调事件的name匹配
+                        if (type === 'callback' && handler.name && context.type === 'callback') {
+                            const callbackContext = context as CallbackEventContext;
+                            if (!callbackContext.data) return;
+                            
+                            const parts = callbackContext.data.split(':');
+                            
+                            // 至少需要两部分 - 插件名:功能名
+                            if (parts.length < 2) return;
+                            
+                            // 第一部分是插件名，第二部分是功能名
+                            // 如果功能名不匹配，则跳过
+                            if (parts[1] !== handler.name) return;
+                            
+                            // 如果匹配，为context添加match属性
+                            // 从第3个部分开始解析参数
+                            const pluginName = parts[0];
+                            const actionType = parts[1];
+                            const paramParts = parts.slice(2);
+                            
+                            // 创建match对象，包含基础元数据
+                            (callbackContext as any).match = {
+                                _pluginName: pluginName,
+                                _actionType: actionType
+                            };
+                            
+                            // 解析参数
+                            for (let i = 0; i < paramParts.length; i++) {
+                                const value = paramParts[i];
+                                if (!value) continue; // 跳过空值
+                                
+                                // 按参数位置添加到match对象
+                                if (value === 'true') {
+                                    // 布尔值 - true
+                                    (callbackContext as any).match[`_param${i}`] = true;
+                                } else if (value === 'false') {
+                                    // 布尔值 - false
+                                    (callbackContext as any).match[`_param${i}`] = false;
+                                } else if (/^\d+$/.test(value)) {
+                                    // 数字
+                                    (callbackContext as any).match[`_param${i}`] = parseInt(value, 10);
+                                } else {
+                                    // 字符串
+                                    (callbackContext as any).match[`_param${i}`] = value;
+                                }
+                            }
+                        }
 
                         // 使用超时保护，防止事件处理器无限阻塞
                         const timeoutPromise = new Promise<void>((_, reject) => {
@@ -715,37 +825,76 @@ export class Features {
         );
 
         // 处理回调查询
-        this.dispatcher.onCallbackQuery(async (ctx: CallbackQueryContext) => {
-            try {
-                const data = ctx.data?.toString();
-                if (!data) return;
+        this.dispatcher.onCallbackQuery(
+            async (ctx: CallbackQueryContext) => {
+                try {
+                    const data = ctx.dataStr;
+                    if (!data) return;
 
-                // 创建回调查询事件上下文
-                const context: CallbackEventContext = {
-                    type: 'callback',
-                    client: this.client,
-                    chatId: ctx.chat.id,
-                    query: ctx,
-                    data,
-                    hasPermission: (permission) => this.hasPermission(ctx.chat.id, permission),
-                };
+                    // 检查聊天ID是否允许
+                    if (ctx.chat && (enableChats.length > 0 || managerIds.length > 0)) {
+                        const chatId = ctx.chat.id;
+                        if (!enableChats.includes(chatId) && !managerIds.includes(chatId)) {
+                            return; // 聊天不在允许列表中
+                        }
+                    }
 
-                // 分发回调查询事件
-                await this.handleEvent('callback', context);
-            } catch (err) {
-                const error = err instanceof Error ? err : new Error(String(err));
-                log.error(`回调查询处理错误: ${error.message}`);
-                if (error.stack) {
-                    log.debug(`错误堆栈: ${error.stack}`);
+                    // 创建回调查询事件上下文
+                    const context: CallbackEventContext = {
+                        type: 'callback',
+                        client: this.client,
+                        chatId: ctx.chat.id,
+                        query: ctx,
+                        data,
+                        hasPermission: (permission) => this.hasPermission(ctx.user.id, permission),
+                        parseData: {
+                            hasPrefix: (prefix) => data.startsWith(prefix),
+                            getPart: (index) => data.split(':')[index],
+                            getIntPart: (index, defaultValue = 0) => {
+                                const part = data.split(':')[index];
+                                return part ? parseInt(part, 10) || defaultValue : defaultValue;
+                            },
+                            getParts: () => data.split(':'),
+                            getCommand: () => data.split(':')[0] || '',
+                            getSubCommand: () => data.split(':')[1],
+                            parseAsObject: <T>(schema: Record<string, 'int' | 'string' | 'boolean'>, startIndex = 1): T => {
+                                const parts = data.split(':');
+                                const result: Record<string, any> = {};
+                                
+                                Object.entries(schema).forEach(([key, type], idx) => {
+                                    const partIndex = startIndex + idx;
+                                    const value = parts[partIndex];
+                                    
+                                    if (type === 'int') {
+                                        result[key] = value ? parseInt(value, 10) || 0 : 0;
+                                    } else if (type === 'boolean') {
+                                        result[key] = value === 'true' || value === '1';
+                                    } else {
+                                        result[key] = value || '';
+                                    }
+                                });
+                                
+                                return result as T;
+                            }
+                        }
+                    };
+
+                    // 分发回调查询事件
+                    await this.handleEvent('callback', context);
+                } catch (err) {
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    log.error(`回调查询处理错误: ${error.message}`);
+                    if (error.stack) {
+                        log.debug(`错误堆栈: ${error.stack}`);
+                    }
+
+                    // 通知用户发生错误
+                    await ctx.answer({
+                        text: '❌ 系统错误',
+                        alert: true
+                    }).catch(() => { });
                 }
-
-                // 通知用户发生错误
-                await ctx.answer({
-                    text: '❌ 系统错误',
-                    alert: true
-                }).catch(() => { });
-            }
-        });
+            });
     }
 
     /**

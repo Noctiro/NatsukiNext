@@ -1,6 +1,8 @@
-import type { BotPlugin, CommandContext, MessageEventContext } from "../features";
+import type { BotPlugin, CommandContext, MessageEventContext, CallbackEventContext } from "../features";
 import { getFastAI } from "../ai/AiManager";
 import { md } from "@mtcute/markdown-parser";
+import { BotKeyboard, TelegramClient } from '@mtcute/bun';
+import { CallbackDataBuilder } from "../utils/callback";
 
 // 常量定义
 const DEFAULT_LANG = "zh_CN";
@@ -105,6 +107,36 @@ const ALL_LANG_SOURCES = Object.values(LANGUAGE_RANGES)
     .map(regex => regex.source.replace(/\[|\]|\\|\//g, ''))
     .join('');
 const COMBINED_ALL_LANG_REGEX = new RegExp(`[${ALL_LANG_SOURCES}]`, 'g');
+
+// 翻译按钮回调数据前缀
+const CALLBACK_PREFIX = 'tr';
+const DELETE_CALLBACK_PREFIX = `${CALLBACK_PREFIX}:del`;
+
+// 定义翻译相关回调数据构建器
+// 使用新的工厂方法创建回调构建器，指定插件名和功能名
+const DeleteTranslationCallback = new CallbackDataBuilder<{
+    initiatorId: number;
+    originalSenderId?: number;
+}>('tr', 'del', ['initiatorId', 'originalSenderId']);
+
+/**
+ * 生成删除回调数据
+ * @param initiatorId 翻译发起人ID
+ * @param originalSenderId 原始消息发送者ID（如回复翻译时）
+ */
+function generateDeleteCallbackData(initiatorId: number, originalSenderId: number = 0): string {
+    // 使用插件名:功能名:参数格式
+    // 格式: tr:del:initiatorId:originalSenderId
+    // 简化实现，确保参数值有效
+    
+    // 如果原始发送者与发起人相同，则不包含原始发送者ID
+    if (!originalSenderId || originalSenderId === initiatorId) {
+        return `tr:del:${initiatorId}`;
+    }
+    
+    // 包含原始发送者ID
+    return `tr:del:${initiatorId}:${originalSenderId}`;
+}
 
 /**
  * 移除文本中的非语言内容（URL、数字、符号、Emoji等）以进行语言分析
@@ -342,7 +374,9 @@ async function translateWithAI(text: string, prompt: string = DEFAULT_PROMPT): P
 
     try {
         const fastAI = getFastAI();
-        const result = await fastAI.get(`${prompt}\n\n${text}`);
+        // 确保提示词和文本拼接为一个有效字符串
+        const promptText = prompt + "\n\n" + text;
+        const result = await fastAI.get(promptText);
         return ensurePrefix(result);
     } catch (error) {
         plugin.logger?.error(`AI翻译失败: ${error}`);
@@ -355,8 +389,15 @@ async function translateWithAI(text: string, prompt: string = DEFAULT_PROMPT): P
  */
 async function streamTranslateWithAI(
     ctx: CommandContext | MessageEventContext,
-    text: string
+    text: string,
+    originalSenderId?: number
 ): Promise<void> {
+    if (!text) {
+        plugin.logger?.error('流式翻译收到空文本');
+        await ctx.message.replyText('翻译失败: 文本为空');
+        return;
+    }
+
     try {
         // 发送等待消息
         const waitMsg = await ctx.message.replyText("正在翻译...");
@@ -369,39 +410,42 @@ async function streamTranslateWithAI(
         let finalContent = "";
 
         const ai = getFastAI();
+        // 确保提示词和文本拼接为一个有效字符串
+        const promptText = DEFAULT_PROMPT + "\n\n" + text;
 
-        await ai.stream(
-            (content: string, done: boolean) => {
-                const now = Date.now();
+        // 增加类型注解，确保回调函数类型正确
+        const updateCallback = (content: string, done: boolean) => {
+            const now = Date.now();
 
-                // 格式处理
-                const displayContent = ensurePrefix(content);
-                const messageText = done ? displayContent : `${displayContent}${TRANSLATING_SUFFIX}`;
+            // 格式处理
+            const displayContent = ensurePrefix(content);
+            const messageText = done ? displayContent : `${displayContent}${TRANSLATING_SUFFIX}`;
 
-                // 仅在满足条件时更新消息
-                const shouldUpdate = done || (
-                    displayContent.length - lastContent.length > STREAM_UPDATE_THRESHOLD &&
-                    now - lastUpdateTime > UPDATE_INTERVAL_MS
-                );
+            // 仅在满足条件时更新消息
+            const shouldUpdate = done || (
+                displayContent.length - lastContent.length > STREAM_UPDATE_THRESHOLD &&
+                now - lastUpdateTime > UPDATE_INTERVAL_MS
+            );
 
-                if (shouldUpdate) {
-                    try {
-                        finalContent = displayContent;
-                        ctx.client.editMessage({
-                            chatId: ctx.chatId,
-                            message: waitMsg.id,
-                            text: messageText
-                        }).catch(e => plugin.logger?.error(`更新翻译消息失败: ${e}`));
+            if (shouldUpdate) {
+                try {
+                    finalContent = displayContent;
+                    ctx.client.editMessage({
+                        chatId: ctx.chatId,
+                        message: waitMsg.id,
+                        text: messageText
+                    }).catch(e => plugin.logger?.error(`更新翻译消息失败: ${e}`));
 
-                        lastContent = displayContent;
-                        lastUpdateTime = now;
-                    } catch (e) {
-                        plugin.logger?.error(`更新消息异常: ${e}`);
-                    }
+                    lastContent = displayContent;
+                    lastUpdateTime = now;
+                } catch (e) {
+                    plugin.logger?.error(`更新消息异常: ${e}`);
                 }
-            },
-            `${DEFAULT_PROMPT}\n\n${text}`
-        );
+            }
+        };
+
+        // 调用流式请求
+        await ai.stream(updateCallback, promptText);
 
         // 检查翻译结果是否与原文一致
         if (finalContent && isTranslationSimilarToOriginal(text, finalContent)) {
@@ -419,10 +463,22 @@ async function streamTranslateWithAI(
 
         // 确保最终消息没有"翻译中"后缀
         if (finalContent) {
+            // 获取发起人ID
+            const initiatorId = ctx.message.sender.id;
+            
+            // 添加带有发起者和原始发送者信息的删除按钮
+            // 确保originalSenderId有默认值，即使传入undefined也能正常工作
+            const senderId = typeof originalSenderId === 'number' ? originalSenderId : 0;
+            const callbackData = generateDeleteCallbackData(initiatorId, senderId);
+            const keyboard = BotKeyboard.inline([
+                [BotKeyboard.callback('🗑️ 删除', callbackData)]
+            ]);
+            
             ctx.client.editMessage({
                 chatId: ctx.chatId,
                 message: waitMsg.id,
-                text: finalContent
+                text: finalContent,
+                replyMarkup: keyboard
             }).catch(e => plugin.logger?.error(`更新最终翻译消息失败: ${e}`));
         }
     } catch (error) {
@@ -447,7 +503,20 @@ async function simpleTranslateText(ctx: MessageEventContext, text: string): Prom
             return;
         }
 
-        await ctx.message.replyText(translatedText);
+        // 获取发起人ID和被翻译消息发送者ID
+        // 自动翻译时，使用0作为机器人ID标识（表示系统自动触发）
+        const initiatorId = 0; // 系统自动触发
+        const originalSenderId = ctx.message.sender.id;
+        
+        // 添加带有发起者和原始发送者信息的删除按钮
+        const callbackData = generateDeleteCallbackData(initiatorId, originalSenderId);
+        const keyboard = BotKeyboard.inline([
+            [BotKeyboard.callback('🗑️ 删除', callbackData)]
+        ]);
+
+        await ctx.message.replyText(translatedText, {
+            replyMarkup: keyboard
+        });
     } catch (error) {
         plugin.logger?.warn(`AI翻译失败，切换到Google翻译: ${error}`);
         try {
@@ -459,7 +528,20 @@ async function simpleTranslateText(ctx: MessageEventContext, text: string): Prom
                 return;
             }
 
-            await ctx.message.replyText(translatedText);
+            // 获取发起人ID和被翻译消息发送者ID
+            // 自动翻译时，使用0作为机器人ID标识（表示系统自动触发）
+            const initiatorId = 0; // 系统自动触发
+            const originalSenderId = ctx.message.sender.id;
+            
+            // 添加带有发起者和原始发送者信息的删除按钮
+            const callbackData = generateDeleteCallbackData(initiatorId, originalSenderId);
+            const keyboard = BotKeyboard.inline([
+                [BotKeyboard.callback('🗑️ 删除', callbackData)]
+            ]);
+
+            await ctx.message.replyText(translatedText, {
+                replyMarkup: keyboard
+            });
         } catch (e) {
             plugin.logger?.error(`所有翻译方式均失败: ${e}`);
             // 普通消息触发时不显示错误
@@ -470,7 +552,7 @@ async function simpleTranslateText(ctx: MessageEventContext, text: string): Prom
 /**
  * 命令触发的翻译函数（有等待消息和流式输出）
  */
-async function commandTranslateText(ctx: CommandContext, text: string): Promise<void> {
+async function commandTranslateText(ctx: CommandContext, text: string, originalSenderId?: number): Promise<void> {
     if (!text?.trim()) {
         await ctx.message.replyText('没有需要翻译的文本');
         return;
@@ -479,7 +561,7 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
     try {
         // 长文本使用流式输出
         if (text.length > STREAM_MIN_LENGTH) {
-            await streamTranslateWithAI(ctx, text);
+            await streamTranslateWithAI(ctx, text, originalSenderId);
             return;
         }
 
@@ -504,19 +586,35 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
                 return;
             }
 
+            // 获取发起人ID(命令执行者)
+            const initiatorId = ctx.message.sender.id;
+            
+            // 添加带有发起者和原始发送者信息的删除按钮
+            // 确保originalSenderId有默认值
+            const senderId = typeof originalSenderId === 'number' ? originalSenderId : 0;
+            const callbackData = generateDeleteCallbackData(initiatorId, senderId);
+            const keyboard = BotKeyboard.inline([
+                [BotKeyboard.callback('🗑️ 删除', callbackData)]
+            ]);
+
             if (waitMsg?.id) {
                 // 优先尝试更新原消息
                 await ctx.message.client.editMessage({
                     chatId: ctx.chatId,
                     message: waitMsg.id,
-                    text: translatedText
+                    text: translatedText,
+                    replyMarkup: keyboard
                 }).catch(async e => {
                     plugin.logger?.error(`更新翻译消息失败: ${e}`);
                     // 失败时发送新消息
-                    await ctx.message.replyText(translatedText);
+                    await ctx.message.replyText(translatedText, {
+                        replyMarkup: keyboard
+                    });
                 });
             } else {
-                await ctx.message.replyText(translatedText);
+                await ctx.message.replyText(translatedText, {
+                    replyMarkup: keyboard
+                });
             }
         } catch (aiError) {
             plugin.logger?.warn(`AI翻译失败，切换到Google翻译: ${aiError}`);
@@ -529,7 +627,20 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
                 return;
             }
 
-            await ctx.message.replyText(translatedText);
+            // 获取发起人ID(命令执行者)
+            const initiatorId = ctx.message.sender.id;
+            
+            // 添加带有发起者和原始发送者信息的删除按钮
+            // 确保originalSenderId有默认值
+            const senderId = typeof originalSenderId === 'number' ? originalSenderId : 0;
+            const callbackData = generateDeleteCallbackData(initiatorId, senderId);
+            const keyboard = BotKeyboard.inline([
+                [BotKeyboard.callback('🗑️ 删除', callbackData)]
+            ]);
+
+            await ctx.message.replyText(translatedText, {
+                replyMarkup: keyboard
+            });
         }
     } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -541,8 +652,8 @@ async function commandTranslateText(ctx: CommandContext, text: string): Promise<
 /**
  * 从回复消息中获取待翻译文本
  */
-async function getTextFromReply(ctx: CommandContext): Promise<string | null> {
-    if (!ctx.message.replyToMessage?.id) return null;
+async function getTextFromReply(ctx: CommandContext): Promise<{text: string | null, senderId?: number}> {
+    if (!ctx.message.replyToMessage?.id) return {text: null};
 
     try {
         const msgId = ctx.message.replyToMessage.id;
@@ -550,15 +661,17 @@ async function getTextFromReply(ctx: CommandContext): Promise<string | null> {
 
         if (!replyMsg?.[0]?.text) {
             await ctx.message.replyText('⚠️ 只能翻译文本消息');
-            return null;
+            return {text: null};
         }
 
         const text = replyMsg[0].text;
+        const senderId = replyMsg[0].sender.id;
+        
         plugin.logger?.debug(`从回复消息获取文本: ${text.substring(0, 30)}${text.length > 30 ? '...' : ''}`);
-        return text;
+        return {text, senderId};
     } catch (err) {
         plugin.logger?.error(`获取回复消息失败: ${err}`);
-        return null;
+        return {text: null};
     }
 }
 
@@ -574,22 +687,96 @@ async function handleTranslateCommand(ctx: CommandContext): Promise<void> {
 
     try {
         // 尝试从回复获取文本
-        let textToTranslate = await getTextFromReply(ctx);
+        const {text: textFromReply, senderId} = await getTextFromReply(ctx);
 
         // 如果没有回复文本，使用命令参数
-        if (!textToTranslate) {
+        if (!textFromReply) {
             if (!ctx.content) {
                 await ctx.message.replyText('请提供要翻译的文本或回复一条消息');
                 return;
             }
-            textToTranslate = ctx.content;
+            await commandTranslateText(ctx, ctx.content);
+        } else {
+            // 使用回复的文本和发送者ID
+            await commandTranslateText(ctx, textFromReply, senderId);
         }
-
-        await commandTranslateText(ctx, textToTranslate);
     } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         plugin.logger?.error(`翻译命令处理错误: ${errorMsg}`);
         await ctx.message.replyText(`❌ 翻译失败: ${errorMsg}`);
+    }
+}
+
+/**
+ * 处理删除翻译消息回调
+ */
+async function handleDeleteCallback(ctx: CallbackEventContext): Promise<void> {
+    try {
+        // 获取回调数据，使用类型断言明确数据结构
+        const data = ctx.match || {};
+        
+        // 获取参数
+        const initiatorId = typeof data._param0 === 'number' ? data._param0 : 0;
+        const originalSenderId = typeof data._param1 === 'number' ? data._param1 : 0;
+        
+        // 获取当前用户ID
+        const currentUserId = ctx.query.user.id;
+        
+        // 检查权限：允许 (1)发起人 (2)原始消息发送者 (3)管理员 删除消息
+        const isInitiator = currentUserId === initiatorId;
+        const isOriginalSender = originalSenderId > 0 && currentUserId === originalSenderId;
+        const isAdmin = await ctx.hasPermission('admin') || 
+                       await isGroupAdmin(ctx.client, ctx.chatId, currentUserId);
+        
+        if (!isInitiator && !isOriginalSender && !isAdmin) {
+            await ctx.query.answer({
+                text: '您没有权限删除此翻译消息',
+                alert: true
+            });
+            return;
+        }
+
+        // 删除消息
+        await ctx.client.deleteMessagesById(ctx.chatId, [ctx.query.messageId]);
+        
+        // 操作成功反馈
+        await ctx.query.answer({
+            text: '已删除翻译消息'
+        });
+    } catch (error) {
+        // 记录错误并向用户反馈
+        plugin.logger?.error(`删除翻译消息失败: ${error}`);
+        await ctx.query.answer({
+            text: '删除失败',
+            alert: true
+        });
+    }
+}
+
+/**
+ * 检查用户是否是群组管理员
+ * @param client Telegram客户端实例
+ * @param chatId 聊天ID
+ * @param userId 用户ID
+ * @returns 是否为管理员
+ */
+async function isGroupAdmin(client: TelegramClient, chatId: number, userId: number): Promise<boolean> {
+    try {
+        // 获取用户在群组中的身份
+        const chatMember = await client.getChatMember({
+            chatId,
+            userId
+        });
+        
+        // 如果无法获取成员信息，默认返回false
+        if (!chatMember || !chatMember.status) return false;
+        
+        // 检查用户角色是否为管理员或创建者
+        return ['creator', 'administrator'].includes(chatMember.status);
+    } catch (error) {
+        // 记录错误并返回false
+        plugin.logger?.error(`检查管理员权限失败: ${error}`);
+        return false;
     }
 }
 
@@ -628,6 +815,14 @@ const plugin: BotPlugin = {
 
                 plugin.logger?.debug(`检测到非中文消息，自动翻译: ${text.substring(0, 20)}...`);
                 await simpleTranslateText(ctx, text);
+            }
+        },
+        {
+            type: 'callback',
+            // 使用name属性自动匹配插件名和功能名
+            name: 'del',
+            async handler(ctx: CallbackEventContext) {
+                await handleDeleteCallback(ctx);
             }
         }
     ]
