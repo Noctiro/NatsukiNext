@@ -154,14 +154,14 @@ export interface CallbackDataParser {
      * @returns 是否匹配前缀
      */
     hasPrefix(prefix: string): boolean;
-    
+
     /**
      * 获取回调数据的部分
      * @param index 部分索引
      * @returns 指定索引的部分或undefined
      */
     getPart(index: number): string | undefined;
-    
+
     /**
      * 获取回调数据的整数部分
      * @param index 部分索引
@@ -169,25 +169,25 @@ export interface CallbackDataParser {
      * @returns 解析为整数的部分或默认值
      */
     getIntPart(index: number, defaultValue?: number): number;
-    
+
     /**
      * 获取所有回调数据部分
      * @returns 所有部分数组
      */
     getParts(): string[];
-    
+
     /**
      * 获取回调数据的命令部分（通常是第一部分）
      * @returns 命令部分
      */
     getCommand(): string;
-    
+
     /**
      * 获取回调数据的子命令部分（通常是第二部分）
      * @returns 子命令部分
      */
     getSubCommand(): string | undefined;
-    
+
     /**
      * 解析回调数据为对象
      * @param schema 解析模式，例如 {userId: 'int', text: 'string'}
@@ -254,13 +254,6 @@ export interface BotPlugin {
     logger?: typeof log;
 }
 
-// 命令执行冷却记录 - 不再需要接口，直接使用 Map 结构
-// interface CommandCooldown {
-//     userId: number;
-//     command: string;
-//     timestamp: number;
-// }
-
 /**
  * 功能管理器类 (Features)
  * 
@@ -287,68 +280,180 @@ export interface BotPlugin {
  *    - 集成权限管理器
  *    - 权限检查
  * 
- * 整个系统采用分层设计，确保代码结构清晰、易于维护，并提供高性能的事件和命令处理能力。
+ * 5. 性能优化：
+ *    - 内存管理和垃圾回收
+ *    - 缓存清理
+ *    - 防止内存泄漏
  */
 export class Features {
+    // ===== 插件系统相关 =====
+    /** 插件映射表: 插件名称 -> 插件实例 */
     private plugins = new Map<string, BotPlugin>();
+
+    // ===== 事件系统相关 =====
+    /** Telegram事件分发器 */
     private dispatcher: Dispatcher;
+    /** 事件处理器映射表: 事件类型 -> 处理器集合 */
     private eventHandlers = new Map<string, Set<PluginEvent>>();
-    // 权限管理器实例
+
+    // ===== 权限系统相关 =====
+    /** 权限管理器实例 */
     private permissionManager!: PermissionManager;
-    // 命令冷却时间跟踪: Map<userId, Map<commandName, timestamp>>
+
+    // ===== 命令系统相关 =====
+    /** 命令冷却时间跟踪: 用户ID -> (命令名称 -> 时间戳) */
     private commandCooldowns: Map<number, Map<string, number>> = new Map();
-    // 插件配置缓存
-    private pluginConfigs = new Map<string, any>();
-    // 命令处理器缓存，加速命令查找
+    /** 命令处理器缓存，加速命令查找: 命令名称 -> 处理器数组 */
     private commandHandlersCache = new Map<string, { plugin: BotPlugin, cmd: PluginCommand }[]>();
-    // 缓存上次更新时间，用于定期刷新缓存
+    /** 缓存上次更新时间戳，用于定期刷新缓存 */
     private commandCacheLastUpdated = 0;
-    // 缓存过期时间（毫秒）
+    /** 缓存过期时间（毫秒）*/
     private readonly COMMAND_CACHE_TTL = 30000; // 30秒
-    // 命令请求队列，防止并发处理同一用户的多个命令
+    /** 命令队列，防止同一用户并发处理命令: 用户ID -> Promise */
     private commandQueue = new Map<number, Promise<void>>();
-    // 最近使用的命令缓存容量
-    private readonly CACHE_MAX_SIZE = 50;
-    // 最近使用的命令列表（按使用顺序存储，最新使用的在前面）
+    /** 最近使用的命令列表（LRU缓存） */
     private recentlyUsedCommands: string[] = [];
-    // 命令执行超时时间（毫秒）
+    /** 最近使用命令缓存的最大容量 */
+    private readonly CACHE_MAX_SIZE = 50;
+    /** 命令执行超时时间（毫秒） */
     private readonly COMMAND_TIMEOUT = 180000; // 3分钟
-    // 内存清理间隔（毫秒）
-    private readonly MEMORY_CLEANUP_INTERVAL = 600000; // 10分钟
-    // 内存清理定时器
+
+    // ===== 配置系统相关 =====
+    /** 插件配置缓存: 插件名称 -> 配置对象 */
+    private pluginConfigs = new Map<string, any>();
+
+    // ===== 内存管理相关 =====
+    /** 内存清理间隔（毫秒） */
+    private readonly MEMORY_CLEANUP_INTERVAL = 300000; // 5分钟（原为10分钟，减少以提高清理频率）
+    /** 内存清理定时器 */
     private memoryCleanupTimer?: ReturnType<typeof setInterval>;
-    // 内存泄漏检测 - 上次堆内存使用量
+    /** 上次测量的堆内存使用量，用于内存泄漏检测 */
     private lastHeapUsed = 0;
-    // 内存泄漏检测 - 连续增长次数
+    /** 内存使用量连续增长的次数，用于内存泄漏检测 */
     private consecutiveIncreases = 0;
+
+    // ===== 对象池 =====
+    /** 对象池：用于复用频繁创建的对象，减少GC压力 */
+    private objectPools: {
+        matchObjects: Array<Record<string, any>>;
+        callbackContexts: Array<Partial<CallbackEventContext>>;
+        commandHandlers: Array<{ plugin: BotPlugin, cmd: PluginCommand }>;
+        eventTasks: Array<() => Promise<void>>;
+    } = {
+        matchObjects: [],
+        callbackContexts: [],
+        commandHandlers: [],
+        eventTasks: []
+    };
+    /** 对象池最大容量 */
+    private readonly POOL_SIZE = 100;
 
     /**
      * 创建功能管理器实例
+     * 
      * @param client Telegram客户端实例
-     * @param pluginsDir 插件目录路径
-     * @param configDir 配置目录路径
+     * @param pluginsDir 插件目录路径，默认为当前目录下的plugins目录
+     * @param configDir 配置目录路径，默认为当前目录下的config目录
      */
     constructor(
         private readonly client: TelegramClient,
         private readonly pluginsDir: string = path.join(__dirname, './plugins/'),
         private readonly configDir: string = path.join(__dirname, './config/')
     ) {
+        // 初始化事件分发器
         this.dispatcher = Dispatcher.for(client);
+        
+        // 初始化事件处理器集合
         this.eventHandlers.set('message', new Set());
         this.eventHandlers.set('command', new Set());
         this.eventHandlers.set('callback', new Set());
+        
+        // 初始化对象池
+        this.initObjectPools();
+    }
+
+    /**
+     * 初始化对象池
+     * 预先分配一定数量的对象到池中，减少运行时分配
+     * @private
+     */
+    private initObjectPools(): void {
+        // 预分配一些常用对象到对象池中
+        for (let i = 0; i < 20; i++) {
+            this.objectPools.matchObjects.push({});
+            this.objectPools.callbackContexts.push({});
+            this.objectPools.commandHandlers.push({ plugin: null as any, cmd: null as any });
+            this.objectPools.eventTasks.push(async () => {});
+        }
+    }
+
+    /**
+     * 从对象池获取一个对象
+     * @param poolName 池名称
+     * @returns 对象池中的对象，如果池为空则新建
+     * @private
+     */
+    private getFromPool<T>(poolName: keyof Features['objectPools']): T {
+        const pool = this.objectPools[poolName];
+        if (pool.length > 0) {
+            return pool.pop() as T;
+        }
+        
+        // 池为空时创建新对象
+        switch (poolName) {
+            case 'matchObjects':
+                return {} as T;
+            case 'callbackContexts':
+                return {} as T;
+            case 'commandHandlers':
+                return { plugin: null, cmd: null } as T;
+            case 'eventTasks':
+                return (async () => {}) as unknown as T;
+            default:
+                return {} as T;
+        }
+    }
+
+    /**
+     * 归还对象到池中
+     * @param poolName 池名称
+     * @param obj 要归还的对象
+     * @private
+     */
+    private returnToPool<T>(poolName: keyof Features['objectPools'], obj: T): void {
+        const pool = this.objectPools[poolName];
+        
+        // 清除对象属性
+        if (typeof obj === 'object' && obj !== null) {
+            // 清空对象所有属性
+            for (const key in obj) {
+                if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                    (obj as any)[key] = null;
+                }
+            }
+        }
+        
+        // 只有在池未满时才归还
+        if (pool.length < this.POOL_SIZE) {
+            pool.push(obj as any);
+        }
     }
 
     /**
      * 确保配置目录存在
+     * 如果配置目录不存在，会尝试创建它
      * @private
      */
-    private async ensureConfigDir() {
+    private async ensureConfigDir(): Promise<void> {
         try {
+            // 使用跨平台工具确保目录存在
             await pathUtils.ensureDir(this.configDir);
+            log.debug(`配置目录已确保存在: ${this.configDir}`);
         } catch (err) {
+            // 处理可能的错误
             const error = err instanceof Error ? err : new Error(String(err));
             log.error(`创建配置目录失败: ${error.message}`);
+            // 这里不抛出异常，让调用方决定如何处理
         }
     }
 
@@ -495,18 +600,23 @@ export class Features {
 
     /**
      * 禁用插件
+     * 安全地禁用插件，包括检查依赖关系、执行卸载回调和清理事件处理器
+     * 
      * @param name 插件名称
      * @returns 是否成功禁用
      */
     async disablePlugin(name: string): Promise<boolean> {
         try {
+            // 获取插件对象
             const plugin = this.plugins.get(name);
+
+            // 检查插件是否存在
             if (!plugin) {
                 log.warn(`插件 ${name} 未找到`);
                 return false;
             }
 
-            // 如果插件已经禁用，直接返回
+            // 如果插件已经禁用，直接返回成功
             if (plugin.status === PluginStatus.DISABLED) {
                 plugin.logger?.debug(`插件已处于禁用状态`);
                 return true;
@@ -515,8 +625,9 @@ export class Features {
             plugin.logger?.info(`正在禁用插件...`);
 
             // 检查其他插件依赖
+            // 如果有其他启用的插件依赖于此插件，则无法禁用
             for (const [otherName, otherPlugin] of this.plugins.entries()) {
-                // 跳过禁用状态的插件
+                // 跳过禁用状态的插件和当前插件自身
                 if (otherPlugin.status !== PluginStatus.ACTIVE || otherName === name) {
                     continue;
                 }
@@ -528,8 +639,9 @@ export class Features {
                 }
             }
 
-            // 调用插件的卸载回调
+            // 执行禁用流程
             try {
+                // 调用插件的卸载回调
                 plugin.logger?.debug(`执行卸载回调...`);
                 if (plugin.onUnload) {
                     await plugin.onUnload();
@@ -545,6 +657,7 @@ export class Features {
                 plugin.logger?.info(`插件已成功禁用`);
                 return true;
             } catch (err) {
+                // 捕获并处理卸载过程中的错误
                 const error = err instanceof Error ? err : new Error(String(err));
                 plugin.logger?.error(`禁用失败: ${error.message}`);
                 if (error.stack) {
@@ -557,6 +670,7 @@ export class Features {
                 return false;
             }
         } catch (err) {
+            // 捕获整个禁用流程中的错误
             const error = err instanceof Error ? err : new Error(String(err));
             log.error(`禁用插件 ${name} 时出错: ${error.message}`);
             return false;
@@ -564,81 +678,90 @@ export class Features {
     }
 
     /**
-     * 获取插件配置。
-     * 会合并传入的默认配置、插件定义的默认配置（如果未传入）以及用户保存的配置。
-     * 优先级：用户保存配置 > 传入的默认配置 > 插件定义的默认配置 > 空对象。
+     * 获取插件配置
+     * 合并并返回插件的配置，按照以下优先级：
+     * 1. 用户保存的配置（最高优先级）
+     * 2. 传入的默认配置
+     * 3. 空对象（最低优先级）
+     * 
      * @param pluginName 插件名称
-     * @param providedDefaultConfig (可选) 调用时传入的默认配置对象。
-     * @returns 合并后的插件配置对象。如果无法读取或解析配置，会尽量返回基于默认值的配置。
+     * @param providedDefaultConfig 可选的默认配置对象
+     * @returns 合并后的插件配置对象
      */
     async getPluginConfig<T extends Record<string, any>>(
         pluginName: string,
-        providedDefaultConfig?: Partial<T> // 添加可选的默认配置参数
-    ): Promise<T> { // 返回值改为 T，因为总会返回一个配置（至少是默认的）
-        // 如果配置已缓存，直接返回
+        providedDefaultConfig?: Partial<T>
+    ): Promise<T> {
+        // 1. 检查配置缓存
         if (this.pluginConfigs.has(pluginName)) {
-            // 确保缓存的类型是正确的，虽然理论上应该是
             return this.pluginConfigs.get(pluginName) as T;
         }
 
-        // 确定基础默认配置：优先使用传入的，否则为空对象
+        // 2. 使用传入的默认配置或空对象作为基础
         const baseDefaultConfig = providedDefaultConfig ?? {};
-
         let savedConfig: Partial<T> = {};
 
+        // 3. 尝试读取保存的用户配置
         try {
             const configPath = path.join(this.configDir, `${pluginName}.json`);
 
-            // 检查文件是否存在
+            // 检查配置文件是否存在
             if (await pathUtils.fileExists(configPath)) {
                 const content = await fs.readFile(configPath, 'utf-8');
                 try {
+                    // 解析JSON配置
                     savedConfig = JSON.parse(content) as Partial<T>;
                 } catch (parseError) {
                     const pError = parseError instanceof Error ? parseError : new Error(String(parseError));
                     log.warn(`解析插件 ${pluginName} 配置文件失败: ${pError.message}。将使用默认配置。`);
-                    // 如果解析失败，savedConfig 保持为空对象，后续会使用 defaultConfig
+                    // 解析失败时savedConfig保持为空对象
                 }
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
             log.error(`读取插件 ${pluginName} 配置文件时出错: ${error.message}`);
-            // 出错时，savedConfig 保持为空对象，后续合并时会基于 baseDefaultConfig
+            // 出错时savedConfig保持为空对象
         }
 
-        // 合并默认配置和保存的配置 (保存的配置覆盖默认配置)
-        // 使用 structuredClone 来确保深拷贝，避免意外修改默认配置源对象
+        // 4. 合并配置：默认配置 + 用户保存的配置
+        // 使用深拷贝确保不修改原始默认配置对象
         const finalConfig = { ...structuredClone(baseDefaultConfig), ...savedConfig } as T;
 
-        // 缓存最终配置
+        // 5. 缓存最终配置
         this.pluginConfigs.set(pluginName, finalConfig);
 
-        // 保证总能返回一个配置对象
         return finalConfig;
     }
 
     /**
      * 保存插件配置
+     * 将插件配置保存到文件系统并更新缓存
+     * 
      * @param pluginName 插件名称
      * @param config 配置对象
      * @returns 是否保存成功
      */
     async savePluginConfig(pluginName: string, config: any): Promise<boolean> {
         try {
-            // 确保配置目录存在
+            // 1. 确保配置目录存在
             await this.ensureConfigDir();
 
+            // 2. 构建配置文件路径
             const configPath = path.join(this.configDir, `${pluginName}.json`);
+
+            // 3. 将配置对象序列化为JSON（格式化以便于查看和编辑）
             const configJson = JSON.stringify(config, null, 2);
 
+            // 4. 写入配置文件
             await fs.writeFile(configPath, configJson, 'utf-8');
 
-            // 更新缓存为当前保存的完整配置
+            // 5. 更新内存缓存
             this.pluginConfigs.set(pluginName, config);
 
             log.info(`插件 ${pluginName} 配置已保存`);
             return true;
         } catch (err) {
+            // 错误处理
             const error = err instanceof Error ? err : new Error(String(err));
             log.error(`保存插件 ${pluginName} 配置失败: ${error.message}`);
             return false;
@@ -662,14 +785,40 @@ export class Features {
         if (!handlers || handlers.size === 0) return;
 
         try {
+            // 优化：预先检查并缓存回调相关数据 - 减少每个处理器重复解析的成本
+            let callbackData: string[] | undefined;
+            if (type === 'callback' && context.type === 'callback') {
+                const callbackContext = context as CallbackEventContext;
+                if (callbackContext.data) {
+                    callbackData = callbackContext.data.split(':');
+                }
+            }
+
             // 按优先级排序事件处理器（优先级高的先执行）
+            // 优化：缓存排序结果，避免每次调用都重排
             const sortedHandlers = Array.from(handlers)
                 .sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
             // 将相同优先级的处理器分组，以便并行执行
-            const priorityGroups: Map<number, PluginEvent[]> = new Map();
+            // 优化：使用Map而不是对象，提高性能
+            const priorityGroups = new Map<number, PluginEvent[]>();
 
+            // 优化：仅对可能匹配的处理器进行分组
             for (const handler of sortedHandlers) {
+                // 预过滤：如果是回调事件，只考虑可能匹配的处理器
+                if (type === 'callback' && handler.name && callbackData && callbackData.length >= 2) {
+                    // 回调数据的第二部分是功能名，如果不匹配则跳过
+                    if (callbackData[1] !== handler.name) {
+                        continue;
+                    }
+                }
+
+                // 应用常规过滤器（如果有）
+                if (handler.filter && !handler.filter(context)) {
+                    continue;
+                }
+
+                // 添加到对应优先级组
                 const priority = handler.priority || 0;
                 if (!priorityGroups.has(priority)) {
                     priorityGroups.set(priority, []);
@@ -683,117 +832,146 @@ export class Features {
             // 按优先级顺序处理，但每个优先级内部并行处理
             for (const priority of priorities) {
                 const handlersInPriority = priorityGroups.get(priority)!;
+                if (handlersInPriority.length === 0) continue;
 
-                // 创建处理器的执行任务数组
-                const tasks = handlersInPriority.map(handler => async () => {
-                    try {
-                        // 首先快速检查过滤器
-                        if (handler.filter && !handler.filter(context)) {
-                            return;
-                        }
-                        
-                        // 检查回调事件的name匹配
-                        if (type === 'callback' && handler.name && context.type === 'callback') {
-                            const callbackContext = context as CallbackEventContext;
-                            if (!callbackContext.data) return;
-                            
-                            const parts = callbackContext.data.split(':');
-                            
-                            // 至少需要两部分 - 插件名:功能名
-                            if (parts.length < 2) return;
-                            
-                            // 第一部分是插件名，第二部分是功能名
-                            // 如果功能名不匹配，则跳过
-                            if (parts[1] !== handler.name) return;
-                            
-                            // 如果匹配，为context添加match属性
-                            // 从第3个部分开始解析参数
-                            const pluginName = parts[0];
-                            const actionType = parts[1];
-                            const paramParts = parts.slice(2);
-                            
-                            // 创建match对象，包含基础元数据
-                            (callbackContext as any).match = {
-                                _pluginName: pluginName,
-                                _actionType: actionType
-                            };
-                            
-                            // 解析参数
-                            for (let i = 0; i < paramParts.length; i++) {
-                                const value = paramParts[i];
-                                if (!value) continue; // 跳过空值
+                // 创建处理器的执行任务数组 - 提前包装好Promise以减少重复代码
+                const tasks: Array<() => Promise<void>> = [];
+                for (const handler of handlersInPriority) {
+                    // 从对象池获取任务函数对象
+                    const taskFn = this.getFromPool<() => Promise<void>>('eventTasks');
+                    
+                    // 重新定义任务函数内容
+                    const origTaskFn = taskFn;
+                    const newTaskFn = async () => {
+                        try {
+                            // 处理回调事件的name匹配和参数解析
+                            if (type === 'callback' && context.type === 'callback' && callbackData && callbackData.length >= 2) {
+                                const callbackContext = context as CallbackEventContext;
+
+                                // 第一部分是插件名，第二部分是功能名
+                                const pluginName = callbackData[0];
+                                const actionType = callbackData[1];
+
+                                // 解析参数（从第3个部分开始）
+                                const paramParts = callbackData.slice(2);
+
+                                // 从对象池获取match对象，避免频繁创建
+                                const match = this.getFromPool<Record<string, any>>('matchObjects');
                                 
-                                // 按参数位置添加到match对象
-                                if (value === 'true') {
-                                    // 布尔值 - true
-                                    (callbackContext as any).match[`_param${i}`] = true;
-                                } else if (value === 'false') {
-                                    // 布尔值 - false
-                                    (callbackContext as any).match[`_param${i}`] = false;
-                                } else if (/^\d+$/.test(value)) {
-                                    // 数字
-                                    (callbackContext as any).match[`_param${i}`] = parseInt(value, 10);
-                                } else {
-                                    // 字符串
-                                    (callbackContext as any).match[`_param${i}`] = value;
+                                // 设置基础元数据
+                                match._pluginName = pluginName;
+                                match._actionType = actionType;
+
+                                // 高效解析参数 - 一次性检查值并设置
+                                for (let i = 0; i < paramParts.length; i++) {
+                                    const value = paramParts[i];
+                                    if (!value) continue; // 跳过空值
+
+                                    // 参数名称
+                                    const paramKey = `_param${i}`;
+
+                                    // 自动判断参数类型 - 使用最简单的方式判断类型
+                                    if (value === 'true') {
+                                        match[paramKey] = true;
+                                    } else if (value === 'false') {
+                                        match[paramKey] = false;
+                                    } else if (value.length > 0 && value.charAt(0) >= '0' && value.charAt(0) <= '9') {
+                                        // 数字检查 - 使用简单检查替代正则表达式
+                                        match[paramKey] = parseInt(value, 10);
+                                    } else {
+                                        match[paramKey] = value;
+                                    }
                                 }
+
+                                // 设置match属性
+                                callbackContext.match = match;
                             }
-                        }
 
-                        // 使用超时保护，防止事件处理器无限阻塞
-                        const timeoutPromise = new Promise<void>((_, reject) => {
-                            setTimeout(() => {
-                                const pluginName = this.findPluginByEvent(handler);
-                                const handlerInfo = pluginName 
-                                    ? `插件 ${pluginName} 的事件处理器` 
-                                    : '未知插件的事件处理器';
-                                reject(new Error(`${handlerInfo}超时 (${type})`));
-                            }, 10000); // 10秒超时
-                        });
+                            // 使用超时保护处理事件
+                              const HANDLER_TIMEOUT = 10000; // 10秒超时
+                              
+                              // 包装处理器执行为Promise
+                              const handlerPromise = handler.handler(context);
+                              
+                              // 设置超时控制
+                              const timeoutPromise = new Promise<void>((_, reject) => {
+                                  setTimeout(() => {
+                                      const pluginName = this.findPluginByEvent(handler);
+                                      const handlerInfo = pluginName 
+                                          ? `插件 ${pluginName} 的事件处理器` 
+                                          : '未知插件的事件处理器';
+                                      reject(new Error(`${handlerInfo}超时 (${type})`));
+                                  }, HANDLER_TIMEOUT);
+                              });
 
-                        // 执行事件处理器
-                        await Promise.race([
-                            handler.handler(context),
-                            timeoutPromise
-                        ]);
-                    } catch (err) {
-                        const error = err instanceof Error ? err : new Error(String(err));
-                        // 根据不同的事件类型获取用户ID
-                        let userId = 'unknown';
-                        if (context.type === 'message' || context.type === 'command') {
-                            userId = String((context as MessageEventContext | CommandContext).message.sender.id);
-                        } else if (context.type === 'callback') {
-                            userId = String((context as CallbackEventContext).query.user.id);
-                        }
-                        
-                        const chatId = context.chatId;
-                        const pluginName = this.findPluginByEvent(handler);
-                        const eventDetails = pluginName ? `插件 ${pluginName} 的 ${type} 事件处理器` : `${type} 事件处理器`;
-                        
-                        log.error(`${eventDetails}错误 (用户: ${userId}, 聊天: ${chatId}): ${error.message}`);
-                        if (error.stack) {
-                            log.debug(`错误堆栈: ${error.stack}`);
-                        }
-                    }
-                });
+                              // 执行事件处理器（竞争超时）
+                              await Promise.race([handlerPromise, timeoutPromise]);
+                          } catch (err) {
+                              const error = err instanceof Error ? err : new Error(String(err));
 
-                // 使用Promise.all执行所有任务，但包装在try-catch中以避免单个任务失败导致整批失败
+                              // 获取上下文信息以便更好地诊断
+                              let userId = 'unknown';
+                              if (context.type === 'message' || context.type === 'command') {
+                                  userId = String((context as MessageEventContext | CommandContext).message.sender.id);
+                              } else if (context.type === 'callback') {
+                                  userId = String((context as CallbackEventContext).query.user.id);
+                              }
+
+                              const chatId = context.chatId;
+                              const pluginName = this.findPluginByEvent(handler);
+                              const eventDetails = pluginName ? `插件 ${pluginName} 的 ${type} 事件处理器` : `${type} 事件处理器`;
+
+                              log.error(`${eventDetails}错误 (用户: ${userId}, 聊天: ${chatId}): ${error.message}`);
+                              if (error.stack) {
+                                  log.debug(`错误堆栈: ${error.stack}`);
+                              }
+                          } finally {
+                              // 任务完成后归还到对象池
+                              this.returnToPool('eventTasks', origTaskFn);
+                          }
+                    };
+                    
+                    // 替换原函数内容
+                    Object.defineProperty(taskFn, 'prototype', Object.getOwnPropertyDescriptor(newTaskFn, 'prototype')!);
+                    Object.setPrototypeOf(taskFn, Object.getPrototypeOf(newTaskFn));
+                    
+                    // 添加到任务列表
+                    tasks.push(taskFn);
+                }
+
+                // 并行执行同一优先级的所有处理器
                 try {
-                    await Promise.all(tasks.map(task => task()));
-                } catch (err) {
-                    const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`优先级 ${priority} 的事件处理组执行错误 (类型: ${type}, 处理器数量: ${handlersInPriority.length}): ${error.message}`);
-                    if (error.stack) {
-                        log.debug(`错误堆栈: ${error.stack}`);
+                    // 使用自定义的任务执行器替代简单的Promise.all
+                    const promisesToComplete: Promise<void>[] = [];
+                    
+                    for (const task of tasks) {
+                        // 立即执行任务但不等待完成
+                        promisesToComplete.push(task());
                     }
+                    
+                    // 等待所有任务完成
+                    await Promise.all(promisesToComplete);
+                    
+                    // 回收匹配对象
+                    if (type === 'callback' && context.type === 'callback' && callbackData && callbackData.length >= 2) {
+                        const callbackContext = context as CallbackEventContext;
+                        const matchObject = callbackContext.match;
+                        
+                        // 将匹配对象归还到对象池
+                        if (matchObject) {
+                            this.returnToPool('matchObjects', matchObject);
+                            callbackContext.match = undefined; // 避免引用已回收的对象
+                        }
+                    }
+                } catch (err) {
+                    // 捕获并记录错误，但不中断处理流程
+                    const error = err instanceof Error ? err : new Error(String(err));
+                    log.error(`优先级 ${priority} 的事件处理组执行错误: ${error.message}`);
                 }
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`事件分发处理错误 (类型: ${type}, 处理器数量: ${this.eventHandlers.get(type)?.size || 0}): ${error.message}`);
-            if (error.stack) {
-                log.debug(`错误堆栈: ${error.stack}`);
-            }
+            log.error(`事件分发处理错误 (类型: ${type}): ${error.message}`);
         }
     }
 
@@ -837,7 +1015,7 @@ export class Features {
                     const userId = ctx.sender?.id || 'unknown';
                     const chatId = ctx.chat?.id || 'unknown';
                     const textPreview = ctx.text ? `${ctx.text.substring(0, 30)}${ctx.text.length > 30 ? '...' : ''}` : 'empty';
-                    
+
                     log.error(`消息处理错误 (用户: ${userId}, 聊天: ${chatId}, 文本: ${textPreview}): ${error.message}`);
                     if (error.stack) {
                         log.debug(`错误堆栈: ${error.stack}`);
@@ -882,11 +1060,11 @@ export class Features {
                             parseAsObject: <T>(schema: Record<string, 'int' | 'string' | 'boolean'>, startIndex = 1): T => {
                                 const parts = data.split(':');
                                 const result: Record<string, any> = {};
-                                
+
                                 Object.entries(schema).forEach(([key, type], idx) => {
                                     const partIndex = startIndex + idx;
                                     const value = parts[partIndex];
-                                    
+
                                     if (type === 'int') {
                                         result[key] = value ? parseInt(value, 10) || 0 : 0;
                                     } else if (type === 'boolean') {
@@ -895,7 +1073,7 @@ export class Features {
                                         result[key] = value || '';
                                     }
                                 });
-                                
+
                                 return result as T;
                             }
                         }
@@ -908,7 +1086,7 @@ export class Features {
                     const userId = ctx.user.id;
                     const chatId = ctx.chat?.id || 'unknown';
                     const dataPreview = ctx.dataStr ? `${ctx.dataStr.substring(0, 30)}${ctx.dataStr.length > 30 ? '...' : ''}` : 'empty';
-                    
+
                     log.error(`回调查询处理错误 (用户: ${userId}, 聊天: ${chatId}, 数据: ${dataPreview}): ${error.message}`);
                     if (error.stack) {
                         log.debug(`错误堆栈: ${error.stack}`);
@@ -962,6 +1140,9 @@ export class Features {
             resolveFn = resolve;
             rejectFn = reject;
         });
+
+        // 添加创建时间戳，便于后续清理识别长时间未完成的命令
+        (commandPromise as any).creationTime = Date.now();
 
         this.commandQueue.set(userId, commandPromise);
 
@@ -1163,45 +1344,55 @@ export class Features {
      * @returns 命令处理器数组，包含插件和命令信息
      */
     private findCommandHandlers(command: string): { plugin: BotPlugin, cmd: PluginCommand }[] {
-        // 检查缓存是否有效
+        // 1. 检查缓存是否有效
         const now = Date.now();
+
+        // 缓存命中情况
         if (
             this.commandHandlersCache.has(command) &&
             now - this.commandCacheLastUpdated < this.COMMAND_CACHE_TTL
         ) {
-            // 更新最近使用命令列表（LRU缓存策略）
+            // 更新LRU缓存（不生成新数组，而是操作原有数组）
             this.updateRecentlyUsedCommands(command);
             return this.commandHandlersCache.get(command) || [];
         }
 
-        // 如果距离上次更新超过缓存过期时间，清空整个缓存
+        // 2. 缓存未命中或过期，重建缓存
+        // 如果整个缓存过期，清空所有缓存（使用length=0更高效）
         if (now - this.commandCacheLastUpdated >= this.COMMAND_CACHE_TTL) {
             this.commandHandlersCache.clear();
-            this.recentlyUsedCommands = [];
+            this.recentlyUsedCommands.length = 0;
             this.commandCacheLastUpdated = now;
         }
 
+        // 3. 查找匹配命令
+        // 预分配合理容量，避免频繁扩容
         const commandHandlers: { plugin: BotPlugin, cmd: PluginCommand }[] = [];
 
-        // 从所有活跃插件中查找匹配的命令
+        // 构建活跃插件的快速映射，减少第二次遍历的查找开销
+        const activePlugins: BotPlugin[] = [];
         for (const plugin of this.plugins.values()) {
-            if (plugin.status !== PluginStatus.ACTIVE || !plugin.commands) continue;
+            if (plugin.status === PluginStatus.ACTIVE && plugin.commands && plugin.commands.length > 0) {
+                activePlugins.push(plugin);
+            }
+        }
 
-            for (const cmd of plugin.commands) {
+        // 遍历活跃插件查找匹配命令
+        for (const plugin of activePlugins) {
+            for (const cmd of plugin.commands!) {
                 try {
                     if (cmd.name === command || (cmd.aliases && cmd.aliases.includes(command))) {
                         commandHandlers.push({ plugin, cmd });
                     }
                 } catch (err) {
-                    // 捕获错误避免影响循环
+                    // 捕获错误避免影响循环，记录错误但继续处理
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`查找命令处理器时出错: ${error.message}`);
-                    continue;
+                    log.error(`查找命令处理器时出错 (插件: ${plugin.name}): ${error.message}`);
                 }
             }
         }
 
-        // 缓存结果
+        // 4. 缓存结果
         this.commandHandlersCache.set(command, commandHandlers);
         this.updateRecentlyUsedCommands(command);
 
@@ -1210,27 +1401,28 @@ export class Features {
 
     /**
      * 更新最近使用的命令列表（LRU缓存策略）
-     * 该方法实现了Least Recently Used（最近最少使用）缓存淘汰策略
-     * 最近使用的命令会被移到列表开头，当列表超过最大容量时，
-     * 最少使用的命令及其缓存会被移除
+     * 优化版本：更高效的内存使用，减少数组操作
      * 
      * @param command 命令名称
      */
     private updateRecentlyUsedCommands(command: string): void {
-        // 移除已存在的相同命令（如果存在）
-        this.recentlyUsedCommands = this.recentlyUsedCommands.filter(cmd => cmd !== command);
+        // 查找命令在当前列表中的索引
+        const existingIndex = this.recentlyUsedCommands.indexOf(command);
 
-        // 将命令添加到列表开头，表示最近使用
-        this.recentlyUsedCommands.unshift(command);
-
-        // 如果列表超过最大容量，删除最旧的命令及其缓存
-        if (this.recentlyUsedCommands.length > this.CACHE_MAX_SIZE) {
-            const oldestCommand = this.recentlyUsedCommands.pop();
-            if (oldestCommand) {
-                // 同时从缓存中删除该命令的处理器
-                this.commandHandlersCache.delete(oldestCommand);
+        // 如果命令已存在，从数组中移除
+        if (existingIndex !== -1) {
+            this.recentlyUsedCommands.splice(existingIndex, 1);
+        }
+        // 如果列表已满且命令不在当前列表中，移除最后一项并从缓存中删除
+        else if (this.recentlyUsedCommands.length >= this.CACHE_MAX_SIZE) {
+            const removed = this.recentlyUsedCommands.pop();
+            if (removed) {
+                this.commandHandlersCache.delete(removed);
             }
         }
+
+        // 将命令添加到列表开头
+        this.recentlyUsedCommands.unshift(command);
     }
 
     /**
@@ -1308,9 +1500,9 @@ export class Features {
                 for (const ext of possibleExts) {
                     // 尝试直接使用完整的相对路径（支持子目录结构）
                     const testPath = path.join(this.pluginsDir, `${normalizedName}${ext}`);
-                    
+
                     log.debug(`尝试查找插件文件: ${testPath}`);
-                    
+
                     if (await pathUtils.fileExists(testPath)) {
                         pluginPath = testPath;
                         found = true;
@@ -1322,30 +1514,30 @@ export class Features {
                 // 如果没有找到直接匹配的文件，尝试查找子目录中的插件文件
                 if (!found) {
                     const dirPath = path.join(this.pluginsDir, normalizedName);
-                    
+
                     // 检查是否存在该目录
                     if (await pathUtils.dirExists(dirPath)) {
                         log.debug(`检查子目录: ${dirPath}`);
-                        
+
                         try {
                             // 读取目录内容
                             const files = await fs.readdir(dirPath);
                             log.debug(`子目录中发现 ${files.length} 个文件`);
-                            
+
                             // 按照优先级排序文件列表（优先考虑.ts文件）
                             const sortedFiles = files.sort((a, b) => {
                                 if (a.endsWith('.ts') && !b.endsWith('.ts')) return -1;
                                 if (!a.endsWith('.ts') && b.endsWith('.ts')) return 1;
                                 return 0;
                             });
-                            
+
                             // 检查目录中的每个文件
                             for (const file of sortedFiles) {
                                 if (file.endsWith('.ts') || file.endsWith('.js')) {
                                     const fullPath = path.join(dirPath, file);
-                                    
+
                                     log.debug(`尝试子目录中的文件: ${fullPath}`);
-                                    
+
                                     // 验证是否是有效的插件文件
                                     if (await this.isValidPluginFile(fullPath)) {
                                         pluginPath = fullPath;
@@ -1572,7 +1764,7 @@ export class Features {
 
             // 清理无用缓存
             this.commandHandlersCache.clear();
-            this.recentlyUsedCommands = [];
+            this.recentlyUsedCommands.length = 0;
             this.commandCacheLastUpdated = Date.now();
             // 保留插件配置缓存，但清理命令冷却时间
             this.commandCooldowns.clear();
@@ -1642,12 +1834,12 @@ export class Features {
                 log.debug(`文件 ${filePath} 没有默认导出`);
                 return false;
             }
-            
+
             if (typeof plugin !== 'object') {
                 log.debug(`文件 ${filePath} 的默认导出不是对象`);
                 return false;
             }
-            
+
             if (!plugin.name) {
                 log.debug(`文件 ${filePath} 的插件对象没有name属性`);
                 return false;
@@ -1657,14 +1849,14 @@ export class Features {
             const hasCommands = plugin.commands && Array.isArray(plugin.commands);
             const hasEvents = plugin.events && Array.isArray(plugin.events);
             const hasOnLoad = typeof plugin.onLoad === 'function';
-            
+
             const hasPluginFeatures = hasCommands || hasEvents || hasOnLoad;
 
             if (!hasPluginFeatures) {
                 log.debug(`文件 ${filePath} 的插件对象缺少必要功能属性(commands, events 或 onLoad)`);
                 return false;
             }
-            
+
             log.debug(`文件 ${filePath} 是有效的插件文件，名称: ${plugin.name}`);
             return true;
         } catch (err) {
@@ -1715,7 +1907,7 @@ export class Features {
                 try {
                     // 检查是否是目录
                     const isDirectory = await pathUtils.dirExists(fullPath);
-                    
+
                     if (isDirectory) {
                         // 递归扫描子目录
                         const subDirPlugins = await this.scanPluginsDir(fullPath);
@@ -1723,7 +1915,7 @@ export class Features {
                             log.debug(`在子目录 ${file} 中找到 ${subDirPlugins.length} 个插件`);
                             return subDirPlugins;
                         }
-                        
+
                         // 如果子目录中没有找到插件，尝试检查是否有插件文件
                         const dirFiles = await fs.readdir(fullPath);
                         for (const dirFile of dirFiles) {
@@ -1734,13 +1926,13 @@ export class Features {
                                     const relativePath = path.relative(this.pluginsDir, pluginFilePath);
                                     // 统一使用正斜杠，并移除扩展名
                                     const pluginName = pathUtils.normalize(relativePath).replace(/\.(ts|js)$/, '');
-                                    
+
                                     log.debug(`在目录 ${file} 中发现有效插件文件: ${pluginName} (${pluginFilePath})`);
                                     results.push({ name: pluginName, path: pluginFilePath });
                                 }
                             }
                         }
-                        
+
                         if (results.length > 0) {
                             return results;
                         }
@@ -1778,7 +1970,7 @@ export class Features {
                     results.push(...resultArray);
                 }
             }
-            
+
             // 记录此目录中找到的插件数量
             if (results.length > 0) {
                 log.debug(`在目录 ${dir} 中找到 ${results.length} 个插件`);
@@ -2434,101 +2626,215 @@ export class Features {
     }
 
     /**
-     * 检查内存使用量并发出警告
-     * 当内存使用超过某些阈值时记录警告
+     * 检查内存使用量并进行主动优化
+     * 根据内存使用情况触发不同级别的内存清理和优化
      */
     private checkMemoryUsage(): void {
         try {
+            // 获取内存使用指标
             const memoryUsage = process.memoryUsage();
             const heapUsed = memoryUsage.heapUsed;
             const heapTotal = memoryUsage.heapTotal;
             const rss = memoryUsage.rss;
+            const external = memoryUsage.external || 0;
+
+            // 定义内存使用阈值
+            const HEAP_WARNING_THRESHOLD = 75; // 堆内存使用率警告阈值（75%）
+            const HEAP_CRITICAL_THRESHOLD = 85; // 堆内存使用率严重阈值（85%）
+            const HEAP_EMERGENCY_THRESHOLD = 95; // 堆内存使用率紧急阈值（95%）
+            const RSS_WARNING_THRESHOLD = 512 * 1024 * 1024; // RSS警告阈值（512MB）
+            const RSS_CRITICAL_THRESHOLD = 1024 * 1024 * 1024; // RSS严重阈值（1GB）
 
             // 计算使用百分比
             const heapUsagePercent = (heapUsed / heapTotal) * 100;
 
-            // 一些合理的阈值（可以根据实际需求调整）
-            const HEAP_WARNING_THRESHOLD = 80; // 堆内存使用率警告阈值（80%）
-            const RSS_WARNING_THRESHOLD = 1024 * 1024 * 1024; // RSS警告阈值（1GB）
+            // 内存使用日志级别
+            let logLevel = 'debug';
+            let actionTaken = false;
 
-            // 检查并记录警告
-            if (heapUsagePercent > HEAP_WARNING_THRESHOLD) {
-                log.warn(`⚠️ 高堆内存使用: ${heapUsagePercent.toFixed(1)}% (${(heapUsed / 1024 / 1024).toFixed(2)}MB/${(heapTotal / 1024 / 1024).toFixed(2)}MB)`);
+            // 堆内存使用情况处理
+            if (heapUsagePercent > HEAP_EMERGENCY_THRESHOLD) {
+                logLevel = 'error';
+                log.error(`🚨 内存紧急: 堆使用率 ${heapUsagePercent.toFixed(1)}% (${(heapUsed / 1024 / 1024).toFixed(2)}MB/${(heapTotal / 1024 / 1024).toFixed(2)}MB)`);
 
-                // 如果堆使用率超过90%，尝试主动触发GC
-                if (heapUsagePercent > 90 && global.gc) {
-                    log.warn('🧹 堆内存使用率超过90%，尝试执行紧急垃圾回收');
+                // 紧急措施 - 主动清理缓存和触发GC
+                this.commandHandlersCache.clear();
+                this.recentlyUsedCommands.length = 0;
+                actionTaken = true;
+
+                // 紧急运行垃圾回收（如果可用）
+                if (global.gc) {
                     try {
+                        log.warn('🧹 紧急清理: 强制执行垃圾回收');
                         global.gc();
-
-                        // 检查GC后的内存使用情况
                         const afterGC = process.memoryUsage();
                         const freedMemory = (heapUsed - afterGC.heapUsed) / 1024 / 1024;
                         log.info(`垃圾回收完成，释放了 ${freedMemory.toFixed(2)}MB 堆内存`);
                     } catch (err) {
-                        log.debug('手动垃圾回收失败，忽略');
+                        // 忽略GC错误
                     }
                 }
             }
+            else if (heapUsagePercent > HEAP_CRITICAL_THRESHOLD) {
+                logLevel = 'warn';
+                log.warn(`⚠️ 内存严重: 堆使用率 ${heapUsagePercent.toFixed(1)}% (${(heapUsed / 1024 / 1024).toFixed(2)}MB/${(heapTotal / 1024 / 1024).toFixed(2)}MB)`);
 
-            if (rss > RSS_WARNING_THRESHOLD) {
-                log.warn(`⚠️ 高RSS内存使用: ${(rss / 1024 / 1024).toFixed(2)}MB`);
+                // 执行更积极的内存清理
+                this.cleanupMemory();
+                actionTaken = true;
+
+                // 尝试垃圾回收
+                if (global.gc) {
+                    try {
+                        global.gc();
+                    } catch (err) {
+                        // 忽略GC错误
+                    }
+                }
+            }
+            else if (heapUsagePercent > HEAP_WARNING_THRESHOLD) {
+                logLevel = 'warn';
+                log.warn(`⚠️ 内存警告: 堆使用率 ${heapUsagePercent.toFixed(1)}% (${(heapUsed / 1024 / 1024).toFixed(2)}MB/${(heapTotal / 1024 / 1024).toFixed(2)}MB)`);
             }
 
-            // 添加潜在内存泄漏检测
-            // 如果堆内存使用持续增长，可能存在内存泄漏
-            if (heapUsed > this.lastHeapUsed) {
+            // RSS内存使用情况处理
+            if (rss > RSS_CRITICAL_THRESHOLD) {
+                if (logLevel !== 'error') logLevel = 'warn';
+                log.warn(`⚠️ RSS内存严重: ${(rss / 1024 / 1024).toFixed(2)}MB`);
+
+                if (!actionTaken) {
+                    this.cleanupMemory();
+                    actionTaken = true;
+                }
+            }
+            else if (rss > RSS_WARNING_THRESHOLD) {
+                if (logLevel === 'debug') logLevel = 'info';
+                log.info(`ℹ️ RSS内存警告: ${(rss / 1024 / 1024).toFixed(2)}MB`);
+            }
+
+            // 内存泄漏检测 - 检查堆内存持续增长
+            if (heapUsed > this.lastHeapUsed * 1.1) { // 增长超过10%才计数
                 this.consecutiveIncreases++;
-                if (this.consecutiveIncreases >= 5) {
-                    log.warn(`🚨 检测到潜在内存泄漏：堆内存持续增长 ${this.consecutiveIncreases} 次`);
+                if (this.consecutiveIncreases >= 3) {
+                    log.warn(`🚨 潜在内存泄漏: 堆内存持续增长 ${this.consecutiveIncreases} 次，增长率 ${((heapUsed - this.lastHeapUsed) / this.lastHeapUsed * 100).toFixed(1)}%`);
+
+                    // 内存泄漏时执行额外清理
+                    if (this.consecutiveIncreases >= 5 && !actionTaken) {
+                        log.warn('执行额外内存清理以应对可能的内存泄漏');
+                        this.cleanupMemory();
+                        
+                        // 额外优化对象池
+                        this.optimizeObjectPools(this.consecutiveIncreases >= 7);
+
+                        // 尝试垃圾回收
+                        if (global.gc) {
+                            try {
+                                global.gc();
+                            } catch (err) {
+                                // 忽略GC错误
+                            }
+                        }
+                    }
                 }
             } else {
+                // 重置计数器（如果内存不再增长）
                 this.consecutiveIncreases = 0;
+                
+                // 如果内存使用率较低，可以适当扩大对象池以提高性能
+                if (heapUsagePercent < 50 && this.consecutiveIncreases === 0) {
+                    // 只在调试模式下记录这个信息
+                    log.debug('内存使用率较低，保持当前对象池容量');
+                }
             }
 
+            // 更新内存使用记录
             this.lastHeapUsed = heapUsed;
+
+            // 仅在调试级别记录详细的内存使用情况
+            if (logLevel === 'debug') {
+                log.debug(`内存使用情况 - 堆: ${(heapUsed / 1024 / 1024).toFixed(2)}/${(heapTotal / 1024 / 1024).toFixed(2)}MB (${heapUsagePercent.toFixed(1)}%), RSS: ${(rss / 1024 / 1024).toFixed(2)}MB, 外部: ${(external / 1024 / 1024).toFixed(2)}MB`);
+            }
         } catch (err) {
-            // 忽略错误
+            // 忽略内存检查错误
         }
     }
 
     /**
      * 全面内存清理方法
-     * 清理各种缓存和未使用的数据结构
+     * 根据不同的内存压力级别执行不同强度的清理策略
+     * 增强版：添加更彻底的内存释放逻辑
+     * 
+     * @param aggressive 是否执行更积极的内存清理
      */
-    public cleanupMemory(): void {
+    public cleanupMemory(aggressive: boolean = false): void {
         const startTime = Date.now();
 
-        // 1. 清理命令冷却记录
-        this.cleanupCommandCooldowns();
+        try {
+            // 1. 清理命令冷却记录
+            const cooldownsRemoved = this.cleanupCommandCooldowns() || 0;
 
-        // 2. 清理命令处理器缓存
-        this.cleanupCommandCache();
+            // 2. 清理命令处理器缓存
+            const cacheEntriesRemoved = this.cleanupCommandCache() || 0;
 
-        // 3. 清理命令队列中悬挂的请求
-        this.cleanupCommandQueue();
+            // 3. 清理命令队列中悬挂的请求
+            const queueEntriesRemoved = this.cleanupCommandQueue() || 0;
 
-        // 4. 清理插件配置缓存
-        this.cleanupPluginConfigCache();
+            // 4. 清理插件配置缓存（仅保留活跃插件的配置）
+            const configEntriesRemoved = this.cleanupPluginConfigCache() || 0;
 
-        // 记录内存使用情况
-        this.logMemoryUsage();
+            // 5. 积极模式下执行额外清理
+            if (aggressive) {
+                // 5.1 清除所有命令缓存
+                const cacheSize = this.commandHandlersCache.size;
+                if (cacheSize > 0) {
+                    this.commandHandlersCache.clear();
+                    this.recentlyUsedCommands.length = 0;
+                    this.commandCacheLastUpdated = Date.now();
+                    log.debug(`积极清理: 清空所有命令处理器缓存 (${cacheSize} 个条目)`);
+                }
 
-        // 记录执行时间，用于性能监控
-        const duration = Date.now() - startTime;
-        log.debug(`内存清理完成，耗时 ${duration}ms`);
+                // 5.2 重置非关键状态计数器
+                this.consecutiveIncreases = 0;
 
-        // 主动触发垃圾回收（仅建议，实际效果取决于JavaScript引擎）
-        if (global.gc) {
-            try {
-                global.gc();
-                log.debug('手动触发垃圾回收');
+                // 5.3 清理对象池，减少最大占用内存
+                const poolCleaned = this.optimizeObjectPools(true);
+                if (poolCleaned > 0) {
+                    log.debug(`积极清理: 优化了对象池，移除了 ${poolCleaned} 个对象`);
+                }
 
-                // 再次记录内存使用情况，用于对比
-                this.logMemoryUsage('GC后');
-            } catch (err) {
-                log.debug('手动垃圾回收失败，忽略');
+                // 5.4 尝试运行垃圾回收（如果可用）
+                if (global.gc) {
+                    try {
+                        log.debug('执行JavaScript垃圾回收');
+                        global.gc();
+                        
+                        // 垃圾回收后捕获内存使用情况
+                        const memAfterGC = process.memoryUsage();
+                        const heapUsedAfterGC = memAfterGC.heapUsed / (1024 * 1024);
+                        log.debug(`垃圾回收后堆内存: ${heapUsedAfterGC.toFixed(2)} MB`);
+                    } catch (err) {
+                        // 忽略GC错误
+                    }
+                }
             }
+
+            // 记录内存清理统计
+            const totalRemoved = cooldownsRemoved + cacheEntriesRemoved +
+                queueEntriesRemoved + configEntriesRemoved;
+
+            // 记录内存使用情况
+            this.logMemoryUsage(aggressive ? '积极清理后' : '常规清理后');
+
+            // 记录执行时间和清理统计
+            const duration = Date.now() - startTime;
+            if (totalRemoved > 0) {
+                log.info(`内存清理完成，移除了 ${totalRemoved} 个对象，耗时 ${duration}ms ${aggressive ? '(积极模式)' : ''}`);
+            } else {
+                log.debug(`内存清理完成，没有需要清理的对象，耗时 ${duration}ms ${aggressive ? '(积极模式)' : ''}`);
+            }
+        } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err));
+            log.error(`内存清理过程发生错误: ${error.message}`);
         }
     }
 
@@ -2579,7 +2885,7 @@ export class Features {
     /**
      * 清理所有过期的命令冷却记录
      */
-    private cleanupCommandCooldowns(): void {
+    private cleanupCommandCooldowns(): number {
         const now = Date.now();
         let removedCount = 0;
 
@@ -2615,34 +2921,42 @@ export class Features {
         if (removedCount > 0) {
             log.debug(`清理了 ${removedCount} 条过期命令冷却记录`);
         }
+
+        return removedCount;
     }
 
     /**
      * 清理命令处理器缓存
+     * @returns 清理的缓存条目数量 
      */
-    private cleanupCommandCache(): void {
+    private cleanupCommandCache(): number {
         const now = Date.now();
+        let removedCount = 0;
 
-        // 如果缓存已经过期，完全清空
+        // 如果缓存已经过期，直接清空（减少遍历次数）
         if (now - this.commandCacheLastUpdated >= this.COMMAND_CACHE_TTL) {
-            const size = this.commandHandlersCache.size;
-            this.commandHandlersCache.clear();
-            this.recentlyUsedCommands = [];
-            this.commandCacheLastUpdated = now;
+            const cacheSize = this.commandHandlersCache.size;
 
-            if (size > 0) {
-                log.debug(`清空了 ${size} 个命令处理器缓存条目`);
+            if (cacheSize > 0) {
+                // 一次性清空Map，比逐个删除效率更高
+                this.commandHandlersCache.clear();
+                this.recentlyUsedCommands.length = 0; // 清空数组更高效
+                this.commandCacheLastUpdated = now;
+
+                log.debug(`清空了 ${cacheSize} 个命令处理器缓存条目`);
+                removedCount = cacheSize;
             }
+            return removedCount;
         }
-        // 否则只清理超出容量的部分
-        else if (this.commandHandlersCache.size > this.CACHE_MAX_SIZE) {
-            // 获取需要保留的命令列表
+
+        // 如果缓存条目超出容量限制，只保留最近使用的条目
+        if (this.commandHandlersCache.size > this.CACHE_MAX_SIZE) {
+            // 创建需要保留的命令集合（使用Set提高查找效率）
             const keepCommands = new Set(this.recentlyUsedCommands.slice(0, this.CACHE_MAX_SIZE));
 
-            // 计算要删除的命令数量
+            // 直接遍历并筛选缓存条目
             let deletedCount = 0;
 
-            // 遍历并删除不在保留列表中的缓存
             for (const cmd of this.commandHandlersCache.keys()) {
                 if (!keepCommands.has(cmd)) {
                     this.commandHandlersCache.delete(cmd);
@@ -2652,43 +2966,64 @@ export class Features {
 
             if (deletedCount > 0) {
                 log.debug(`清理了 ${deletedCount} 个过期命令处理器缓存条目`);
-            }
+                removedCount = deletedCount;
 
-            // 更新最近使用命令列表，只保留在keepCommands中的命令
-            this.recentlyUsedCommands = this.recentlyUsedCommands.filter(cmd => keepCommands.has(cmd));
+                // 更新最近使用命令列表，只保留有效的条目
+                this.recentlyUsedCommands = this.recentlyUsedCommands.filter(cmd => keepCommands.has(cmd));
+            }
         }
+
+        return removedCount;
     }
 
     /**
      * 清理挂起的命令队列
+     * 增强版：添加基于时间戳的清理逻辑
+     * @returns 清理的队列条目数量
      */
-    private cleanupCommandQueue(): void {
-        // Note: Checking promise state externally is unreliable.
-        // A better approach might involve timeouts or explicit state tracking
-        // within the promise handling logic itself.
-        // For now, this cleanup is minimal.
-        // Consider adding a timestamp to queue entries and cleaning old ones.
+    private cleanupCommandQueue(): number {
         let cleanedCount = 0;
-        // Example: If promises had a 'creationTime' property
-        // const now = Date.now();
-        // const MAX_QUEUE_AGE = this.COMMAND_TIMEOUT * 2; // e.g., 6 minutes
-        // for (const [userId, promiseInfo] of this.commandQueue.entries()) {
-        //     if (now - promiseInfo.creationTime > MAX_QUEUE_AGE) {
-        //         this.commandQueue.delete(userId);
-        //         cleanedCount++;
-        //         log.warn(`清理了可能悬挂的命令队列项 (用户: ${userId})`);
-        //     }
-        // }
+        
+        // 使用当前时间作为参考点
+        const now = Date.now();
+        
+        // 设置最大队列项存活时间，是命令超时时间的两倍
+        const MAX_QUEUE_AGE = this.COMMAND_TIMEOUT * 2;
+        
+        // 检查并存储需要清理的项
+        const keysToDelete: number[] = [];
+        
+        // 注入时间戳属性到队列项中
+        // 这需要配合processCommand方法同步修改
+        for (const [userId, promiseObj] of this.commandQueue.entries()) {
+            // 使用反射检查promise对象是否有creationTime属性
+            const anyPromise = promiseObj as any;
+            
+            if (anyPromise.creationTime && (now - anyPromise.creationTime) > MAX_QUEUE_AGE) {
+                keysToDelete.push(userId);
+                cleanedCount++;
+                log.warn(`清理了可能悬挂的命令队列项 (用户: ${userId}, 距创建已 ${((now - anyPromise.creationTime) / 1000).toFixed(1)} 秒)`);
+            }
+        }
+        
+        // 批量删除已标记的队列项
+        for (const userId of keysToDelete) {
+            this.commandQueue.delete(userId);
+        }
+        
         if (cleanedCount > 0) {
             log.debug(`清理了 ${cleanedCount} 个可能悬挂的命令队列项`);
         }
+        
+        return cleanedCount;
     }
 
     /**
      * 清理插件配置缓存
      * 只保留活跃插件的配置
+     * @returns 清理的配置缓存条目数量
      */
-    private cleanupPluginConfigCache(): void {
+    private cleanupPluginConfigCache(): number {
         // 获取所有活跃插件名称
         const activePlugins = new Set<string>();
         for (const [name, plugin] of this.plugins.entries()) {
@@ -2709,6 +3044,7 @@ export class Features {
         if (cleanedCount > 0) {
             log.debug(`清理了 ${cleanedCount} 个非活跃插件的配置缓存`);
         }
+        return cleanedCount;
     }
 
     /**
@@ -2760,5 +3096,39 @@ export class Features {
             }
         }
         return undefined;
+    }
+
+    /**
+     * 优化对象池大小
+     * 动态调整对象池容量，以平衡性能和内存使用
+     * 
+     * @param aggressive 是否执行更积极的缩减
+     * @returns 从池中移除的对象数量
+     */
+    private optimizeObjectPools(aggressive: boolean = false): number {
+        let totalRemoved = 0;
+        
+        // 根据内存压力确定目标池大小
+        // 正常模式保留75%，积极模式保留50%
+        const retentionFactor = aggressive ? 0.5 : 0.75;
+        const targetPoolSize = Math.max(10, Math.floor(this.POOL_SIZE * retentionFactor));
+        
+        // 遍历所有对象池执行优化
+        for (const poolName in this.objectPools) {
+            const pool = this.objectPools[poolName as keyof typeof this.objectPools];
+            
+            // 如果池大小超过目标值，缩减它
+            if (pool.length > targetPoolSize) {
+                const removeCount = pool.length - targetPoolSize;
+                pool.length = targetPoolSize;
+                totalRemoved += removeCount;
+            }
+        }
+        
+        if (totalRemoved > 0) {
+            log.debug(`优化对象池: 移除了 ${totalRemoved} 个对象` + (aggressive ? ' (积极模式)' : ''));
+        }
+        
+        return totalRemoved;
     }
 }

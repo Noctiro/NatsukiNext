@@ -1,6 +1,7 @@
-import { html } from "@mtcute/bun";
-import type { BotPlugin, CommandContext, MessageEventContext } from "../features";
+import { html, BotKeyboard, TelegramClient } from "@mtcute/bun";
+import type { BotPlugin, CommandContext, MessageEventContext, CallbackEventContext } from "../features";
 import { generateRandomUserAgent } from "../utils/UserAgent";
+import { CallbackDataBuilder } from "../utils/callback";
 
 // 插件配置
 const config = {
@@ -959,6 +960,103 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
     }
 }
 
+// 定义删除回调数据构建器
+const DeletePrivacyCallback = new CallbackDataBuilder<{
+    initiatorId: number;
+    originalSenderId: number;
+}>('privacy', 'del', ['initiatorId', 'originalSenderId']);
+
+/**
+ * 生成删除回调数据
+ * @param initiatorId 发起人ID（自动处理时为0）
+ * @param originalSenderId 原始消息发送者ID
+ */
+function generateDeleteCallbackData(initiatorId: number, originalSenderId: number): string {
+    // 使用插件名:功能名:参数格式
+    // 格式: privacy:del:initiatorId:originalSenderId
+    
+    // 如果原始发送者与发起人相同，则不包含原始发送者ID
+    if (originalSenderId === initiatorId) {
+        return `privacy:del:${initiatorId}`;
+    }
+    
+    // 包含原始发送者ID
+    return `privacy:del:${initiatorId}:${originalSenderId}`;
+}
+
+/**
+ * 检查用户是否是群组管理员
+ * @param client Telegram客户端实例
+ * @param chatId 聊天ID
+ * @param userId 用户ID
+ * @returns 是否为管理员
+ */
+async function isGroupAdmin(client: TelegramClient, chatId: number, userId: number): Promise<boolean> {
+    try {
+        // 获取用户在群组中的身份
+        const chatMember = await client.getChatMember({
+            chatId,
+            userId
+        });
+        
+        // 如果无法获取成员信息，默认返回false
+        if (!chatMember || !chatMember.status) return false;
+        
+        // 检查用户角色是否为管理员或创建者
+        return ['creator', 'administrator'].includes(chatMember.status);
+    } catch (error) {
+        // 记录错误并返回false
+        plugin.logger?.error(`检查管理员权限失败: ${error}`);
+        return false;
+    }
+}
+
+/**
+ * 处理删除隐私保护消息回调
+ */
+async function handleDeleteCallback(ctx: CallbackEventContext): Promise<void> {
+    try {
+        // 获取回调数据
+        const data = ctx.match || {};
+        
+        // 获取参数
+        const initiatorId = typeof data._param0 === 'number' ? data._param0 : 0;
+        const originalSenderId = typeof data._param1 === 'number' ? data._param1 : 0;
+        
+        // 获取当前用户ID
+        const currentUserId = ctx.query.user.id;
+        
+        // 检查权限：允许 (1)发起人 (2)原始消息发送者 (3)管理员 删除消息
+        const isInitiator = currentUserId === initiatorId;
+        const isOriginalSender = originalSenderId > 0 && currentUserId === originalSenderId;
+        const isAdmin = await ctx.hasPermission('admin') || 
+                       await isGroupAdmin(ctx.client, ctx.chatId, currentUserId);
+        
+        if (!isInitiator && !isOriginalSender && !isAdmin) {
+            await ctx.query.answer({
+                text: '您没有权限删除此隐私保护消息',
+                alert: true
+            });
+            return;
+        }
+
+        // 删除消息
+        await ctx.client.deleteMessagesById(ctx.chatId, [ctx.query.messageId]);
+        
+        // 操作成功反馈
+        await ctx.query.answer({
+            text: '已删除隐私保护消息'
+        });
+    } catch (error) {
+        // 记录错误并向用户反馈
+        plugin.logger?.error(`删除隐私保护消息失败: ${error}`);
+        await ctx.query.answer({
+            text: '删除失败',
+            alert: true
+        });
+    }
+}
+
 /**
  * 处理消息中的所有短链接
  * @param messageText 消息文本
@@ -1331,7 +1429,7 @@ const plugin: BotPlugin = {
                 return !!ctx.message.text;
             },
 
-            // 消息处理函数
+            // 消息处理函数 - 修改以添加删除按钮
             async handler(ctx: MessageEventContext): Promise<void> {
                 const messageText = ctx.message.text;
                 if (!messageText) return;
@@ -1366,9 +1464,24 @@ const plugin: BotPlugin = {
                     if (foundLinks && processedText !== messageText && processedCount > 0) {
                         const content = html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName}</a> 分享内容（隐私保护，已移除跟踪参数）:\n${processedText}`;
 
+                        // 添加删除按钮
+                        // 系统自动触发的隐私保护处理，使用0作为发起人ID
+                        const initiatorId = 0; // 系统自动触发
+                        const originalSenderId = ctx.message.sender.id;
+                        
+                        // 生成回调数据
+                        const callbackData = generateDeleteCallbackData(initiatorId, originalSenderId);
+                        
+                        // 添加删除按钮
+                        const keyboard = BotKeyboard.inline([
+                            [BotKeyboard.callback('🗑️ 删除', callbackData)]
+                        ]);
+
                         // 发送新消息（如果存在回复消息则保持回复关系）
                         try {
-                            await ctx.message.answerText(content);
+                            await ctx.message.answerText(content, {
+                                replyMarkup: keyboard // 添加删除按钮
+                            });
 
                             // 删除原消息
                             try {
@@ -1384,6 +1497,14 @@ const plugin: BotPlugin = {
                 } catch (error) {
                     plugin.logger?.error(`处理消息错误: ${error}`);
                 }
+            }
+        },
+        // 添加删除回调处理事件
+        {
+            type: 'callback',
+            name: 'del', // 匹配 'privacy:del:*:*' 格式的数据
+            async handler(ctx: CallbackEventContext) {
+                await handleDeleteCallback(ctx);
             }
         }
     ]
