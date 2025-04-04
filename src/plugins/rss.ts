@@ -57,7 +57,8 @@ const RSS_SOURCES = [
     "http://www.ithome.com/rss/",                   // IT之家
     "https://www.solidot.org/index.rss",             // 奇客Solidot
     "http://rss.cnbeta.com.tw/",                    // cnbeta科技
-    "https://www.geekpark.net/rss"                  // 极客公园
+    "https://www.geekpark.net/rss",                  // 极客公园
+    "https://www.huxiu.com/rss/0.xml",             // 虎嗅
 ];
 
 /**
@@ -517,41 +518,27 @@ class AiNewsSelector extends NewsSelector {
     }
 
     /**
-     * 构建AI提示词 - 精简版
+     * 构建 AI 提示词
      * @param news - 新闻列表
-     * @returns AI提示词
+     * @returns AI 提示词
      * @private
      */
     private buildAIPrompt(news: NewsItem[]): string {
-        // 减少标题长度，节省tokens
         const MAX_TITLE_LENGTH = 30;
-
-        // 简化源统计，只统计总数
-        const sourceTypes = new Set(news.map(item => item.sourceName.split('.')[0]));
-        const sourceStats = `${sourceTypes.size}个来源，共${news.length}条`;
-
-        // 高效生成新闻列表
+        const total = news.length;
+        // 随机生成一个 1 至 total 之间的数字，作为回复示例
+        const exampleNumber = Math.floor(Math.random() * total) + 1;
         const newsItems = news.map((n, i) => {
-            // 截断标题
             const title = n.title.length > MAX_TITLE_LENGTH
                 ? n.title.substring(0, MAX_TITLE_LENGTH) + '...'
                 : n.title;
-
-            // 简化日期，只显示月日
             const date = n.pubDate
-                ? new Date(n.pubDate).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+                ? new Date(n.pubDate).toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' })
                 : '';
-
             return `${i + 1}. ${title}${date ? ` (${date})` : ''}`;
         }).join('\n');
 
-        // 更简洁的提示词
-        return `从下列新闻中选择最重要的一条 (${sourceStats})
-优先：重大时政>突发事件>科技动态>一般资讯
-
-${newsItems}
-
-直接回复数字(1-${news.length})，表示你选择的新闻序号。`;
+        return `请从下列新闻中选择最重要的一条。\n\n筛选方法：\n- 考虑新闻的影响力、时效性和重大性。\n- 如果有突发事件或重大政策变化，请优先选择。\n- 选择最能代表当前热点的新闻。\n\n要求：\n1. 直接回复单个数字（对应新闻序号），且仅包含数字。\n2. 回复的数字必须在 1 至 ${total} 之间。\n\n新闻列表：\n${newsItems}\n\n【回复示例】\n${exampleNumber}`;
     }
 }
 
