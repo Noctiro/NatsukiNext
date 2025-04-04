@@ -331,6 +331,14 @@ export class Features {
     private lastHeapUsed = 0;
     /** 内存使用量连续增长的次数，用于内存泄漏检测 */
     private consecutiveIncreases = 0;
+    /** 内存使用历史记录 */
+    private memoryHistory: { timestamp: number; rss: number; heapTotal: number; heapUsed: number }[] = [];
+    /** 内存历史记录最大数量 */
+    private readonly MEMORY_HISTORY_MAX_SIZE = 10;
+    /** 上次内存检查时间戳 */
+    private lastMemoryCheck = Date.now();
+    /** 内存历史记录间隔（毫秒） */
+    private readonly MEMORY_HISTORY_INTERVAL = 3600000; // 1小时
 
     // ===== 对象池 =====
     /** 对象池：用于复用频繁创建的对象，减少GC压力 */
@@ -796,7 +804,35 @@ export class Features {
 
             // 按优先级排序事件处理器（优先级高的先执行）
             // 优化：缓存排序结果，避免每次调用都重排
+            // 添加类型验证，过滤掉无效的处理器
             const sortedHandlers = Array.from(handlers)
+                .filter(handler => {
+                    // 验证处理器格式是否正确
+                    if (!handler || typeof handler !== 'object') {
+                        log.error(`无效的事件处理器：非对象类型 (${type})`);
+                        return false;
+                    }
+                    
+                    // 验证handler属性是否为函数
+                    if (typeof handler.handler !== 'function') {
+                        log.error(`无效的事件处理器：handler不是函数 (${type})`);
+                        return false;
+                    }
+                    
+                    // 如果有name属性，确保它是字符串类型
+                    if (handler.name !== undefined && typeof handler.name !== 'string') {
+                        log.error(`无效的事件处理器：name不是字符串 (${type})`);
+                        return false;
+                    }
+                    
+                    // 确保priority是数字或未定义
+                    if (handler.priority !== undefined && typeof handler.priority !== 'number') {
+                        log.error(`无效的事件处理器：priority不是数字 (${type})`);
+                        return false;
+                    }
+                    
+                    return true;
+                })
                 .sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
             // 将相同优先级的处理器分组，以便并行执行
@@ -805,8 +841,14 @@ export class Features {
 
             // 优化：仅对可能匹配的处理器进行分组
             for (const handler of sortedHandlers) {
-                // 预过滤：如果是回调事件，只考虑可能匹配的处理器
+                // 优化：预先过滤：如果是回调事件，只考虑可能匹配的处理器
                 if (type === 'callback' && handler.name && callbackData && callbackData.length >= 2) {
+                    // 确保handler.name是一个有效的字符串
+                    if (typeof handler.name !== 'string') {
+                        log.error(`回调事件处理器name属性不是字符串: ${typeof handler.name}`);
+                        continue;
+                    }
+                    
                     // 回调数据的第二部分是功能名，如果不匹配则跳过
                     if (callbackData[1] !== handler.name) {
                         continue;
@@ -845,6 +887,7 @@ export class Features {
                     const newTaskFn = async () => {
                         try {
                             // 处理回调事件的name匹配和参数解析
+                            let match: Record<string, any> | undefined;
                             if (type === 'callback' && context.type === 'callback' && callbackData && callbackData.length >= 2) {
                                 const callbackContext = context as CallbackEventContext;
 
@@ -856,7 +899,7 @@ export class Features {
                                 const paramParts = callbackData.slice(2);
 
                                 // 从对象池获取match对象，避免频繁创建
-                                const match = this.getFromPool<Record<string, any>>('matchObjects');
+                                match = this.getFromPool<Record<string, any>>('matchObjects');
                                 
                                 // 设置基础元数据
                                 match._pluginName = pluginName;
@@ -888,55 +931,64 @@ export class Features {
                             }
 
                             // 使用超时保护处理事件
-                              const HANDLER_TIMEOUT = 10000; // 10秒超时
-                              
-                              // 包装处理器执行为Promise
-                              const handlerPromise = handler.handler(context);
-                              
-                              // 设置超时控制
-                              const timeoutPromise = new Promise<void>((_, reject) => {
-                                  setTimeout(() => {
-                                      const pluginName = this.findPluginByEvent(handler);
-                                      const handlerInfo = pluginName 
-                                          ? `插件 ${pluginName} 的事件处理器` 
-                                          : '未知插件的事件处理器';
-                                      reject(new Error(`${handlerInfo}超时 (${type})`));
-                                  }, HANDLER_TIMEOUT);
-                              });
+                            const HANDLER_TIMEOUT = 10000; // 10秒超时
+                            
+                            // 查找插件名称以及处理器信息，用于错误日志
+                            const pluginName = this.findPluginByEvent(handler) || '未知插件';
+                            const handlerName = handler.name ? `${handler.name}` : '未命名处理器';
+                            
+                            // 包装处理器执行为Promise
+                            const handlerPromise = handler.handler(context);
+                            
+                            // 设置超时控制
+                            const timeoutPromise = new Promise<void>((_, reject) => {
+                                setTimeout(() => {
+                                    reject(new Error(`处理器执行超时(${HANDLER_TIMEOUT}ms)`));
+                                }, HANDLER_TIMEOUT);
+                            });
 
-                              // 执行事件处理器（竞争超时）
-                              await Promise.race([handlerPromise, timeoutPromise]);
-                          } catch (err) {
-                              const error = err instanceof Error ? err : new Error(String(err));
-
-                              // 获取上下文信息以便更好地诊断
-                              let userId = 'unknown';
-                              if (context.type === 'message' || context.type === 'command') {
-                                  userId = String((context as MessageEventContext | CommandContext).message.sender.id);
-                              } else if (context.type === 'callback') {
-                                  userId = String((context as CallbackEventContext).query.user.id);
-                              }
-
-                              const chatId = context.chatId;
-                              const pluginName = this.findPluginByEvent(handler);
-                              const eventDetails = pluginName ? `插件 ${pluginName} 的 ${type} 事件处理器` : `${type} 事件处理器`;
-
-                              log.error(`${eventDetails}错误 (用户: ${userId}, 聊天: ${chatId}): ${error.message}`);
-                              if (error.stack) {
-                                  log.debug(`错误堆栈: ${error.stack}`);
-                              }
-                          } finally {
-                              // 任务完成后归还到对象池
-                              this.returnToPool('eventTasks', origTaskFn);
-                          }
+                            // 执行事件处理器（竞争超时）
+                            await Promise.race([handlerPromise, timeoutPromise]);
+                        } catch (err) {
+                            // 捕获处理器中的错误
+                            const error = err instanceof Error ? err : new Error(String(err));
+                            
+                            // 生成增强的错误信息
+                            const errorDetails = this.enhanceErrorMessage(error, {
+                                type: `优先级(${priority})事件处理错误`,
+                                pluginName: this.findPluginByEvent(handler),
+                                eventType: type,
+                                eventContext: context
+                            });
+                            
+                            log.error(`${errorDetails}: ${error.message}`);
+                            
+                            if (error.stack) {
+                                log.debug(`错误堆栈: ${error.stack}`);
+                            }
+                        } finally {
+                            // 任务完成后，回收match对象（如果是回调事件）
+                            if (type === 'callback' && context.type === 'callback' && context.match) {
+                                this.returnToPool('matchObjects', context.match);
+                                (context as CallbackEventContext).match = undefined;
+                            }
+                            
+                            // 任务函数完成后，返回到对象池
+                            this.returnToPool('eventTasks', origTaskFn);
+                        }
                     };
                     
-                    // 替换原函数内容
-                    Object.defineProperty(taskFn, 'prototype', Object.getOwnPropertyDescriptor(newTaskFn, 'prototype')!);
-                    Object.setPrototypeOf(taskFn, Object.getPrototypeOf(newTaskFn));
+                    // 替换任务函数内容
+                    Object.defineProperty(taskFn, 'name', { value: `taskFn_${priority}_${handler.name || 'unnamed'}` });
+                    Object.setPrototypeOf(newTaskFn, Object.getPrototypeOf(taskFn));
                     
-                    // 添加到任务列表
-                    tasks.push(taskFn);
+                    for (const key of Object.keys(taskFn)) {
+                        if (Object.prototype.hasOwnProperty.call(taskFn, key)) {
+                            Object.defineProperty(newTaskFn, key, Object.getOwnPropertyDescriptor(taskFn, key)!);
+                        }
+                    }
+                    
+                    tasks.push(newTaskFn);
                 }
 
                 // 并行执行同一优先级的所有处理器
@@ -966,12 +1018,125 @@ export class Features {
                 } catch (err) {
                     // 捕获并记录错误，但不中断处理流程
                     const error = err instanceof Error ? err : new Error(String(err));
-                    log.error(`优先级 ${priority} 的事件处理组执行错误: ${error.message}`);
+                    
+                    // 创建更详细的错误日志
+                    let errorDetails = `优先级 ${priority} 的事件处理组执行错误`;
+                    
+                    try {
+                        // 尝试获取该优先级组中的插件信息
+                        if (handlersInPriority && handlersInPriority.length > 0) {
+                            const pluginNames = new Set<string>();
+                            
+                            // 收集可能的插件名称
+                            for (const handler of handlersInPriority) {
+                                const pluginName = this.findPluginByEvent(handler);
+                                if (pluginName) {
+                                    pluginNames.add(pluginName);
+                                }
+                            }
+                            
+                            if (pluginNames.size > 0) {
+                                errorDetails += ` | 相关插件: ${Array.from(pluginNames).join(', ')}`;
+                            }
+                        }
+                        
+                        // 添加事件类型和上下文信息
+                        errorDetails += ` | 事件类型: ${type}`;
+                        
+                        if (context) {
+                            if (context.type === 'message' || context.type === 'command') {
+                                const msgCtx = context as MessageEventContext | CommandContext;
+                                const userId = msgCtx.message?.sender?.id || 'unknown';
+                                errorDetails += ` | 用户ID: ${userId}`;
+                            } else if (context.type === 'callback') {
+                                const cbCtx = context as CallbackEventContext;
+                                const userId = cbCtx.query?.user?.id || 'unknown';
+                                errorDetails += ` | 用户ID: ${userId}`;
+                                
+                                if (callbackData && callbackData.length >= 2) {
+                                    errorDetails += ` | 回调操作: ${callbackData[0]}:${callbackData[1]}`;
+                                }
+                            }
+                        }
+                        
+                        // 检查特定错误类型
+                        if (error.message.includes('description must be')) {
+                            errorDetails += ` | 可能原因: 事件处理器使用了错误格式的Object.defineProperty`;
+                        }
+                    } catch (detailsErr) {
+                        // 记录获取详细信息的失败
+                        errorDetails += ` | 获取详细信息失败: ${String(detailsErr)}`;
+                    }
+                    
+                    log.error(`${errorDetails}: ${error.message}`);
+                    
+                    // 记录完整堆栈以便调试
+                    if (error.stack) {
+                        log.debug(`错误堆栈: ${error.stack}`);
+                    }
                 }
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            log.error(`事件分发处理错误 (类型: ${type}): ${error.message}`);
+            
+            // 尝试获取更多上下文信息以便更好地诊断问题
+            let errorDetails = `事件分发处理错误 (类型: ${type})`;
+            
+            // 添加更详细的错误信息
+            try {
+                // 获取与上下文相关的信息
+                if (context) {
+                    if (context.type === 'message' || context.type === 'command') {
+                        const msgCtx = context as MessageEventContext | CommandContext;
+                        const userId = msgCtx.message?.sender?.id || 'unknown';
+                        const chatId = msgCtx.chatId || 'unknown';
+                        const content = msgCtx.type === 'command' 
+                            ? msgCtx.command 
+                            : (msgCtx.message?.text?.substring(0, 30) || 'unknown');
+                            
+                        errorDetails += ` | 用户: ${userId}, 聊天: ${chatId}, 内容: ${content}`;
+                    } else if (context.type === 'callback') {
+                        const cbCtx = context as CallbackEventContext;
+                        const userId = cbCtx.query?.user?.id || 'unknown';
+                        const chatId = cbCtx.chatId || 'unknown';
+                        const data = cbCtx.data?.substring(0, 30) || 'unknown';
+                        
+                        errorDetails += ` | 用户: ${userId}, 聊天: ${chatId}, 回调数据: ${data}`;
+                    }
+                }
+                
+                // 尝试识别哪个插件导致了错误
+                // 如果错误发生在特定的处理器内，应该可以从调用栈或已处理的插件中推断
+                if (error.stack) {
+                    // 检查是否有插件相关的堆栈信息
+                    const pluginStack = error.stack.split('\n')
+                        .find(line => line.includes('/plugins/'));
+                        
+                    if (pluginStack) {
+                        // 提取插件名称
+                        const pluginMatch = pluginStack.match(/\/plugins\/([^\/]+)/);
+                        if (pluginMatch && pluginMatch[1]) {
+                            errorDetails += ` | 可能的问题插件: ${pluginMatch[1]}`;
+                        }
+                    }
+                }
+                
+                // 检查具体的错误类型和消息
+                if (error.message.includes('description must be')) {
+                    errorDetails += ` | 可能原因: 事件处理器定义错误，description属性类型不正确`;
+                }
+            } catch (detailsError) {
+                // 如果获取详细信息时出错，记录原始错误
+                errorDetails += ` | 无法获取更多信息: ${String(detailsError)}`;
+            }
+            
+            // 记录错误信息
+            log.error(errorDetails + `: ${error.message}`);
+            
+            // 记录完整堆栈以便调试
+            if (error.stack) {
+                log.debug(`错误堆栈: ${error.stack}`);
+            }
         }
     }
 
@@ -1435,6 +1600,35 @@ export class Features {
         if (!plugin.events || plugin.events.length === 0) return;
 
         for (const event of plugin.events) {
+            // 检查事件格式
+            if (!event || typeof event !== 'object') {
+                log.error(`插件 ${plugin.name} 注册了无效的事件处理器: 事件不是对象类型`);
+                continue;
+            }
+            
+            // 验证必须的属性
+            if (!event.type) {
+                log.error(`插件 ${plugin.name} 注册了无效的事件处理器: 缺少type属性`);
+                continue;
+            }
+            
+            if (typeof event.handler !== 'function') {
+                log.error(`插件 ${plugin.name} 注册了无效的事件处理器: handler不是函数`);
+                continue;
+            }
+            
+            // 检查name属性（如果存在）
+            if (event.name !== undefined && typeof event.name !== 'string') {
+                log.error(`插件 ${plugin.name} 注册了无效的事件处理器: name属性必须是字符串，而不是 ${typeof event.name}`);
+                continue;
+            }
+            
+            // 检查优先级（如果存在）
+            if (event.priority !== undefined && typeof event.priority !== 'number') {
+                log.error(`插件 ${plugin.name} 注册了无效的事件处理器: priority必须是数字，而不是 ${typeof event.priority}`);
+                continue;
+            }
+
             const handlers = this.eventHandlers.get(event.type);
             if (handlers) {
                 handlers.add(event);
@@ -1845,6 +2039,63 @@ export class Features {
                 return false;
             }
 
+            // 附加校验：确保事件和命令格式正确
+            if (plugin.events) {
+                if (!Array.isArray(plugin.events)) {
+                    log.error(`插件 ${plugin.name || '未知'} 的events属性不是数组`);
+                    return false;
+                }
+                
+                // 检查每个事件对象格式
+                for (const event of plugin.events) {
+                    if (!event || typeof event !== 'object') {
+                        log.error(`插件 ${plugin.name} 包含无效的事件对象: 不是对象类型`);
+                        return false;
+                    }
+                    
+                    if (!event.type) {
+                        log.error(`插件 ${plugin.name} 包含无效的事件对象: 缺少type属性`);
+                        return false;
+                    }
+                    
+                    if (typeof event.handler !== 'function') {
+                        log.error(`插件 ${plugin.name} 包含无效的事件对象: handler不是函数`);
+                        return false;
+                    }
+                    
+                    // 检查name属性类型（如果存在）
+                    if (event.name !== undefined && typeof event.name !== 'string') {
+                        log.error(`插件 ${plugin.name} 包含无效的事件对象: name属性必须是字符串，而不是 ${typeof event.name}`);
+                        return false;
+                    }
+                }
+            }
+            
+            if (plugin.commands) {
+                if (!Array.isArray(plugin.commands)) {
+                    log.error(`插件 ${plugin.name || '未知'} 的commands属性不是数组`);
+                    return false;
+                }
+                
+                // 检查每个命令对象格式
+                for (const cmd of plugin.commands) {
+                    if (!cmd || typeof cmd !== 'object') {
+                        log.error(`插件 ${plugin.name} 包含无效的命令对象: 不是对象类型`);
+                        return false;
+                    }
+                    
+                    if (!cmd.name || typeof cmd.name !== 'string') {
+                        log.error(`插件 ${plugin.name} 包含无效的命令对象: name不是字符串`);
+                        return false;
+                    }
+                    
+                    if (typeof cmd.handler !== 'function') {
+                        log.error(`插件 ${plugin.name} 包含无效的命令对象: handler不是函数`);
+                        return false;
+                    }
+                }
+            }
+
             // 检查是否包含插件必要的功能
             const hasCommands = plugin.commands && Array.isArray(plugin.commands);
             const hasEvents = plugin.events && Array.isArray(plugin.events);
@@ -1857,16 +2108,22 @@ export class Features {
                 return false;
             }
 
-            log.debug(`文件 ${filePath} 是有效的插件文件，名称: ${plugin.name}`);
             return true;
         } catch (err) {
-            // 导入出错，不是有效插件
-            if (err instanceof Error && err.message) {
-                log.debug(`插件文件验证错误 (${filePath}): ${err.message}`);
-                if (err.stack) {
-                    log.debug(`错误堆栈: ${err.stack}`);
-                }
+            const error = err instanceof Error ? err : new Error(String(err));
+            
+            // 生成增强的错误信息
+            const errorDetails = this.enhanceErrorMessage(error, {
+                type: '插件文件验证失败',
+                additionalInfo: `文件: ${filePath}`
+            });
+            
+            log.error(`${errorDetails}: ${error.message}`);
+            
+            if (error.stack) {
+                log.debug(`错误堆栈: ${error.stack}`);
             }
+            
             return false;
         }
     }
@@ -2631,131 +2888,114 @@ export class Features {
      */
     private checkMemoryUsage(): void {
         try {
-            // 获取内存使用指标
+            // 获取当前内存使用情况
             const memoryUsage = process.memoryUsage();
-            const heapUsed = memoryUsage.heapUsed;
-            const heapTotal = memoryUsage.heapTotal;
             const rss = memoryUsage.rss;
-            const external = memoryUsage.external || 0;
-
-            // 定义内存使用阈值
-            const HEAP_WARNING_THRESHOLD = 75; // 堆内存使用率警告阈值（75%）
-            const HEAP_CRITICAL_THRESHOLD = 85; // 堆内存使用率严重阈值（85%）
-            const HEAP_EMERGENCY_THRESHOLD = 95; // 堆内存使用率紧急阈值（95%）
-            const RSS_WARNING_THRESHOLD = 512 * 1024 * 1024; // RSS警告阈值（512MB）
-            const RSS_CRITICAL_THRESHOLD = 1024 * 1024 * 1024; // RSS严重阈值（1GB）
-
-            // 计算使用百分比
-            const heapUsagePercent = (heapUsed / heapTotal) * 100;
-
-            // 内存使用日志级别
-            let logLevel = 'debug';
-            let actionTaken = false;
-
-            // 堆内存使用情况处理
-            if (heapUsagePercent > HEAP_EMERGENCY_THRESHOLD) {
-                logLevel = 'error';
-                log.error(`🚨 内存紧急: 堆使用率 ${heapUsagePercent.toFixed(1)}% (${(heapUsed / 1024 / 1024).toFixed(2)}MB/${(heapTotal / 1024 / 1024).toFixed(2)}MB)`);
-
-                // 紧急措施 - 主动清理缓存和触发GC
-                this.commandHandlersCache.clear();
-                this.recentlyUsedCommands.length = 0;
-                actionTaken = true;
-
-                // 紧急运行垃圾回收（如果可用）
-                if (global.gc) {
-                    try {
-                        log.warn('🧹 紧急清理: 强制执行垃圾回收');
-                        global.gc();
-                        const afterGC = process.memoryUsage();
-                        const freedMemory = (heapUsed - afterGC.heapUsed) / 1024 / 1024;
-                        log.info(`垃圾回收完成，释放了 ${freedMemory.toFixed(2)}MB 堆内存`);
-                    } catch (err) {
-                        // 忽略GC错误
-                    }
+            const heapTotal = memoryUsage.heapTotal;
+            const heapUsed = memoryUsage.heapUsed;
+            
+            // 计算内存增长率
+            const now = Date.now();
+            const elapsed = now - this.lastMemoryCheck;
+            
+            // 检查是否需要记录内存用量历史
+            if (elapsed > this.MEMORY_HISTORY_INTERVAL) {
+                // 保存当前内存使用到历史记录中
+                this.memoryHistory.push({
+                    timestamp: now,
+                    rss,
+                    heapTotal,
+                    heapUsed
+                });
+                
+                // 保持历史记录在合理范围内
+                if (this.memoryHistory.length > this.MEMORY_HISTORY_MAX_SIZE) {
+                    this.memoryHistory.shift();
                 }
+                
+                this.lastMemoryCheck = now;
             }
-            else if (heapUsagePercent > HEAP_CRITICAL_THRESHOLD) {
-                logLevel = 'warn';
-                log.warn(`⚠️ 内存严重: 堆使用率 ${heapUsagePercent.toFixed(1)}% (${(heapUsed / 1024 / 1024).toFixed(2)}MB/${(heapTotal / 1024 / 1024).toFixed(2)}MB)`);
-
-                // 执行更积极的内存清理
-                this.cleanupMemory();
-                actionTaken = true;
-
-                // 尝试垃圾回收
-                if (global.gc) {
-                    try {
-                        global.gc();
-                    } catch (err) {
-                        // 忽略GC错误
-                    }
-                }
+            
+            // 多级内存阈值检查
+            let cleanupLevel = 0;
+            const MB = 1024 * 1024;
+            
+            // 轻度清理阈值 (300MB)
+            if (heapUsed > 300 * MB) {
+                cleanupLevel = 1;
             }
-            else if (heapUsagePercent > HEAP_WARNING_THRESHOLD) {
-                logLevel = 'warn';
-                log.warn(`⚠️ 内存警告: 堆使用率 ${heapUsagePercent.toFixed(1)}% (${(heapUsed / 1024 / 1024).toFixed(2)}MB/${(heapTotal / 1024 / 1024).toFixed(2)}MB)`);
+            
+            // 中度清理阈值 (500MB)
+            if (heapUsed > 500 * MB) {
+                cleanupLevel = 2;
             }
-
-            // RSS内存使用情况处理
-            if (rss > RSS_CRITICAL_THRESHOLD) {
-                if (logLevel !== 'error') logLevel = 'warn';
-                log.warn(`⚠️ RSS内存严重: ${(rss / 1024 / 1024).toFixed(2)}MB`);
-
-                if (!actionTaken) {
-                    this.cleanupMemory();
-                    actionTaken = true;
-                }
+            
+            // 重度清理阈值 (800MB)
+            if (heapUsed > 800 * MB) {
+                cleanupLevel = 3;
             }
-            else if (rss > RSS_WARNING_THRESHOLD) {
-                if (logLevel === 'debug') logLevel = 'info';
-                log.info(`ℹ️ RSS内存警告: ${(rss / 1024 / 1024).toFixed(2)}MB`);
+            
+            // 危险级别清理阈值 (1200MB)
+            if (heapUsed > 1200 * MB) {
+                cleanupLevel = 4;
             }
-
-            // 内存泄漏检测 - 检查堆内存持续增长
-            if (heapUsed > this.lastHeapUsed * 1.1) { // 增长超过10%才计数
-                this.consecutiveIncreases++;
-                if (this.consecutiveIncreases >= 3) {
-                    log.warn(`🚨 潜在内存泄漏: 堆内存持续增长 ${this.consecutiveIncreases} 次，增长率 ${((heapUsed - this.lastHeapUsed) / this.lastHeapUsed * 100).toFixed(1)}%`);
-
-                    // 内存泄漏时执行额外清理
-                    if (this.consecutiveIncreases >= 5 && !actionTaken) {
-                        log.warn('执行额外内存清理以应对可能的内存泄漏');
-                        this.cleanupMemory();
+            
+            // 检查内存增长率，可能表明存在内存泄漏
+            if (this.memoryHistory.length >= 2) {
+                const oldest = this.memoryHistory[0];
+                const newest = this.memoryHistory[this.memoryHistory.length - 1];
+                
+                if (oldest && newest) {
+                    const timeDiff = newest.timestamp - oldest.timestamp;
+                    
+                    // 计算时间间隔内的内存增长（仅当有足够时间间隔时）
+                    if (timeDiff > 0) {
+                        const growthRateMB = (newest.heapUsed - oldest.heapUsed) / MB / (timeDiff / 3600000); // MB/小时
                         
-                        // 额外优化对象池
-                        this.optimizeObjectPools(this.consecutiveIncreases >= 7);
-
-                        // 尝试垃圾回收
-                        if (global.gc) {
-                            try {
-                                global.gc();
-                            } catch (err) {
-                                // 忽略GC错误
-                            }
+                        // 如果内存增长率超过阈值，增加清理级别
+                        if (growthRateMB > 50) { // 每小时增长超过50MB
+                            cleanupLevel = Math.max(cleanupLevel, 2);
+                        }
+                        
+                        if (growthRateMB > 100) { // 每小时增长超过100MB
+                            cleanupLevel = Math.max(cleanupLevel, 3);
+                        }
+                        
+                        // 记录异常内存增长
+                        if (growthRateMB > 200) { // 每小时增长超过200MB - 可能存在严重内存泄漏
+                            log.warn(`检测到异常内存增长率: ${growthRateMB.toFixed(2)} MB/小时 - 可能存在内存泄漏`);
+                            
+                            // 分析内存使用情况
+                            this.analyzeMemoryUsage();
+                            
+                            // 设置最高级别清理
+                            cleanupLevel = 4;
                         }
                     }
                 }
-            } else {
-                // 重置计数器（如果内存不再增长）
-                this.consecutiveIncreases = 0;
-                
-                // 如果内存使用率较低，可以适当扩大对象池以提高性能
-                if (heapUsagePercent < 50 && this.consecutiveIncreases === 0) {
-                    // 只在调试模式下记录这个信息
-                    log.debug('内存使用率较低，保持当前对象池容量');
-                }
             }
-
-            // 更新内存使用记录
-            this.lastHeapUsed = heapUsed;
-
-            // 仅在调试级别记录详细的内存使用情况
-            if (logLevel === 'debug') {
-                log.debug(`内存使用情况 - 堆: ${(heapUsed / 1024 / 1024).toFixed(2)}/${(heapTotal / 1024 / 1024).toFixed(2)}MB (${heapUsagePercent.toFixed(1)}%), RSS: ${(rss / 1024 / 1024).toFixed(2)}MB, 外部: ${(external / 1024 / 1024).toFixed(2)}MB`);
+            
+            // 根据清理级别执行相应的清理操作
+            if (cleanupLevel > 0) {
+                log.info(`内存使用: ${(heapUsed / MB).toFixed(2)}MB / ${(heapTotal / MB).toFixed(2)}MB (RSS: ${(rss / MB).toFixed(2)}MB) - 执行级别${cleanupLevel}清理`);
+                
+                // 执行级别对应的清理操作 - 传递布尔值表示是否强制清理
+                this.cleanupMemory(cleanupLevel === 4); // 仅在最高级别时强制清理
             }
         } catch (err) {
-            // 忽略内存检查错误
+            const error = err instanceof Error ? err : new Error(String(err));
+            
+            // 使用增强的错误消息
+            const errorDetails = this.enhanceErrorMessage(error, {
+                type: '内存使用检查错误',
+                additionalInfo: `当前时间: ${new Date().toISOString()}`
+            });
+            
+            log.error(`${errorDetails}: ${error.message}`);
+            
+            if (error.stack) {
+                log.debug(`错误堆栈: ${error.stack}`);
+            }
         }
     }
 
@@ -3084,18 +3324,33 @@ export class Features {
     }
 
     /**
-     * 根据事件处理器查找对应的插件名称
+     * 查找给定事件处理器所属的插件名称
      * @param event 事件处理器
      * @returns 插件名称，如果找不到则返回undefined
      * @private
      */
     private findPluginByEvent(event: PluginEvent): string | undefined {
-        for (const [pluginName, plugin] of this.plugins.entries()) {
-            if (plugin.events && plugin.events.includes(event)) {
-                return pluginName;
+        try {
+            // 遍历所有已加载的插件
+            for (const [pluginName, plugin] of this.plugins.entries()) {
+                if (!plugin || !plugin.events || !Array.isArray(plugin.events)) {
+                    continue;
+                }
+                
+                // 检查插件的事件是否包含目标事件
+                for (const pluginEvent of plugin.events) {
+                    if (pluginEvent === event) {
+                        return pluginName;
+                    }
+                }
             }
+            
+            return undefined;
+        } catch (error) {
+            // 如果查找过程出错，记录错误但不中断流程
+            log.debug(`查找事件处理器所属插件时出错: ${String(error)}`);
+            return undefined;
         }
-        return undefined;
     }
 
     /**
@@ -3130,5 +3385,176 @@ export class Features {
         }
         
         return totalRemoved;
+    }
+
+    /**
+     * 增强错误信息，添加详细的上下文信息
+     * @param error 原始错误
+     * @param context 上下文信息对象 
+     * @returns 增强后的错误描述
+     * @private
+     */
+    private enhanceErrorMessage(error: Error, context: {
+        type?: string;                 // 错误发生的上下文类型
+        pluginName?: string;           // 相关插件名称
+        eventType?: string;            // 事件类型
+        eventContext?: EventContext;   // 事件上下文
+        additionalInfo?: string;       // 附加信息
+    }): string {
+        let enhancedMessage = context.type ? `${context.type}` : '错误';
+        
+        try {
+            // 添加插件信息
+            if (context.pluginName) {
+                enhancedMessage += ` | 插件: ${context.pluginName}`;
+            }
+            
+            // 添加事件类型
+            if (context.eventType) {
+                enhancedMessage += ` | 事件类型: ${context.eventType}`;
+            }
+            
+            // 添加事件上下文信息
+            if (context.eventContext) {
+                const evtCtx = context.eventContext;
+                
+                // 添加用户和聊天信息
+                let userId = 'unknown';
+                if (evtCtx.type === 'message' || evtCtx.type === 'command') {
+                    const msgCtx = evtCtx as MessageEventContext | CommandContext;
+                    userId = String(msgCtx.message?.sender?.id || 'unknown');
+                    
+                    // 添加消息/命令信息
+                    if (evtCtx.type === 'message') {
+                        const text = (evtCtx as MessageEventContext).message?.text;
+                        if (text) {
+                            const preview = text.length > 30 ? `${text.substring(0, 30)}...` : text;
+                            enhancedMessage += ` | 消息: ${preview}`;
+                        }
+                    } else {
+                        const cmdCtx = evtCtx as CommandContext;
+                        enhancedMessage += ` | 命令: /${cmdCtx.command} ${cmdCtx.args.join(' ')}`;
+                    }
+                } else if (evtCtx.type === 'callback') {
+                    const cbCtx = evtCtx as CallbackEventContext;
+                    userId = String(cbCtx.query?.user?.id || 'unknown');
+                    
+                    // 添加回调数据
+                    if (cbCtx.data) {
+                        enhancedMessage += ` | 回调数据: ${cbCtx.data}`;
+                    }
+                    
+                    // 添加匹配信息
+                    if (cbCtx.match) {
+                        if (cbCtx.match._pluginName) {
+                            enhancedMessage += ` | 匹配插件: ${cbCtx.match._pluginName}`;
+                        }
+                        if (cbCtx.match._actionType) {
+                            enhancedMessage += ` | 匹配操作: ${cbCtx.match._actionType}`;
+                        }
+                    }
+                }
+                
+                enhancedMessage += ` | 用户ID: ${userId}, 聊天ID: ${evtCtx.chatId || 'unknown'}`;
+            }
+            
+            // 添加附加信息
+            if (context.additionalInfo) {
+                enhancedMessage += ` | ${context.additionalInfo}`;
+            }
+            
+            // 针对特定错误类型提供建议
+            if (error.message.includes('description must be')) {
+                enhancedMessage += ` | 可能原因: 事件处理器使用了Object.defineProperty时description参数不是对象`;
+            } else if (error.message.includes('Cannot read') || error.message.includes('undefined')) {
+                enhancedMessage += ` | 可能原因: 尝试访问未定义的对象属性`;
+            }
+            
+            // 提取错误位置信息
+            if (error.stack) {
+                // 从堆栈中提取第一个非Features类的调用位置
+                const stackLines = error.stack.split('\n');
+                const locationLine = stackLines.find(line => 
+                    !line.includes('src/features.ts') && 
+                    line.includes('src/plugins/')
+                );
+                
+                if (locationLine) {
+                    // 提取文件名和行号
+                    const locationMatch = locationLine.match(/src\/plugins\/([^:]+):(\d+)/);
+                    if (locationMatch) {
+                        const [, file, line] = locationMatch;
+                        enhancedMessage += ` | 位置: ${file}:${line}`;
+                    }
+                }
+            }
+        } catch (enhanceError) {
+            // 如果增强过程出错，添加基本信息
+            enhancedMessage += ` | 增强错误信息失败: ${String(enhanceError)}`;
+        }
+        
+        return enhancedMessage;
+    }
+
+    /**
+     * 分析内存使用情况，帮助诊断潜在的内存泄漏
+     * @private
+     */
+    private analyzeMemoryUsage(): void {
+        try {
+            const memoryUsage = process.memoryUsage();
+            const MB = 1024 * 1024;
+            
+            log.info('===== 内存使用分析 =====');
+            log.info(`RSS: ${(memoryUsage.rss / MB).toFixed(2)}MB`);
+            log.info(`堆总量: ${(memoryUsage.heapTotal / MB).toFixed(2)}MB`);
+            log.info(`堆使用: ${(memoryUsage.heapUsed / MB).toFixed(2)}MB`);
+            log.info(`外部: ${((memoryUsage.external || 0) / MB).toFixed(2)}MB`);
+            
+            // 打印对象池状态
+            log.info('对象池使用情况:');
+            for (const poolName in this.objectPools) {
+                if (Object.prototype.hasOwnProperty.call(this.objectPools, poolName)) {
+                    const pool = this.objectPools[poolName as keyof typeof this.objectPools];
+                    log.info(`- ${poolName}: ${pool.length}/${this.POOL_SIZE} 对象`);
+                }
+            }
+            
+            // 分析已加载的插件数量
+            log.info(`已加载插件数量: ${this.plugins.size}`);
+            
+            // 分析注册的事件处理器
+            let totalEventHandlers = 0;
+            for (const [type, handlers] of this.eventHandlers.entries()) {
+                totalEventHandlers += handlers.size;
+                log.info(`- ${type} 事件处理器: ${handlers.size}`);
+            }
+            log.info(`总事件处理器数量: ${totalEventHandlers}`);
+            
+            // 内存使用历史分析
+            if (this.memoryHistory.length >= 2) {
+                const oldest = this.memoryHistory[0];
+                const newest = this.memoryHistory[this.memoryHistory.length - 1];
+                
+                if (oldest && newest) {
+                    const timeDiff = newest.timestamp - oldest.timestamp;
+                    const hoursDiff = timeDiff / 3600000;
+                    
+                    if (hoursDiff > 0) {
+                        const heapGrowthRate = (newest.heapUsed - oldest.heapUsed) / MB / hoursDiff;
+                        const rssGrowthRate = (newest.rss - oldest.rss) / MB / hoursDiff;
+                        
+                        log.info(`内存增长率 (过去 ${hoursDiff.toFixed(1)} 小时):`);
+                        log.info(`- 堆内存: ${heapGrowthRate.toFixed(2)}MB/小时`);
+                        log.info(`- RSS: ${rssGrowthRate.toFixed(2)}MB/小时`);
+                    }
+                }
+            }
+            
+            log.info('=========================');
+        } catch (err) {
+            // 分析过程出错，但不中断主要功能
+            log.error(`内存分析错误: ${String(err)}`);
+        }
     }
 }
