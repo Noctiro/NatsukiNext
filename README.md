@@ -1,50 +1,74 @@
-# NatsukiMiyu Next
+<div align="center">
+  <h1>✨ NatsukiMiyu Next ✨</h1>
+  <p>
+    <img src="https://img.shields.io/badge/version-3.0-blue" alt="版本">
+    <img src="https://img.shields.io/badge/language-TypeScript-blue" alt="语言">
+    <img src="https://img.shields.io/badge/platform-Telegram-blue" alt="平台">
+  </p>
+  <p>📱 多功能的第三代 NatsukiMiyu 机器人 🤖</p>
+</div>
 
-多功能的第三代 NatsukiMiyu 机器人
+> [!WARNING]
+> NatsukiMiyu Next 目前处于开发阶段，API 可能不稳定，功能可能随时变更
 
-## 快速开始
+---
 
-### 安装
+## 📋 目录
+
+- [🚀 快速开始](#-快速开始)
+- [🧩 插件开发详解](#-插件开发详解)
+- [🔥 高级功能](#-高级功能)
+- [📚 API参考](#-api参考)
+
+---
+
+## 🚀 快速开始
+
+### 📥 安装
 
 ```bash
-# 克隆仓库
-git clone https://github.com/yourusername/NatsukiMiyu-Next.git
-cd NatsukiMiyu-Next
-
 # 安装依赖
 bun install
 ```
 
-### 环境变量
+### ⚙️ 环境变量
+
+创建一个 `.env` 文件，并填入以下内容:
 
 ```env
+# 时区设置
 TZ=Asia/Shanghai
 
+# Telegram API 凭证
 TG_API_ID=xxxxx
 TG_API_HASH=xxxxx
 TG_TOKEN=xxxxx
 
+# 管理员 ID 和启用的聊天
 MANAGER_IDS=1111,22222
 ENABLE_CHATS=-33333
+
+# AI API密钥
 AI_OPENROUTER_API_KEY=sk-or-v1-xxx,sk-or-v1-xxxxx
 ```
 
-### 运行
+> [!IMPORTANT]
+> 请确保妥善保管您的 API 密钥和令牌，不要将它们分享给他人或提交到公共代码库
+
+### 🏃‍♂️ 运行
 
 ```bash
 bun start
 ```
 
-## 基础命令
+---
 
-- `/help` - 显示命令列表
-- `/plugins` - 查看已加载插件
-- `/plugin <name>` - 查看插件详情
-- `/admin` - 管理员面板
+## 🧩 插件开发详解
 
-## 插件开发详解
+> [!NOTE]
+> 插件是 NatsukiMiyu 的核心功能扩展方式，掌握插件开发可以让您定制自己的机器人功能
 
-### 基本结构
+### 📝 基本结构
 
 ```typescript
 import type { BotPlugin } from "../features";
@@ -110,9 +134,12 @@ const plugin: BotPlugin = {
 export default plugin;
 ```
 
-### 命令处理
+> [!TIP]
+> 尽量保持插件结构清晰，将相关功能组织在一起，便于维护和理解
 
-#### 基础命令定义
+### 🔄 命令处理
+
+#### 🔹 基础命令定义
 
 ```typescript
 commands: [
@@ -130,7 +157,7 @@ commands: [
 ];
 ```
 
-#### 命令参数解析
+#### 🔹 命令参数解析
 
 ```typescript
 {
@@ -151,17 +178,23 @@ commands: [
 }
 ```
 
-#### 命令冷却与权限检查
+> [!NOTE]
+> `ctx.content` 包含完整的参数字符串，而 `ctx.args` 是按空格分割的参数数组，方便不同场景的使用
+
+#### 🔹 命令冷却与权限检查
 
 冷却和权限检查自动实现，无需手动编写。当用户触发命令时：
 
-1. 框架检查用户是否有命令要求的权限
-2. 检查用户是否在冷却时间内
-3. 通过检查后，执行命令处理程序
+1. ✅ 框架检查用户是否有命令要求的权限
+2. ⏱️ 检查用户是否在冷却时间内
+3. 🔄 通过检查后，执行命令处理程序
 
-### 事件系统
+> [!IMPORTANT]
+> 合理设置命令冷却时间可以防止滥用和避免触发 Telegram 的频率限制
 
-#### 支持的事件类型
+### 📊 事件系统
+
+#### 🔹 支持的事件类型
 
 ```typescript
 // 消息事件
@@ -206,7 +239,7 @@ commands: [
 }
 ```
 
-#### 事件过滤器
+#### 🔹 事件过滤器
 
 ```typescript
 // 仅处理特定用户的消息
@@ -240,7 +273,10 @@ commands: [
 }
 ```
 
-#### 事件优先级
+> [!TIP]
+> 善用过滤器可以避免不必要的处理逻辑，提高机器人的响应效率
+
+#### 🔹 事件优先级
 
 ```typescript
 // 高优先级事件处理器（先执行）
@@ -262,9 +298,12 @@ commands: [
 }
 ```
 
-### 配置管理
+> [!WARNING]
+> 优先级数值越大越先处理，合理设置优先级避免处理冲突，尤其是在有多个插件时
 
-#### 读取与保存配置
+### ⚙️ 配置管理
+
+#### 🔹 读取与保存配置
 
 ```typescript
 // 定义配置类型
@@ -302,9 +341,12 @@ async onLoad(client) {
 }
 ```
 
-### 权限管理
+> [!NOTE]
+> 配置会自动保存到 JSON 文件中，重启机器人后仍然有效，适合存储持久性设置
 
-#### 声明权限
+### 🔒 权限管理
+
+#### 🔹 声明权限
 
 ```typescript
 permissions: [
@@ -325,7 +367,10 @@ permissions: [
 ];
 ```
 
-#### 检查权限
+> [!IMPORTANT]
+> 通过 `parent` 属性可以创建权限继承关系，简化权限管理。拥有父权限的用户自动拥有所有子权限
+
+#### 🔹 检查权限
 
 ```typescript
 // 在命令或事件处理器中检查权限
@@ -341,9 +386,9 @@ async handler(ctx) {
 }
 ```
 
-### 日志系统
+### 📝 日志系统
 
-#### 基础日志
+#### 🔹 基础日志
 
 ```typescript
 // 基础日志级别
@@ -359,7 +404,10 @@ this.logger?.info("处理请求", {
 });
 ```
 
-#### 高级日志功能
+> [!TIP]
+> 善用不同级别的日志，便于调试和监控机器人运行状态
+
+#### 🔹 高级日志功能
 
 ```typescript
 // 发送日志到管理员
@@ -382,9 +430,12 @@ try {
 }
 ```
 
-### 回调数据处理
+> [!NOTE]
+> 设置 `remote: true` 可以将重要日志直接发送给管理员，便于远程监控机器人状态
 
-#### 创建回调按钮
+### 🔄 回调数据处理
+
+#### 🔹 创建回调按钮
 
 ```typescript
 import { CallbackDataBuilder } from "../../utils/callback";
@@ -449,9 +500,12 @@ events: [
 ];
 ```
 
-### 消息编辑与交互式 UI
+> [!WARNING]
+> 回调数据有大小限制，不要在回调数据中存储过多信息。必要时可以使用 ID 引用数据库中的数据
 
-#### 发送和编辑消息
+### 💬 消息编辑与交互式 UI
+
+#### 🔹 发送和编辑消息
 
 ```typescript
 // 发送纯文本消息
@@ -478,7 +532,10 @@ await ctx.client.editMessage({
 });
 ```
 
-#### 发送媒体文件
+> [!TIP]
+> 使用 HTML 标记可以创建格式丰富的消息，增强用户体验。支持的标签包括 `<b>`, `<i>`, `<code>`, `<pre>`, `<a>` 等
+
+#### 🔹 发送媒体文件
 
 ```typescript
 // 发送图片
@@ -513,9 +570,9 @@ await ctx.message.replyMedia({
 });
 ```
 
-### 用户和聊天操作
+### 👥 用户和聊天操作
 
-#### 用户信息获取
+#### 🔹 用户信息获取
 
 ```typescript
 // 获取用户信息
@@ -528,7 +585,7 @@ const senderName = ctx.message.sender.displayName;
 const username = ctx.message.sender.username;
 ```
 
-#### 聊天管理
+#### 🔹 聊天管理
 
 ```typescript
 // 获取聊天信息
@@ -552,9 +609,12 @@ await ctx.client.restrictChatMember(ctx.chatId, userId, {
 });
 ```
 
-### 插件间通信
+> [!WARNING]
+> 对聊天成员的管理操作需要机器人拥有相应的管理员权限，否则将返回权限错误
 
-#### 直接调用其他插件的方法
+### 🔌 插件间通信
+
+#### 🔹 直接调用其他插件的方法
 
 ```typescript
 // 在onLoad中获取其他插件
@@ -575,7 +635,10 @@ publicMethod(param: string): string {
 }
 ```
 
-#### 使用事件进行解耦通信
+> [!CAUTION]
+> 直接调用其他插件的方法会创建强耦合，尽量使用事件系统进行松耦合的插件间通信
+
+#### 🔹 使用事件进行解耦通信
 
 ```typescript
 // 插件A: 发布事件
@@ -592,7 +655,212 @@ async onLoad(client) {
 }
 ```
 
-### 完整插件示例：投票系统
+> [!TIP]
+> 使用前缀（如 `custom:`）可以避免事件名冲突，建议采用特定的命名约定
+
+## 🔥 高级功能
+
+> [!NOTE]
+> 本节介绍 NatsukiMiyu 机器人提供的高级功能和使用技巧，掌握这些功能可以更好地发挥机器人的潜力
+
+### 🤖 内存管理
+
+NatsukiMiyu 内置了智能内存管理系统，能够自动监控和优化内存使用：
+
+```typescript
+// 手动触发内存清理
+client.features.cleanupMemory(false); // 普通清理
+client.features.cleanupMemory(true);  // 深度清理
+
+// 内存使用情况分析
+client.features.analyzeMemoryUsage();
+```
+
+> [!TIP]
+> 当机器人运行时间较长或处理大量请求后，可以考虑定期触发内存清理
+
+### 🔄 错误处理与恢复
+
+NatsukiMiyu 提供了健壮的错误处理机制，确保单个插件的错误不会影响整个机器人的运行：
+
+```typescript
+try {
+  // 可能出错的代码
+} catch (error) {
+  // 记录错误信息
+  this.logger?.error("操作失败", { 
+    error,
+    remote: true, // 发送到管理员
+    metadata: {
+      operation: "数据处理",
+      userId: ctx.message.sender.id
+    }
+  });
+  
+  // 向用户返回友好信息
+  await ctx.message.replyText("很抱歉，处理您的请求时遇到了问题");
+}
+```
+
+> [!IMPORTANT]
+> 在插件中妥善处理异常，避免未捕获的错误导致插件被自动禁用
+
+### 📊 性能监控
+
+NatsukiMiyu 内置性能监控工具，帮助开发者优化机器人性能：
+
+```typescript
+// 在插件中标记性能关键点
+const startTime = Date.now();
+await processData(); // 执行耗时操作
+const elapsedTime = Date.now() - startTime;
+
+this.logger?.info(`数据处理完成`, {
+  performance: {
+    operation: "数据处理",
+    duration: elapsedTime,
+    dataSize: dataSize
+  }
+});
+```
+
+### 🔌 插件热重载
+
+NatsukiMiyu 支持在不重启机器人的情况下重载插件：
+
+```typescript
+// 重载单个插件
+await client.features.disablePlugin("plugin-name");
+await client.features.loadPlugin("plugin-name", true);
+
+// 重载所有插件
+await client.features.reload();
+```
+
+> [!CAUTION]
+> 插件热重载可能导致状态丢失，确保插件正确实现了 `onUnload` 方法来保存必要的状态
+
+### 🧩 上下文处理
+
+NatsukiMiyu 提供多种上下文类型，方便开发者处理不同类型的交互：
+
+```typescript
+// 命令上下文 (CommandContext)
+// 当用户发送 /command 参数 时触发
+async handler(ctx: CommandContext) {
+  // 获取命令名称（不含/）
+  const command = ctx.command;  // 例如: "command"
+  
+  // 获取命令参数
+  const args = ctx.args;  // 例如: ["参数"]
+  const content = ctx.content;  // 例如: "参数"
+  
+  // 获取原始消息文本
+  const rawText = ctx.rawText;  // 例如: "/command 参数"
+  
+  // 检查权限
+  if (!ctx.hasPermission("plugin.admin")) {
+    return;
+  }
+}
+
+// 消息上下文 (MessageEventContext)
+// 当用户发送普通消息时触发
+async handler(ctx: MessageEventContext) {
+  // 获取消息内容
+  const text = ctx.message.text;
+  
+  // 获取用户信息
+  const userId = ctx.message.sender.id;
+  const username = ctx.message.sender.username;
+}
+
+// 回调上下文 (CallbackEventContext)
+// 当用户点击按钮时触发
+async handler(ctx: CallbackEventContext) {
+  // 获取回调数据
+  const data = ctx.data;  // 完整回调数据
+  
+  // 使用匹配结果
+  const { param1, param2 } = ctx.match;
+  
+  // 回复回调查询
+  await ctx.query.answer({ text: "已处理" });
+}
+```
+
+> [!TIP]
+> 善用不同的上下文类型和属性，可以更精确地处理用户交互，提供更好的用户体验
+
+### 🔍 数据验证
+
+在处理用户输入时，应当进行充分的数据验证：
+
+```typescript
+// 简单输入验证
+if (!ctx.content) {
+  await ctx.message.replyText("请提供参数");
+  return;
+}
+
+// 数字参数验证
+const amount = parseInt(ctx.args[0]);
+if (isNaN(amount) || amount <= 0) {
+  await ctx.message.replyText("请提供有效的正数金额");
+  return;
+}
+
+// 复杂参数验证
+function validateUserInput(input: string): boolean {
+  return /^[a-zA-Z0-9_]{3,20}$/.test(input);
+}
+
+if (!validateUserInput(ctx.args[0])) {
+  await ctx.message.replyText("输入格式不正确，请使用3-20个字母、数字或下划线");
+  return;
+}
+```
+
+> [!IMPORTANT]
+> 对用户输入进行严格验证，可以避免潜在的安全问题和意外错误
+
+### 🌐 国际化支持
+
+NatsukiMiyu 支持多语言功能，方便为不同地区的用户提供本地化体验：
+
+```typescript
+// 在插件加载时初始化语言配置
+async onLoad(client) {
+  this.translations = {
+    'en': {
+      'greeting': 'Hello, {name}!',
+      'farewell': 'Goodbye, {name}!'
+    },
+    'zh': {
+      'greeting': '你好，{name}！',
+      'farewell': '再见，{name}！'
+    }
+  };
+}
+
+// 获取用户语言设置并翻译文本
+async handler(ctx: CommandContext) {
+  const userLang = await getUserLanguage(ctx.message.sender.id) || 'zh';
+  const name = ctx.message.sender.displayName;
+  
+  const greeting = this.translations[userLang]['greeting'].replace('{name}', name);
+  await ctx.message.replyText(greeting);
+}
+```
+
+---
+
+## 📚 API参考
+
+### 📊 完整插件示例：投票系统
+
+<details>
+<summary>点击展开完整代码</summary>
 
 ```typescript
 import type {
@@ -783,3 +1051,202 @@ const plugin: BotPlugin = {
 
 export default plugin;
 ```
+</details>
+
+> [!NOTE]
+> 此示例展示了如何整合命令处理、回调按钮、配置管理等功能，是一个完整的插件实现参考
+
+### 🧩 上下文接口参考
+
+NatsukiMiyu 提供了丰富的上下文接口，以下是常用接口的属性和方法：
+
+#### BaseContext
+
+所有上下文类型的基础接口：
+
+```typescript
+interface BaseContext {
+  // Telegram客户端实例
+  client: TelegramClient;
+  // 当前聊天ID
+  chatId: number;
+  // 权限检查函数
+  hasPermission(permission: string): boolean;
+}
+```
+
+#### CommandContext
+
+命令处理上下文：
+
+```typescript
+interface CommandContext extends BaseContext {
+  type: 'command';
+  message: MessageContext;
+  // 命令名，不包含/
+  command: string;
+  // 命令参数数组
+  args: string[];
+  // 命令参数拼接成字符串
+  content: string;
+  // 完整原始文本
+  rawText: string;
+  // 权限级别，用于快速检查
+  permissionLevel: number;
+}
+```
+
+#### MessageEventContext
+
+消息事件上下文：
+
+```typescript
+interface MessageEventContext extends BaseContext {
+  type: 'message';
+  message: MessageContext;
+}
+```
+
+#### CallbackEventContext
+
+回调查询上下文：
+
+```typescript
+interface CallbackEventContext extends BaseContext {
+  type: 'callback';
+  query: CallbackQueryContext;
+  data: string;
+  parseData: CallbackDataParser;
+  match?: {
+    [key: string]: any;
+    _pluginName?: string; // 匹配的插件名
+    _actionType?: string; // 匹配的操作类型
+  };
+}
+```
+
+#### CallbackDataParser
+
+回调数据解析器：
+
+```typescript
+interface CallbackDataParser {
+  // 检查回调数据是否以指定前缀开头
+  hasPrefix(prefix: string): boolean;
+  
+  // 获取回调数据的部分
+  getPart(index: number): string | undefined;
+  
+  // 获取回调数据的整数部分
+  getIntPart(index: number, defaultValue?: number): number;
+  
+  // 获取所有回调数据部分
+  getParts(): string[];
+  
+  // 获取回调数据的命令部分（通常是第一部分）
+  getCommand(): string;
+  
+  // 获取回调数据的子命令部分（通常是第二部分）
+  getSubCommand(): string | undefined;
+  
+  // 解析回调数据为对象
+  parseAsObject<T>(
+    schema: Record<string, 'int' | 'string' | 'boolean'>, 
+    startIndex?: number
+  ): T;
+}
+```
+
+### 📱 MessageContext API
+
+消息上下文提供了丰富的方法来处理消息：
+
+```typescript
+// 回复文本消息
+await ctx.message.replyText("回复内容", {
+  parseMode: "html",               // 解析模式: html 或 markdown
+  disableWebPagePreview: true,     // 禁用网页预览
+  replyToMessageId: ctx.message.id // 引用回复的消息ID
+});
+
+// 回复媒体消息
+await ctx.message.replyMedia(
+  {
+    type: "photo",               // 媒体类型: photo, document, video, audio...
+    file: "path/to/image.jpg",   // 文件路径、Buffer或URL
+    fileName: "image.jpg"        // 文件名
+  },
+  {
+    caption: "图片说明",          // 媒体说明文本
+    parseMode: "html"            // 说明文本解析模式
+  }
+);
+
+// 编辑消息
+await ctx.client.editMessage({
+  chatId: ctx.chatId,
+  message: messageId,            // 要编辑的消息ID
+  text: "新内容",
+  parseMode: "html",
+  replyMarkup: keyboard          // 可更新的键盘
+});
+
+// 删除消息
+await ctx.client.deleteMessage({
+  chatId: ctx.chatId,
+  message: messageId
+});
+```
+
+### ⌨️ 键盘和按钮API
+
+创建交互式键盘和按钮：
+
+```typescript
+import { BotKeyboard } from "@mtcute/bun";
+
+// 创建内联键盘（消息内的按钮）
+const inlineKeyboard = BotKeyboard.inline([
+  // 第一行按钮
+  [
+    BotKeyboard.callback("按钮1", "callback:data:1"),
+    BotKeyboard.callback("按钮2", "callback:data:2")
+  ],
+  // 第二行按钮
+  [
+    BotKeyboard.url("访问网站", "https://example.com"),
+    BotKeyboard.switchInline("分享", "查询内容")
+  ]
+]);
+
+// 创建回复键盘（替代用户输入区的按钮）
+const replyKeyboard = BotKeyboard.reply(
+  [
+    ["按钮1", "按钮2"], // 第一行
+    ["按钮3", "按钮4"]  // 第二行
+  ],
+  {
+    placeholder: "请选择一个选项",   // 输入框提示文字
+    oneTime: true,                 // 使用一次后自动隐藏
+    resizable: true,               // 可调整大小
+    selective: true                // 仅对特定用户显示
+  }
+);
+
+// 在消息中使用键盘
+await ctx.message.replyText("请选择:", {
+  replyMarkup: inlineKeyboard     // 或 replyKeyboard
+});
+
+// 移除键盘
+await ctx.message.replyText("已移除键盘", {
+  replyMarkup: BotKeyboard.remove()
+});
+```
+
+---
+
+<div align="center">
+  <p>🌟 由 NatsukiMiyu 开发团队开发 🌟</p>
+  <p>欢迎贡献和提出问题！</p>
+</div>
