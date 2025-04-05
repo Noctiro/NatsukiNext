@@ -103,14 +103,6 @@ class Logger {
     private pendingRemoteMessage: string | null = null;
     private pendingRemoteTimer: ReturnType<typeof setTimeout> | null = null;
 
-    private levelColors = {
-        [LogLevel.DEBUG]: Colors.FgCyan,
-        [LogLevel.INFO]: Colors.FgGreen,
-        [LogLevel.WARN]: Colors.FgYellow,
-        [LogLevel.ERROR]: Colors.FgRed,
-        [LogLevel.FATAL]: Colors.FgWhiteBgRed
-    };
-
     private levelBgColors = {
         [LogLevel.DEBUG]: Colors.FgBlackBgCyan,
         [LogLevel.INFO]: Colors.FgBlackBgGreen,
@@ -373,8 +365,32 @@ class Logger {
 
         // Append additional arguments to the main message
         if (args.length > 0) {
-            const formattedArgs = args.map(arg => this.formatValue(arg, 0)).join(' ');
-            mainMessage += ` ${formattedArgs}`;
+            // 特殊处理第一个参数是字符串，第二个参数是对象的情况（例如：log.error('Invalid API response:', JSON.stringify(data))）
+            if (typeof message === 'string' && args.length === 1 && typeof args[0] === 'string') {
+                // 检查这个字符串是否可能是JSON
+                try {
+                    const jsonObj = JSON.parse(args[0]);
+                    if (typeof jsonObj === 'object' && jsonObj !== null) {
+                        // 如果是JSON对象，使用格式化显示
+                        const jsonStr = this.formatValue(jsonObj, this.config.prettyPrint ? indentStr.length : 0);
+                        if (this.config.prettyPrint) {
+                            mainMessage += `\n${indentStr}${jsonStr}`;
+                        } else {
+                            mainMessage += ` ${jsonStr}`;
+                        }
+                    } else {
+                        // 不是对象，直接附加
+                        mainMessage += ` ${args[0]}`;
+                    }
+                } catch (e) {
+                    // 不是有效的JSON，直接附加
+                    mainMessage += ` ${args[0]}`;
+                }
+            } else {
+                // 其他情况使用原有逻辑
+                const formattedArgs = args.map(arg => this.formatValue(arg, 0)).join(' ');
+                mainMessage += ` ${formattedArgs}`;
+            }
         }
 
         // --- Details (Tags, Metadata, Stack Trace) ---
