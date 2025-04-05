@@ -317,6 +317,57 @@ export class Features {
     private readonly CACHE_MAX_SIZE = 50;
     /** 命令执行超时时间（毫秒） */
     private readonly COMMAND_TIMEOUT = 180000; // 3分钟
+    /** 用户上次执行命令的时间: 用户ID -> 时间戳 */
+    private userLastCommandTime = new Map<number, number>();
+    
+    /**
+     * 命令频率控制系统 - 核心参数
+     * 使用分层滑动窗口设计，提供更灵活的频率控制
+     */
+    /** 短时窗口大小（毫秒） - 防止突发命令洪水 */
+    private readonly SHORT_WINDOW_SIZE = 5000; // 5秒
+    /** 短时窗口内允许的最大命令数 */
+    private readonly SHORT_WINDOW_MAX_COMMANDS = 3; // 5秒内最多3个命令
+    
+    /** 中等窗口大小（毫秒） - 防止持续的中等强度攻击 */
+    private readonly MEDIUM_WINDOW_SIZE = 20000; // 20秒
+    /** 中等窗口内允许的最大命令数 */
+    private readonly MEDIUM_WINDOW_MAX_COMMANDS = 8; // 20秒内最多8个命令
+    
+    /** 长时窗口大小（毫秒） - 防止长时间的低强度攻击 */
+    private readonly LONG_WINDOW_SIZE = 60000; // 60秒
+    /** 长时窗口内允许的最大命令数 */
+    private readonly LONG_WINDOW_MAX_COMMANDS = 15; // 60秒内最多15个命令
+    
+    /** 命令历史数组的初始容量 - 减少动态扩容 */
+    private readonly COMMAND_HISTORY_INITIAL_CAPACITY = 20;
+    
+    /** 用户命令历史记录 - 用户ID -> 时间戳数组（按时间排序） */
+    private userCommandHistory = new Map<number, number[]>();
+    
+    /** 可疑用户列表及其首次触发时间 - 用户ID -> 时间戳 */
+    private suspiciousUsers = new Map<number, number>();
+    
+    /** 可疑用户触发计数 - 用户ID -> 触发次数 */
+    private suspiciousTriggerCount = new Map<number, number>();
+    
+    /** 用户暂时封禁列表 - 用户ID -> 解除时间 */
+    private tempBannedUsers = new Map<number, number>();
+    
+    /** 临时封禁时长（毫秒）- 基础值 */
+    private readonly TEMP_BAN_DURATION_BASE = 300000; // 5分钟
+    
+    /** 封禁时长倍增因子 - 用于累进惩罚 */
+    private readonly BAN_MULTIPLIER = 2;
+    
+    /** 用户封禁次数记录 - 计算累进惩罚 */
+    private userBanCount = new Map<number, number>();
+    
+    /** 连续触发次数阈值，超过将被临时封禁 */
+    private readonly SUSPICIOUS_THRESHOLD = 3;
+    
+    /** 可疑用户衰减时间（毫秒）- 多久后重置可疑状态 */
+    private readonly SUSPICIOUS_DECAY_TIME = 3600000; // 1小时
 
     // ===== 配置系统相关 =====
     /** 插件配置缓存: 插件名称 -> 配置对象 */
@@ -347,12 +398,12 @@ export class Features {
         eventTasks: Array<() => Promise<void>>;
         cooldownMaps: Array<Map<string, number>>; // 冷却时间Map对象池
     } = {
-            matchObjects: [],
-            callbackContexts: [],
-            commandHandlers: [],
+        matchObjects: [],
+        callbackContexts: [],
+        commandHandlers: [],
             eventTasks: [],
             cooldownMaps: [] // 添加冷却时间Map对象池
-        };
+    };
     /** 对象池最大容量 */
     private readonly POOL_SIZE = 100;
 
@@ -377,12 +428,12 @@ export class Features {
     ) {
         // 初始化事件分发器
         this.dispatcher = Dispatcher.for(client);
-
+        
         // 初始化事件处理器集合
         this.eventHandlers.set('message', new Set());
         this.eventHandlers.set('command', new Set());
         this.eventHandlers.set('callback', new Set());
-
+        
         // 初始化对象池
         this.initObjectPools();
     }
@@ -414,7 +465,7 @@ export class Features {
         if (pool.length > 0) {
             return pool.pop() as T;
         }
-
+        
         // 池为空时创建新对象
         switch (poolName) {
             case 'matchObjects':
@@ -440,22 +491,22 @@ export class Features {
      */
     private returnToPool<T>(poolName: keyof Features['objectPools'], obj: T): void {
         const pool = this.objectPools[poolName];
-
+        
         // 清除对象属性
         if (typeof obj === 'object' && obj !== null) {
             if (poolName === 'cooldownMaps') {
                 // 清空Map
                 (obj as unknown as Map<string, number>).clear();
             } else {
-                // 清空对象所有属性
-                for (const key in obj) {
-                    if (Object.prototype.hasOwnProperty.call(obj, key)) {
-                        (obj as any)[key] = null;
+            // 清空对象所有属性
+            for (const key in obj) {
+                if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                    (obj as any)[key] = null;
                     }
                 }
             }
         }
-
+        
         // 只有在池未满时才归还
         if (pool.length < this.POOL_SIZE) {
             pool.push(obj as any);
@@ -827,25 +878,25 @@ export class Features {
                         log.error(`无效的事件处理器：非对象类型 (${type})`);
                         return false;
                     }
-
+                    
                     // 验证handler属性是否为函数
                     if (typeof handler.handler !== 'function') {
                         log.error(`无效的事件处理器：handler不是函数 (${type})`);
                         return false;
                     }
-
+                    
                     // 如果有name属性，确保它是字符串类型
                     if (handler.name !== undefined && typeof handler.name !== 'string') {
                         log.error(`无效的事件处理器：name不是字符串 (${type})`);
                         return false;
                     }
-
+                    
                     // 确保priority是数字或未定义
                     if (handler.priority !== undefined && typeof handler.priority !== 'number') {
                         log.error(`无效的事件处理器：priority不是数字 (${type})`);
                         return false;
                     }
-
+                    
                     return true;
                 })
                 .sort((a, b) => (b.priority || 0) - (a.priority || 0));
@@ -863,7 +914,7 @@ export class Features {
                         log.error(`回调事件处理器name属性不是字符串: ${typeof handler.name}`);
                         continue;
                     }
-
+                    
                     // 回调数据的第二部分是功能名，如果不匹配则跳过
                     if (callbackData[1] !== handler.name) {
                         continue;
@@ -896,7 +947,7 @@ export class Features {
                 for (const handler of handlersInPriority) {
                     // 从对象池获取任务函数对象
                     const taskFn = this.getFromPool<() => Promise<void>>('eventTasks');
-
+                    
                     // 重新定义任务函数内容
                     const origTaskFn = taskFn;
                     const newTaskFn = async () => {
@@ -915,7 +966,7 @@ export class Features {
 
                                 // 从对象池获取match对象，避免频繁创建
                                 match = this.getFromPool<Record<string, any>>('matchObjects');
-
+                                
                                 // 设置基础元数据
                                 match._pluginName = pluginName;
                                 match._actionType = actionType;
@@ -947,14 +998,14 @@ export class Features {
 
                             // 使用超时保护处理事件
                             const HANDLER_TIMEOUT = 10000; // 10秒超时
-
+                            
                             // 查找插件名称以及处理器信息，用于错误日志
                             const pluginName = this.findPluginByEvent(handler) || '未知插件';
                             const handlerName = handler.name ? `${handler.name}` : '未命名处理器';
-
+                            
                             // 包装处理器执行为Promise
                             const handlerPromise = handler.handler(context);
-
+                            
                             // 设置超时控制
                             const timeoutPromise = new Promise<void>((_, reject) => {
                                 setTimeout(() => {
@@ -967,7 +1018,7 @@ export class Features {
                         } catch (err) {
                             // 捕获处理器中的错误
                             const error = err instanceof Error ? err : new Error(String(err));
-
+                            
                             // 生成增强的错误信息
                             const errorDetails = this.enhanceErrorMessage(error, {
                                 type: `优先级(${priority})事件处理错误`,
@@ -975,9 +1026,9 @@ export class Features {
                                 eventType: type,
                                 eventContext: context
                             });
-
+                            
                             log.error(`${errorDetails}: ${error.message}`);
-
+                            
                             if (error.stack) {
                                 log.debug(`错误堆栈: ${error.stack}`);
                             }
@@ -987,22 +1038,22 @@ export class Features {
                                 this.returnToPool('matchObjects', context.match);
                                 (context as CallbackEventContext).match = undefined;
                             }
-
+                            
                             // 任务函数完成后，返回到对象池
                             this.returnToPool('eventTasks', origTaskFn);
                         }
                     };
-
+                    
                     // 替换任务函数内容
                     Object.defineProperty(taskFn, 'name', { value: `taskFn_${priority}_${handler.name || 'unnamed'}` });
                     Object.setPrototypeOf(newTaskFn, Object.getPrototypeOf(taskFn));
-
+                    
                     for (const key of Object.keys(taskFn)) {
                         if (Object.prototype.hasOwnProperty.call(taskFn, key)) {
                             Object.defineProperty(newTaskFn, key, Object.getOwnPropertyDescriptor(taskFn, key)!);
                         }
                     }
-
+                    
                     tasks.push(newTaskFn);
                 }
 
@@ -1010,20 +1061,20 @@ export class Features {
                 try {
                     // 使用自定义的任务执行器替代简单的Promise.all
                     const promisesToComplete: Promise<void>[] = [];
-
+                    
                     for (const task of tasks) {
                         // 立即执行任务但不等待完成
                         promisesToComplete.push(task());
                     }
-
+                    
                     // 等待所有任务完成
                     await Promise.all(promisesToComplete);
-
+                    
                     // 回收匹配对象
                     if (type === 'callback' && context.type === 'callback' && callbackData && callbackData.length >= 2) {
                         const callbackContext = context as CallbackEventContext;
                         const matchObject = callbackContext.match;
-
+                        
                         // 将匹配对象归还到对象池
                         if (matchObject) {
                             this.returnToPool('matchObjects', matchObject);
@@ -1033,15 +1084,15 @@ export class Features {
                 } catch (err) {
                     // 捕获并记录错误，但不中断处理流程
                     const error = err instanceof Error ? err : new Error(String(err));
-
+                    
                     // 创建更详细的错误日志
                     let errorDetails = `优先级 ${priority} 的事件处理组执行错误`;
-
+                    
                     try {
                         // 尝试获取该优先级组中的插件信息
                         if (handlersInPriority && handlersInPriority.length > 0) {
                             const pluginNames = new Set<string>();
-
+                            
                             // 收集可能的插件名称
                             for (const handler of handlersInPriority) {
                                 const pluginName = this.findPluginByEvent(handler);
@@ -1049,15 +1100,15 @@ export class Features {
                                     pluginNames.add(pluginName);
                                 }
                             }
-
+                            
                             if (pluginNames.size > 0) {
                                 errorDetails += ` | 相关插件: ${Array.from(pluginNames).join(', ')}`;
                             }
                         }
-
+                        
                         // 添加事件类型和上下文信息
                         errorDetails += ` | 事件类型: ${type}`;
-
+                        
                         if (context) {
                             if (context.type === 'message' || context.type === 'command') {
                                 const msgCtx = context as MessageEventContext | CommandContext;
@@ -1067,13 +1118,13 @@ export class Features {
                                 const cbCtx = context as CallbackEventContext;
                                 const userId = cbCtx.query?.user?.id || 'unknown';
                                 errorDetails += ` | 用户ID: ${userId}`;
-
+                                
                                 if (callbackData && callbackData.length >= 2) {
                                     errorDetails += ` | 回调操作: ${callbackData[0]}:${callbackData[1]}`;
                                 }
                             }
                         }
-
+                        
                         // 检查特定错误类型
                         if (error.message.includes('description must be')) {
                             errorDetails += ` | 可能原因: 事件处理器使用了错误格式的Object.defineProperty`;
@@ -1082,9 +1133,9 @@ export class Features {
                         // 记录获取详细信息的失败
                         errorDetails += ` | 获取详细信息失败: ${String(detailsErr)}`;
                     }
-
+                    
                     log.error(`${errorDetails}: ${error.message}`);
-
+                    
                     // 记录完整堆栈以便调试
                     if (error.stack) {
                         log.debug(`错误堆栈: ${error.stack}`);
@@ -1093,10 +1144,10 @@ export class Features {
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-
+            
             // 尝试获取更多上下文信息以便更好地诊断问题
             let errorDetails = `事件分发处理错误 (类型: ${type})`;
-
+            
             // 添加更详细的错误信息
             try {
                 // 获取与上下文相关的信息
@@ -1105,28 +1156,28 @@ export class Features {
                         const msgCtx = context as MessageEventContext | CommandContext;
                         const userId = msgCtx.message?.sender?.id || 'unknown';
                         const chatId = msgCtx.chatId || 'unknown';
-                        const content = msgCtx.type === 'command'
-                            ? msgCtx.command
+                        const content = msgCtx.type === 'command' 
+                            ? msgCtx.command 
                             : (msgCtx.message?.text?.substring(0, 30) || 'unknown');
-
+                            
                         errorDetails += ` | 用户: ${userId}, 聊天: ${chatId}, 内容: ${content}`;
                     } else if (context.type === 'callback') {
                         const cbCtx = context as CallbackEventContext;
                         const userId = cbCtx.query?.user?.id || 'unknown';
                         const chatId = cbCtx.chatId || 'unknown';
                         const data = cbCtx.data?.substring(0, 30) || 'unknown';
-
+                        
                         errorDetails += ` | 用户: ${userId}, 聊天: ${chatId}, 回调数据: ${data}`;
                     }
                 }
-
+                
                 // 尝试识别哪个插件导致了错误
                 // 如果错误发生在特定的处理器内，应该可以从调用栈或已处理的插件中推断
                 if (error.stack) {
                     // 检查是否有插件相关的堆栈信息
                     const pluginStack = error.stack.split('\n')
                         .find(line => line.includes('/plugins/'));
-
+                        
                     if (pluginStack) {
                         // 提取插件名称
                         const pluginMatch = pluginStack.match(/\/plugins\/([^\/]+)/);
@@ -1135,7 +1186,7 @@ export class Features {
                         }
                     }
                 }
-
+                
                 // 检查具体的错误类型和消息
                 if (error.message.includes('description must be')) {
                     errorDetails += ` | 可能原因: 事件处理器定义错误，description属性类型不正确`;
@@ -1144,10 +1195,10 @@ export class Features {
                 // 如果获取详细信息时出错，记录原始错误
                 errorDetails += ` | 无法获取更多信息: ${String(detailsError)}`;
             }
-
+            
             // 记录错误信息
             log.error(errorDetails + `: ${error.message}`);
-
+            
             // 记录完整堆栈以便调试
             if (error.stack) {
                 log.debug(`错误堆栈: ${error.stack}`);
@@ -1288,6 +1339,7 @@ export class Features {
      * 2. 设置整体命令处理超时（3分钟）
      * 3. 清理资源（计时器、队列）
      * 4. 错误处理与传播
+     * 优化版：改进队列管理，提高多用户并发处理效率
      * 
      * @param ctx 消息上下文
      */
@@ -1300,15 +1352,30 @@ export class Features {
             await this.executeCommandLogic(ctx);
             return;
         }
+        
+        // 优化：提前检查命令是否有效，避免无效命令占用队列
+        const text = ctx.text;
+        if (!text?.startsWith('/')) return;
+        
+        const commandParts = text.slice(1).trim().split(/\s+/);
+        if (commandParts.length === 0 || !commandParts[0]) return;
 
         // 检查该用户是否有正在处理的命令
-        if (this.commandQueue.has(userId)) {
+        const existingPromise = this.commandQueue.get(userId);
+        if (existingPromise) {
             try {
-                // 等待前一个命令处理完成
-                await this.commandQueue.get(userId);
+                // 优化：设置超时等待，避免无限等待前一个命令
+                const timeoutPromise = new Promise<void>((_, reject) => {
+                    setTimeout(() => {
+                        reject(new Error('等待前一个命令超时'));
+                    }, 5000); // 5秒超时
+                });
+                
+                // 等待前一个命令完成或超时
+                await Promise.race([existingPromise, timeoutPromise]);
             } catch (err) {
                 // 忽略前一个命令的错误，不影响当前命令处理
-                log.debug(`前一个命令处理出错，继续处理新命令: ${err}`);
+                log.debug(`前一个命令处理出错或等待超时，继续处理新命令: ${err}`);
             }
         }
 
@@ -1327,10 +1394,12 @@ export class Features {
         this.commandQueue.set(userId, commandPromise);
 
         try {
-            // 设置命令处理超时
+            // 创建一个超时Promise
             const timeoutId = setTimeout(() => {
                 const messageText = ctx.text || '未知消息';
-                rejectFn(new Error(`用户 ${userId} 的命令处理超时: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}`));
+                const error = new Error(`用户 ${userId} 的命令处理超时: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}`);
+                log.warn(error.message);
+                rejectFn(error);
             }, this.COMMAND_TIMEOUT);
 
             // 执行命令逻辑
@@ -1386,6 +1455,24 @@ export class Features {
             // 获取用户ID
             const userId = ctx.sender.id;
 
+            // 首先检查用户命令频率限制 - 使用改进的滑动窗口方法
+            const rateLimitCheck = this.checkUserCommandRateLimit(userId);
+            if (!rateLimitCheck.allowed) {
+                // 用户发送命令过于频繁
+                const remainingSecs = Math.ceil(rateLimitCheck.remainingMs / 1000);
+                log.debug(`用户 ${userId} 命令频率超限，需等待 ${remainingSecs} 秒`);
+                
+                // 使用增强的错误消息机制
+                const errorMessage = rateLimitCheck.reason || 
+                    `⏱️ 命令发送过于频繁，请等待 ${remainingSecs} 秒后再试`;
+                
+                await ctx.replyText(errorMessage).catch(() => { });
+                return;
+            }
+
+            // 记录命令执行时间
+            this.updateUserCommandTime(userId);
+
             // 计算权限级别 (管理员=100，普通用户=0)
             const permissionLevel = userId && managerIds.includes(userId) ? 100 : 0;
 
@@ -1428,71 +1515,60 @@ export class Features {
                 cooldownResults = this.batchCheckCommandCooldown(userId, cooldownsToCheck);
             }
 
-            // 并行检查权限和冷却时间
-            const checkResults = await Promise.all(
-                commandHandlers.map(async ({ plugin, cmd }, index) => {
+            // 优化命令的权限和冷却时间检查
+            type CommandHandler = { plugin: BotPlugin, cmd: PluginCommand };
+            let selectedHandler: CommandHandler | null = null;
+            let cooldownInfo: { remainingSecs: number } | null = null;
+
+            // 遍历所有命令处理器，找到第一个可执行的
+            for (let i = 0; i < commandHandlers.length; i++) {
+                const handler = commandHandlers[i] as CommandHandler;
+                const { plugin, cmd } = handler;
+                
                     // 检查权限
                     if (cmd.requiredPermission && !context.hasPermission(cmd.requiredPermission)) {
-                        return {
-                            index,
-                            canExecute: false,
-                            reason: 'permission',
-                            message: `用户 ${userId} 缺少权限执行命令 ${command}: ${cmd.requiredPermission}`
-                        };
+                    log.debug(`用户 ${userId} 缺少权限执行命令 ${command}: ${cmd.requiredPermission}`);
+                    continue;
                     }
 
                     // 检查冷却时间
                     if (cmd.cooldown && userId) {
-                        const canExecute = cooldownsToCheck.size > 0 ?
-                            cooldownResults.get(cmd.name) ?? true :
-                            this.checkCommandCooldown(userId, cmd.name, cmd.cooldown);
-
-                        if (!canExecute) {
+                    const canExecute = cooldownsToCheck.size > 0 ?
+                        cooldownResults.get(cmd.name) ?? true :
+                        this.checkCommandCooldown(userId, cmd.name, cmd.cooldown);
+                        
+                    if (!canExecute) {
                             const remainingSecs = this.getRemainingCooldown(userId, cmd.name, cmd.cooldown);
-                            return {
-                                index,
-                                canExecute: false,
-                                reason: 'cooldown',
-                                message: `命令 ${command} 冷却中，剩余时间: ${remainingSecs}s`,
-                                remainingSecs
-                            };
+                        log.debug(`命令 ${command} (${cmd.name}) 冷却中，剩余时间: ${remainingSecs}s`);
+                        
+                        // 记录最短的冷却时间，用于后续反馈
+                        if (!cooldownInfo || remainingSecs < cooldownInfo.remainingSecs) {
+                            cooldownInfo = { remainingSecs };
                         }
+                        
+                        continue;
                     }
+                }
+                
+                // 找到满足条件的处理器，立即选中并结束循环
+                selectedHandler = handler;
+                break;
+            }
 
-                    return { index, canExecute: true };
-                })
-            );
-
-            // 找到第一个可以执行的命令
-            const executableCommand = checkResults.find(result => result.canExecute);
-
-            if (!executableCommand) {
-                // 没有可执行的命令，检查原因并通知用户
-                const permissionDenied = checkResults.find(r => r.reason === 'permission');
-                if (permissionDenied) {
-                    log.debug(permissionDenied.message);
+            // 如果没有找到可执行的处理器
+            if (!selectedHandler) {
+                // 如果存在冷却时间限制，反馈给用户
+                if (cooldownInfo) {
+                    await ctx.replyText(`⏱️ 命令冷却中，请等待 ${cooldownInfo.remainingSecs} 秒后再试`).catch(() => { });
+                } else {
+                    // 否则是权限问题
                     await ctx.replyText('❌ 你没有执行此命令的权限').catch(() => { });
-                    return;
                 }
-
-                const onCooldown = checkResults.find(r => r.reason === 'cooldown');
-                if (onCooldown) {
-                    log.debug(onCooldown.message);
-                    await ctx.replyText(`⏱️ 命令冷却中，请等待 ${onCooldown.remainingSecs} 秒后再试`).catch(() => { });
-                    return;
-                }
-
                 return;
             }
 
-            // 执行命令（这里确保executableCommand存在）
-            const handler = commandHandlers[executableCommand.index];
-            if (!handler) {
-                log.error(`命令处理器索引错误: ${executableCommand.index}`);
-                return;
-            }
-            const plugin = handler.plugin;
-            const cmd = handler.cmd;
+            // 执行选中的命令
+            const { plugin, cmd } = selectedHandler;
 
             try {
                 // 执行命令
@@ -1514,6 +1590,9 @@ export class Features {
                 if (cmd.cooldown && userId) {
                     this.updateCommandCooldown(userId, cmd.name);
                 }
+
+                // 更新用户全局命令执行时间
+                this.updateUserCommandTime(userId);
             } catch (err) {
                 const error = err instanceof Error ? err : new Error(String(err));
                 log.error(`命令 ${command} 执行出错 (插件: ${plugin.name}, 用户: ${userId}, 聊天: ${context.chatId}, 参数: ${args.join(' ').substring(0, 30)}${args.join(' ').length > 30 ? '...' : ''}): ${error.message}`);
@@ -1671,24 +1750,24 @@ export class Features {
                 log.error(`插件 ${plugin.name} 注册了无效的事件处理器: 事件不是对象类型`);
                 continue;
             }
-
+            
             // 验证必须的属性
             if (!event.type) {
                 log.error(`插件 ${plugin.name} 注册了无效的事件处理器: 缺少type属性`);
                 continue;
             }
-
+            
             if (typeof event.handler !== 'function') {
                 log.error(`插件 ${plugin.name} 注册了无效的事件处理器: handler不是函数`);
                 continue;
             }
-
+            
             // 检查name属性（如果存在）
             if (event.name !== undefined && typeof event.name !== 'string') {
                 log.error(`插件 ${plugin.name} 注册了无效的事件处理器: name属性必须是字符串，而不是 ${typeof event.name}`);
                 continue;
             }
-
+            
             // 检查优先级（如果存在）
             if (event.priority !== undefined && typeof event.priority !== 'number') {
                 log.error(`插件 ${plugin.name} 注册了无效的事件处理器: priority必须是数字，而不是 ${typeof event.priority}`);
@@ -2111,24 +2190,24 @@ export class Features {
                     log.error(`插件 ${plugin.name || '未知'} 的events属性不是数组`);
                     return false;
                 }
-
+                
                 // 检查每个事件对象格式
                 for (const event of plugin.events) {
                     if (!event || typeof event !== 'object') {
                         log.error(`插件 ${plugin.name} 包含无效的事件对象: 不是对象类型`);
                         return false;
                     }
-
+                    
                     if (!event.type) {
                         log.error(`插件 ${plugin.name} 包含无效的事件对象: 缺少type属性`);
                         return false;
                     }
-
+                    
                     if (typeof event.handler !== 'function') {
                         log.error(`插件 ${plugin.name} 包含无效的事件对象: handler不是函数`);
                         return false;
                     }
-
+                    
                     // 检查name属性类型（如果存在）
                     if (event.name !== undefined && typeof event.name !== 'string') {
                         log.error(`插件 ${plugin.name} 包含无效的事件对象: name属性必须是字符串，而不是 ${typeof event.name}`);
@@ -2136,25 +2215,25 @@ export class Features {
                     }
                 }
             }
-
+            
             if (plugin.commands) {
                 if (!Array.isArray(plugin.commands)) {
                     log.error(`插件 ${plugin.name || '未知'} 的commands属性不是数组`);
                     return false;
                 }
-
+                
                 // 检查每个命令对象格式
                 for (const cmd of plugin.commands) {
                     if (!cmd || typeof cmd !== 'object') {
                         log.error(`插件 ${plugin.name} 包含无效的命令对象: 不是对象类型`);
                         return false;
                     }
-
+                    
                     if (!cmd.name || typeof cmd.name !== 'string') {
                         log.error(`插件 ${plugin.name} 包含无效的命令对象: name不是字符串`);
                         return false;
                     }
-
+                    
                     if (typeof cmd.handler !== 'function') {
                         log.error(`插件 ${plugin.name} 包含无效的命令对象: handler不是函数`);
                         return false;
@@ -2177,19 +2256,19 @@ export class Features {
             return true;
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-
+            
             // 生成增强的错误信息
             const errorDetails = this.enhanceErrorMessage(error, {
                 type: '插件文件验证失败',
                 additionalInfo: `文件: ${filePath}`
             });
-
+            
             log.error(`${errorDetails}: ${error.message}`);
-
+            
             if (error.stack) {
                 log.debug(`错误堆栈: ${error.stack}`);
             }
-
+            
             return false;
         }
     }
@@ -2620,8 +2699,8 @@ export class Features {
             if (temp.has(pluginName)) {
                 // 仅在首次检测到循环时创建和记录路径
                 if (!cycleDetected.value) {
-                    const cycle = [...path, pluginName].join(' -> ');
-                    log.error(`⚠️ 检测到循环依赖: ${cycle}`);
+                const cycle = [...path, pluginName].join(' -> ');
+                log.error(`⚠️ 检测到循环依赖: ${cycle}`);
                     cycleDetected.value = true;
                 }
                 return true;
@@ -2667,20 +2746,20 @@ export class Features {
                 for (const dep of plugin.dependencies) {
                     // 优化：避免重复检查
                     if (visited.has(dep)) continue;
-                    if (temp.has(dep)) {
+                        if (temp.has(dep)) {
                         // 避免多次记录同一循环依赖
                         if (!cycleDetected.value) {
                             log.error(`⚠️ 循环依赖: ${pluginName} 和 ${dep}`);
                             cycleDetected.value = true;
                         }
-                        continue;
-                    }
-                    if (!this.plugins.has(dep)) {
-                        missingDeps.add(dep);
-                        log.warn(`⚠️ 插件 ${pluginName} 依赖未找到的插件 ${dep}`);
-                        continue;
-                    }
-                    visit(dep);
+                            continue;
+                        }
+                        if (!this.plugins.has(dep)) {
+                            missingDeps.add(dep);
+                            log.warn(`⚠️ 插件 ${pluginName} 依赖未找到的插件 ${dep}`);
+                            continue;
+                        }
+                        visit(dep);
                 }
             }
 
@@ -2944,11 +3023,11 @@ export class Features {
             const rss = memoryUsage.rss;
             const heapTotal = memoryUsage.heapTotal;
             const heapUsed = memoryUsage.heapUsed;
-
+            
             // 计算内存增长率
             const now = Date.now();
             const elapsed = now - this.lastMemoryCheck;
-
+            
             // 检查是否需要记录内存用量历史
             if (elapsed > this.MEMORY_HISTORY_INTERVAL) {
                 // 保存当前内存使用到历史记录中
@@ -2958,44 +3037,44 @@ export class Features {
                     heapTotal,
                     heapUsed
                 });
-
+                
                 // 保持历史记录在合理范围内
                 if (this.memoryHistory.length > this.MEMORY_HISTORY_MAX_SIZE) {
                     this.memoryHistory.shift();
                 }
-
+                
                 this.lastMemoryCheck = now;
             }
-
+            
             // 多级内存阈值检查
             let cleanupLevel = 0;
             const MB = 1024 * 1024;
-
+            
             // 轻度清理阈值 (300MB)
             if (heapUsed > 300 * MB) {
                 cleanupLevel = 1;
             }
-
+            
             // 中度清理阈值 (500MB)
             if (heapUsed > 500 * MB) {
                 cleanupLevel = 2;
             }
-
+            
             // 重度清理阈值 (800MB)
             if (heapUsed > 800 * MB) {
                 cleanupLevel = 3;
             }
-
+            
             // 危险级别清理阈值 (1200MB)
             if (heapUsed > 1200 * MB) {
                 cleanupLevel = 4;
             }
-
+            
             // 检查内存增长率，可能表明存在内存泄漏
             if (this.memoryHistory.length >= 2) {
                 const oldest = this.memoryHistory[0];
                 const newest = this.memoryHistory[this.memoryHistory.length - 1];
-
+                
                 // 确保记录存在并且有效
                 if (oldest && newest) {
                     const timeDiffHours = (newest.timestamp - oldest.timestamp) / 3600000;
@@ -3013,25 +3092,25 @@ export class Features {
                     }
                 }
             }
-
+            
             // 根据清理级别执行相应的清理操作
             if (cleanupLevel > 0) {
                 log.info(`内存使用: ${(heapUsed / MB).toFixed(2)}MB / ${(heapTotal / MB).toFixed(2)}MB (RSS: ${(rss / MB).toFixed(2)}MB) - 执行级别${cleanupLevel}清理`);
-
+                
                 // 执行级别对应的清理操作 - 传递布尔值表示是否强制清理
                 this.cleanupMemory(cleanupLevel === 4); // 仅在最高级别时强制清理
             }
         } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-
+            
             // 使用增强的错误消息
             const errorDetails = this.enhanceErrorMessage(error, {
                 type: '内存使用检查错误',
                 additionalInfo: `当前时间: ${new Date().toISOString()}`
             });
-
+            
             log.error(`${errorDetails}: ${error.message}`);
-
+            
             if (error.stack) {
                 log.debug(`错误堆栈: ${error.stack}`);
             }
@@ -3061,9 +3140,15 @@ export class Features {
             // 4. 清理插件配置缓存（仅保留活跃插件的配置）
             const configEntriesRemoved = this.cleanupPluginConfigCache() || 0;
 
-            // 5. 积极模式下执行额外清理
+            // 5. 清理过期的用户命令时间记录
+            const userTimesRemoved = this.cleanupUserCommandTimes() || 0;
+            
+            // 6. 清理过期的用户命令历史和临时封禁记录
+            const commandHistoryRemoved = this.cleanupCommandHistory() || 0;
+
+            // 7. 积极模式下执行额外清理
             if (aggressive) {
-                // 5.1 清除所有命令缓存
+                // 7.1 清除所有命令缓存
                 const cacheSize = this.commandHandlersCache.size;
                 if (cacheSize > 0) {
                     this.commandHandlersCache.clear();
@@ -3072,18 +3157,25 @@ export class Features {
                     log.debug(`积极清理: 清空所有命令处理器缓存 (${cacheSize} 个条目)`);
                 }
 
-                // 5.3 清理对象池，减少最大占用内存
+                // 7.2 清理对象池，减少最大占用内存
                 const poolCleaned = this.optimizeObjectPools(true);
                 if (poolCleaned > 0) {
                     log.debug(`积极清理: 优化了对象池，移除了 ${poolCleaned} 个对象`);
                 }
+                
+                // 7.3 重置所有临时封禁用户
+                if (this.tempBannedUsers.size > 0) {
+                    const bannedCount = this.tempBannedUsers.size;
+                    this.tempBannedUsers.clear();
+                    log.debug(`积极清理: 重置所有临时封禁用户 (${bannedCount} 个用户)`);
+                }
 
-                // 5.4 尝试运行垃圾回收（如果可用）
+                // 7.4 尝试运行垃圾回收（如果可用）
                 if (global.gc) {
                     try {
                         log.debug('执行JavaScript垃圾回收');
                         global.gc();
-
+                        
                         // 垃圾回收后捕获内存使用情况
                         const memAfterGC = process.memoryUsage();
                         const heapUsedAfterGC = memAfterGC.heapUsed / (1024 * 1024);
@@ -3096,7 +3188,7 @@ export class Features {
 
             // 记录内存清理统计
             const totalRemoved = cooldownsRemoved + cacheEntriesRemoved +
-                queueEntriesRemoved + configEntriesRemoved;
+                queueEntriesRemoved + configEntriesRemoved + userTimesRemoved + commandHistoryRemoved;
 
             // 记录内存使用情况
             this.logMemoryUsage(aggressive ? '积极清理后' : '常规清理后');
@@ -3116,43 +3208,93 @@ export class Features {
 
     /**
      * 记录当前内存使用情况
+     * 优化版：更高效地收集和格式化内存统计信息
      * @param prefix 日志前缀
      */
     private logMemoryUsage(prefix: string = '当前'): void {
         try {
-            const memoryUsage = process.memoryUsage();
+            // 使用缓存的时间戳
+            if (!this.currentTimestamp || Date.now() - this.currentTimestamp > 100) {
+                this.currentTimestamp = Date.now();
+            }
+            
+            // 获取内存使用信息
+            const mem = process.memoryUsage();
+            
+            // 格式化内存数值的函数，在闭包内定义避免重复创建
             const formatMemory = (bytes: number): string => {
                 return (bytes / 1024 / 1024).toFixed(2) + ' MB';
             };
 
-            // 计算各种指标
-            const heapTotal = formatMemory(memoryUsage.heapTotal);
-            const heapUsed = formatMemory(memoryUsage.heapUsed);
-            const rss = formatMemory(memoryUsage.rss);
-            const external = formatMemory(memoryUsage.external || 0);
-            const heapUsage = ((memoryUsage.heapUsed / memoryUsage.heapTotal) * 100).toFixed(1) + '%';
+            // 计算内存百分比 - 使用更高效的直接计算
+            const heapPercent = Math.min(100, (mem.heapUsed / mem.heapTotal) * 100).toFixed(1);
+            
+            // 格式化内存指标并创建日志记录
+            const memoryInfo = {
+                heapUsed: formatMemory(mem.heapUsed),
+                heapTotal: formatMemory(mem.heapTotal),
+                rss: formatMemory(mem.rss),
+                external: formatMemory(mem.external || 0),
+                heapPercent: `${heapPercent}%`
+            };
+            
+            // 组合主要内存信息
+            log.info(`${prefix}内存使用: 堆 ${memoryInfo.heapUsed}/${memoryInfo.heapTotal} (${memoryInfo.heapPercent}), RSS ${memoryInfo.rss}, 外部 ${memoryInfo.external}`);
 
-            // 记录内存统计
-            log.info(`${prefix}内存使用情况 - 堆内存: ${heapUsed}/${heapTotal} (${heapUsage}), RSS: ${rss}, 外部: ${external}`);
-
-            // Calculate total cooldown entries
+            // 优化：避免重复遍历Map收集统计信息
+            // 计算在冷却Map中的总条目数
             let totalCooldowns = 0;
-            this.commandCooldowns.forEach(userMap => totalCooldowns += userMap.size);
-
-            // 记录缓存和集合的大小统计
+            let userCooldownEntries = 0;
+            for (const userMap of this.commandCooldowns.values()) {
+                userCooldownEntries++;
+                totalCooldowns += userMap.size;
+            }
+            
+            // 计算命令历史条目数
+            let totalCommandHistory = 0;
+            let userCommandHistoryEntries = 0;
+            for (const history of this.userCommandHistory.values()) {
+                userCommandHistoryEntries++;
+                totalCommandHistory += history.length;
+            }
+            
+            // 收集统计信息 - 避免重复调用size属性
+            const pluginCount = this.plugins.size;
+            
+            // 计算事件处理器数量
+            let totalEventHandlers = 0;
+            for (const handlers of this.eventHandlers.values()) {
+                totalEventHandlers += handlers.size;
+            }
+            
+            // 组合缓存统计信息
             const stats = {
-                plugins: this.plugins.size,
-                eventHandlers: Array.from(this.eventHandlers.values()).reduce((sum, set) => sum + set.size, 0),
-                cooldowns: totalCooldowns, // Use calculated total
+                plugins: pluginCount,
+                eventHandlers: totalEventHandlers,
+                cooldowns: `${totalCooldowns}/${userCooldownEntries}用户`,
                 configCache: this.pluginConfigs.size,
                 commandCache: this.commandHandlersCache.size,
-                commandQueue: this.commandQueue.size
+                commandQueue: this.commandQueue.size,
+                userCommandTimes: this.userLastCommandTime.size,
+                commandHistory: `${totalCommandHistory}/${userCommandHistoryEntries}用户`,
+                tempBans: this.tempBannedUsers.size,
+                suspiciousUsers: `${this.suspiciousUsers.size}用户/${this.suspiciousTriggerCount.size}计数`
             };
 
+            // 使用模板字符串简化日志输出
             log.debug(`缓存统计 - 插件: ${stats.plugins}, 事件处理器: ${stats.eventHandlers}, ` +
                 `冷却记录: ${stats.cooldowns}, 命令缓存: ${stats.commandCache}, ` +
-                `配置缓存: ${stats.configCache}, 命令队列: ${stats.commandQueue}`);
+                `配置缓存: ${stats.configCache}, 命令队列: ${stats.commandQueue}, ` + 
+                `用户命令时间记录: ${stats.userCommandTimes}, ` +
+                `命令历史: ${stats.commandHistory}, ` +
+                `临时封禁: ${stats.tempBans}, 可疑用户: ${stats.suspiciousUsers}`);
+                
+            // 高内存压力警告
+            if ((mem.heapUsed / mem.heapTotal) > 0.85) {
+                log.warn(`⚠️ 高内存压力: 堆占用率 ${heapPercent}%, 考虑执行积极清理`);
+            }
         } catch (err) {
+            // 处理错误，避免中断操作
             const error = err instanceof Error ? err : new Error(String(err));
             log.warn(`获取内存使用情况失败: ${error.message}`);
         }
@@ -3198,9 +3340,9 @@ export class Features {
             };
 
             // 收集所有命令的冷却时间
-            for (const plugin of this.plugins.values()) {
-                if (plugin.status === PluginStatus.ACTIVE && plugin.commands) {
-                    for (const cmd of plugin.commands) {
+        for (const plugin of this.plugins.values()) {
+            if (plugin.status === PluginStatus.ACTIVE && plugin.commands) {
+                for (const cmd of plugin.commands) {
                         if (cmd.cooldown) {
                             this._commandCooldownCache.cooldownMillisMap.set(cmd.name, cmd.cooldown * 1000);
                             if (cmd.cooldown > this._commandCooldownCache.maxCooldownSeconds) {
@@ -3352,21 +3494,21 @@ export class Features {
      */
     private cleanupCommandQueue(): number {
         let cleanedCount = 0;
-
+        
         // 使用当前时间作为参考点
         const now = Date.now();
-
+        
         // 设置最大队列项存活时间，是命令超时时间的两倍
         const MAX_QUEUE_AGE = this.COMMAND_TIMEOUT * 2;
-
+        
         // 检查并存储需要清理的项
         const keysToDelete: number[] = [];
-
+        
         // 遍历队列项检查创建时间戳
         for (const [userId, promiseObj] of this.commandQueue.entries()) {
             // 使用反射检查promise对象是否有creationTime属性
             const anyPromise = promiseObj as any;
-
+            
             // 检查是否存在创建时间戳属性，以及是否超时
             if (anyPromise.creationTime && (now - anyPromise.creationTime) > MAX_QUEUE_AGE) {
                 keysToDelete.push(userId);
@@ -3374,16 +3516,16 @@ export class Features {
                 log.warn(`清理了可能悬挂的命令队列项 (用户: ${userId}, 距创建已 ${((now - anyPromise.creationTime) / 1000).toFixed(1)} 秒)`);
             }
         }
-
+        
         // 批量删除已标记的队列项
         for (const userId of keysToDelete) {
             this.commandQueue.delete(userId);
         }
-
+        
         if (cleanedCount > 0) {
             log.debug(`清理了 ${cleanedCount} 个可能悬挂的命令队列项`);
         }
-
+        
         return cleanedCount;
     }
 
@@ -3414,6 +3556,152 @@ export class Features {
             log.debug(`清理了 ${cleanedCount} 个非活跃插件的配置缓存`);
         }
         return cleanedCount;
+    }
+
+    /**
+     * 清理过期的用户命令时间记录
+     * 删除超过一定时间（例如1小时）未活动的用户记录
+     * 优化版：更高效地处理大量用户记录
+     * 
+     * @returns 清理的记录数量
+     */
+    private cleanupUserCommandTimes(): number {
+        if (this.userLastCommandTime.size === 0) return 0;
+        
+        // 更新缓存的时间戳
+        if (!this.currentTimestamp || Date.now() - this.currentTimestamp > 100) {
+            this.currentTimestamp = Date.now();
+        }
+        const now = this.currentTimestamp;
+        
+        // 设置过期时间为1小时 (3600000毫秒)
+        const expirationTime = 3600000;
+        let removedCount = 0;
+        
+        // 优化：预分配合理大小的数组以避免频繁扩容
+        const itemCount = this.userLastCommandTime.size;
+        const estimatedExpiredCount = Math.min(itemCount, Math.ceil(itemCount * 0.25)); // 预估25%过期
+        const usersToRemove: number[] = new Array(estimatedExpiredCount);
+        let removeIndex = 0;
+        
+        // 遍历所有用户记录
+        for (const [userId, timestamp] of this.userLastCommandTime.entries()) {
+            if (now - timestamp > expirationTime) {
+                if (removeIndex < usersToRemove.length) {
+                    usersToRemove[removeIndex] = userId;
+                } else {
+                    usersToRemove.push(userId);
+                }
+                removeIndex++;
+            }
+        }
+        
+        // 只使用实际填充的部分
+        const actualUsersToRemove = removeIndex === usersToRemove.length ? 
+            usersToRemove : usersToRemove.slice(0, removeIndex);
+        
+        // 删除过期记录
+        for (const userId of actualUsersToRemove) {
+            this.userLastCommandTime.delete(userId);
+            removedCount++;
+        }
+        
+        if (removedCount > 0) {
+            log.debug(`清理了 ${removedCount} 条过期的用户命令时间记录 (${(removedCount / itemCount * 100).toFixed(1)}%)`);
+        }
+        
+        return removedCount;
+    }
+
+    /**
+     * 清理用户命令历史记录
+     * 移除过期的命令历史，释放内存
+     * @returns 清理的记录数量
+     */
+    private cleanupCommandHistory(): number {
+        if (this.userCommandHistory.size === 0) return 0;
+        
+        const now = Date.now();
+        // 只保留最长窗口内的记录
+        const oldestRelevantTime = now - this.LONG_WINDOW_SIZE;
+        
+        let totalRemoved = 0;
+        let usersRemoved = 0;
+        
+        // 遍历所有用户的命令历史
+        for (const [userId, history] of this.userCommandHistory.entries()) {
+            // 过滤出窗口内的记录
+            const newHistory = history.filter(time => time >= oldestRelevantTime);
+            
+            // 计算移除的记录数
+            totalRemoved += history.length - newHistory.length;
+            
+            // 如果所有记录都过期了，直接删除这个用户的记录
+            if (newHistory.length === 0) {
+                this.userCommandHistory.delete(userId);
+                usersRemoved++;
+            } else if (newHistory.length < history.length) {
+                // 否则更新为新的历史记录
+                this.userCommandHistory.set(userId, newHistory);
+            }
+        }
+        
+        // 清理过期的临时封禁记录
+        let bansRemoved = 0;
+        for (const [userId, expireTime] of this.tempBannedUsers.entries()) {
+            if (now >= expireTime) {
+                this.tempBannedUsers.delete(userId);
+                bansRemoved++;
+            }
+        }
+        
+        // 清理长时间未触发的可疑用户记录和计数
+        let suspiciousRemoved = 0;
+        for (const [userId, firstTime] of this.suspiciousUsers.entries()) {
+            if (now - firstTime > this.SUSPICIOUS_DECAY_TIME && !this.tempBannedUsers.has(userId)) {
+                this.suspiciousUsers.delete(userId);
+                this.suspiciousTriggerCount.delete(userId); // 同时清除触发计数
+                suspiciousRemoved++;
+            }
+        }
+        
+        // 清理封禁次数记录（降级）
+        let banCountsReduced = 0;
+        const banCountDecayTime = 24 * 3600 * 1000; // 24小时
+        for (const [userId, count] of this.userBanCount.entries()) {
+            // 如果用户未被封禁且最后封禁时间超过24小时
+            if (!this.tempBannedUsers.has(userId)) {
+                const lastBanTime = this.suspiciousUsers.get(userId) || 0;
+                if (now - lastBanTime > banCountDecayTime && count > 0) {
+                    // 降低封禁计数
+                    this.userBanCount.set(userId, count - 1);
+                    banCountsReduced++;
+                }
+            }
+        }
+        
+        if (totalRemoved > 0 || usersRemoved > 0 || bansRemoved > 0 || suspiciousRemoved > 0 || banCountsReduced > 0) {
+            log.debug(`命令历史清理: 移除${totalRemoved}条记录, ${usersRemoved}个用户, ${bansRemoved}个临时封禁, ${suspiciousRemoved}个可疑记录, ${banCountsReduced}个封禁次数减少`);
+        }
+        
+        return totalRemoved + usersRemoved + bansRemoved + suspiciousRemoved + banCountsReduced;
+    }
+
+    /**
+     * 更新用户命令执行时间
+     * 记录用户当前执行命令的时间戳
+     * 
+     * @param userId 用户ID
+     */
+    private updateUserCommandTime(userId: number): void {
+        if (!userId) return;
+        
+        // 使用缓存的时间戳减少Date.now()调用
+        if (!this.currentTimestamp || Date.now() - this.currentTimestamp > 100) {
+            this.currentTimestamp = Date.now();
+        }
+        
+        this.userLastCommandTime.set(userId, this.currentTimestamp);
     }
 
     /**
@@ -3448,6 +3736,7 @@ export class Features {
         this.commandHandlersCache.clear();
         this.recentlyUsedCommands = [];
         this.commandQueue.clear();
+        this.userLastCommandTime.clear();
 
         log.info('功能管理器资源清理完成');
     }
@@ -3465,7 +3754,7 @@ export class Features {
                 if (!plugin || !plugin.events || !Array.isArray(plugin.events)) {
                     continue;
                 }
-
+                
                 // 检查插件的事件是否包含目标事件
                 for (const pluginEvent of plugin.events) {
                     if (pluginEvent === event) {
@@ -3473,7 +3762,7 @@ export class Features {
                     }
                 }
             }
-
+            
             return undefined;
         } catch (error) {
             // 如果查找过程出错，记录错误但不中断流程
@@ -3492,7 +3781,7 @@ export class Features {
      */
     private optimizeObjectPools(aggressive: boolean = false): number {
         let totalRemoved = 0;
-
+        
         try {
             // 获取当前内存使用情况，用于动态调整池大小
             const mem = process.memoryUsage();
@@ -3528,25 +3817,25 @@ export class Features {
             if (aggressive || heapUsageRatio > 0.7) {
                 log.debug(`对象池优化: 目标池大小=${targetPoolSize}，堆使用率=${(heapUsageRatio * 100).toFixed(1)}%`);
             }
-
-            // 遍历所有对象池执行优化
-            for (const poolName in this.objectPools) {
-                const pool = this.objectPools[poolName as keyof typeof this.objectPools];
+        
+        // 遍历所有对象池执行优化
+        for (const poolName in this.objectPools) {
+            const pool = this.objectPools[poolName as keyof typeof this.objectPools];
                 const originalSize = pool.length;
-
-                // 如果池大小超过目标值，缩减它
-                if (pool.length > targetPoolSize) {
-                    const removeCount = pool.length - targetPoolSize;
-                    pool.length = targetPoolSize;
-                    totalRemoved += removeCount;
+            
+            // 如果池大小超过目标值，缩减它
+            if (pool.length > targetPoolSize) {
+                const removeCount = pool.length - targetPoolSize;
+                pool.length = targetPoolSize;
+                totalRemoved += removeCount;
 
                     if (aggressive || removeCount > 10) {
                         log.debug(`优化对象池 '${poolName}': ${originalSize} → ${targetPoolSize} (-${removeCount})`);
                     }
-                }
             }
-
-            if (totalRemoved > 0) {
+        }
+        
+        if (totalRemoved > 0) {
                 log.debug(`优化对象池: 总共移除了 ${totalRemoved} 个对象` + (aggressive ? ' (积极模式)' : ''));
             }
         } catch (err) {
@@ -3564,7 +3853,7 @@ export class Features {
                 }
             }
         }
-
+        
         return totalRemoved;
     }
 
@@ -3583,28 +3872,28 @@ export class Features {
         additionalInfo?: string;       // 附加信息
     }): string {
         let enhancedMessage = context.type ? `${context.type}` : '错误';
-
+        
         try {
             // 添加插件信息
             if (context.pluginName) {
                 enhancedMessage += ` | 插件: ${context.pluginName}`;
             }
-
+            
             // 添加事件类型
             if (context.eventType) {
                 enhancedMessage += ` | 事件类型: ${context.eventType}`;
             }
-
+            
             // 添加事件上下文信息
             if (context.eventContext) {
                 const evtCtx = context.eventContext;
-
+                
                 // 添加用户和聊天信息
                 let userId = 'unknown';
                 if (evtCtx.type === 'message' || evtCtx.type === 'command') {
                     const msgCtx = evtCtx as MessageEventContext | CommandContext;
                     userId = String(msgCtx.message?.sender?.id || 'unknown');
-
+                    
                     // 添加消息/命令信息
                     if (evtCtx.type === 'message') {
                         const text = (evtCtx as MessageEventContext).message?.text;
@@ -3619,12 +3908,12 @@ export class Features {
                 } else if (evtCtx.type === 'callback') {
                     const cbCtx = evtCtx as CallbackEventContext;
                     userId = String(cbCtx.query?.user?.id || 'unknown');
-
+                    
                     // 添加回调数据
                     if (cbCtx.data) {
                         enhancedMessage += ` | 回调数据: ${cbCtx.data}`;
                     }
-
+                    
                     // 添加匹配信息
                     if (cbCtx.match) {
                         if (cbCtx.match._pluginName) {
@@ -3635,31 +3924,31 @@ export class Features {
                         }
                     }
                 }
-
+                
                 enhancedMessage += ` | 用户ID: ${userId}, 聊天ID: ${evtCtx.chatId || 'unknown'}`;
             }
-
+            
             // 添加附加信息
             if (context.additionalInfo) {
                 enhancedMessage += ` | ${context.additionalInfo}`;
             }
-
+            
             // 针对特定错误类型提供建议
             if (error.message.includes('description must be')) {
                 enhancedMessage += ` | 可能原因: 事件处理器使用了Object.defineProperty时description参数不是对象`;
             } else if (error.message.includes('Cannot read') || error.message.includes('undefined')) {
                 enhancedMessage += ` | 可能原因: 尝试访问未定义的对象属性`;
             }
-
+            
             // 提取错误位置信息
             if (error.stack) {
                 // 从堆栈中提取第一个非Features类的调用位置
                 const stackLines = error.stack.split('\n');
-                const locationLine = stackLines.find(line =>
-                    !line.includes('src/features.ts') &&
+                const locationLine = stackLines.find(line => 
+                    !line.includes('src/features.ts') && 
                     line.includes('src/plugins/')
                 );
-
+                
                 if (locationLine) {
                     // 提取文件名和行号
                     const locationMatch = locationLine.match(/src\/plugins\/([^:]+):(\d+)/);
@@ -3673,7 +3962,7 @@ export class Features {
             // 如果增强过程出错，添加基本信息
             enhancedMessage += ` | 增强错误信息失败: ${String(enhanceError)}`;
         }
-
+        
         return enhancedMessage;
     }
 
@@ -3867,4 +4156,267 @@ export class Features {
 
         return results;
     }
+
+    /**
+     * 检查用户命令频率限制
+     * 多层滑动窗口实现，提供更精细的频率控制：
+     * 1. 检查用户是否被临时封禁
+     * 2. 分别检查短、中、长三个时间窗口的命令频率
+     * 3. 更新可疑用户状态，实施累进惩罚机制
+     * 
+     * @param userId 用户ID
+     * @returns 对象，包含是否允许执行命令，以及剩余冷却时间（毫秒）
+     */
+    private checkUserCommandRateLimit(userId: number): { allowed: boolean; remainingMs: number; reason?: string } {
+        // 无效的用户ID直接允许（系统消息等）
+        if (!userId) {
+            return { allowed: true, remainingMs: 0 };
+        }
+
+        // 使用缓存的时间戳
+        if (!this.currentTimestamp || Date.now() - this.currentTimestamp > 100) {
+            this.currentTimestamp = Date.now();
+        }
+        const now = this.currentTimestamp;
+        
+        // 1. 检查用户是否在临时封禁列表中
+        const banExpireTime = this.tempBannedUsers.get(userId);
+        if (banExpireTime) {
+            if (now < banExpireTime) {
+                // 仍在封禁期内
+                const remainingMs = banExpireTime - now;
+                const remainingSecs = Math.ceil(remainingMs / 1000);
+                const remainingMins = Math.ceil(remainingSecs / 60);
+                
+                return { 
+                    allowed: false, 
+                    remainingMs, 
+                    reason: remainingMins > 1 
+                        ? `您已被临时限制使用命令，${remainingMins}分钟后解除` 
+                        : `您已被临时限制使用命令，${remainingSecs}秒后解除`
+                };
+            } else {
+                // 封禁已过期，移除记录
+                this.tempBannedUsers.delete(userId);
+            }
+        }
+        
+        // 获取用户命令历史
+        let commandHistory = this.userCommandHistory.get(userId);
+        if (!commandHistory) {
+            // 使用预分配数组减少内存分配
+            commandHistory = new Array(this.COMMAND_HISTORY_INITIAL_CAPACITY);
+            commandHistory.length = 0; // 重置长度为0但保留容量
+            this.userCommandHistory.set(userId, commandHistory);
+        }
+        
+        // 计算各时间窗口的起始时间
+        const shortWindowStart = now - this.SHORT_WINDOW_SIZE;
+        const mediumWindowStart = now - this.MEDIUM_WINDOW_SIZE;
+        const longWindowStart = now - this.LONG_WINDOW_SIZE;
+        
+        // 过滤并计算各窗口内的命令数量（从尾部开始，因为新命令添加在尾部）
+        let shortWindowCommands = 0;
+        let mediumWindowCommands = 0;
+        let longWindowCommands = 0;
+        let oldestRelevantCommand = longWindowStart;
+        
+        // 从最近的命令开始向前遍历，优化性能
+        for (let i = commandHistory.length - 1; i >= 0; i--) {
+            const timestamp = commandHistory[i];
+            
+            // 修复：添加未定义检查
+            if (timestamp === undefined) continue;
+            
+            if (timestamp >= shortWindowStart) {
+                shortWindowCommands++;
+            }
+            
+            if (timestamp >= mediumWindowStart) {
+                mediumWindowCommands++;
+            }
+            
+            if (timestamp >= longWindowStart) {
+                longWindowCommands++;
+            } else {
+                // 一旦找到长窗口之外的命令，可以停止计数
+                break;
+            }
+        }
+        
+        // 2. 检查各窗口的频率限制
+        // 短窗口检查（严格限制）
+        if (shortWindowCommands >= this.SHORT_WINDOW_MAX_COMMANDS) {
+            this.markUserAsSuspicious(userId);
+            
+            // 计算需要等待时间
+            const waitTime = this.calculateWaitTime(commandHistory, shortWindowStart, this.SHORT_WINDOW_MAX_COMMANDS);
+            
+            return {
+                allowed: false,
+                remainingMs: waitTime,
+                reason: `命令发送过于频繁，${this.SHORT_WINDOW_SIZE/1000}秒内最多${this.SHORT_WINDOW_MAX_COMMANDS}个命令`
+            };
+        }
+        
+        // 中窗口检查
+        if (mediumWindowCommands >= this.MEDIUM_WINDOW_MAX_COMMANDS) {
+            this.markUserAsSuspicious(userId);
+            
+            // 计算需要等待时间
+            const waitTime = this.calculateWaitTime(commandHistory, mediumWindowStart, this.MEDIUM_WINDOW_MAX_COMMANDS);
+            
+            return {
+                allowed: false,
+                remainingMs: waitTime,
+                reason: `命令发送过于频繁，请适当放慢操作速度`
+            };
+        }
+        
+        // 长窗口检查
+        if (longWindowCommands >= this.LONG_WINDOW_MAX_COMMANDS) {
+            this.markUserAsSuspicious(userId);
+            
+            // 计算需要等待时间
+            const waitTime = this.calculateWaitTime(commandHistory, longWindowStart, this.LONG_WINDOW_MAX_COMMANDS);
+            
+            return {
+                allowed: false,
+                remainingMs: waitTime,
+                reason: `已达到命令频率限制，请稍后再试`
+            };
+        }
+        
+        // 更新命令历史（添加当前命令）
+        // 仅在通过所有限制时才添加，以避免在拒绝时也计入历史
+        commandHistory.push(now);
+        
+        // 优化：如果历史记录过长，删除旧记录
+        if (commandHistory.length > this.LONG_WINDOW_MAX_COMMANDS * 2) {
+            // 只保留长窗口内的记录
+            commandHistory = commandHistory.filter(time => time >= longWindowStart);
+            this.userCommandHistory.set(userId, commandHistory);
+        }
+        
+        // 允许执行命令
+        return { allowed: true, remainingMs: 0 };
+    }
+    
+    /**
+     * 将用户标记为可疑用户
+     * 跟踪连续触发频率限制的用户，并在必要时实施临时封禁
+     * 更精确的实现：使用触发计数而非简单的时间间隔
+     * 
+     * @param userId 用户ID
+     */
+    private markUserAsSuspicious(userId: number): void {
+        const now = this.currentTimestamp || Date.now();
+        
+        // 检查是否已在可疑列表中
+        if (!this.suspiciousUsers.has(userId)) {
+            // 首次标记为可疑，初始化计数
+            this.suspiciousUsers.set(userId, now);
+            this.suspiciousTriggerCount.set(userId, 1);
+            return;
+        }
+        
+        // 获取首次标记时间
+        const firstTime = this.suspiciousUsers.get(userId)!;
+        
+        // 如果是长时间前标记的，重置计时和计数
+        if (now - firstTime > this.SUSPICIOUS_DECAY_TIME) {
+            this.suspiciousUsers.set(userId, now);
+            this.suspiciousTriggerCount.set(userId, 1);
+            return;
+        }
+        
+        // 短时间内多次触发，增加计数
+        if (now - firstTime < this.MEDIUM_WINDOW_SIZE) {
+            // 增加触发计数
+            const currentCount = this.suspiciousTriggerCount.get(userId) || 1;
+            const newCount = currentCount + 1;
+            this.suspiciousTriggerCount.set(userId, newCount);
+            
+            // 记录最新触发时间，便于分析用户模式
+            this.suspiciousUsers.set(userId, now);
+            
+            // 如果超过阈值，实施临时封禁
+            if (newCount >= this.SUSPICIOUS_THRESHOLD) {
+                log.warn(`用户 ${userId} 在短时间内触发限制 ${newCount} 次，超过阈值 ${this.SUSPICIOUS_THRESHOLD}，实施临时封禁`);
+                
+                // 实施临时封禁
+                this.tempBanUser(userId);
+                
+                // 清除可疑标记和计数
+                this.suspiciousUsers.delete(userId);
+                this.suspiciousTriggerCount.delete(userId);
+            } else {
+                log.debug(`用户 ${userId} 可疑行为计数: ${newCount}/${this.SUSPICIOUS_THRESHOLD}`);
+            }
+        }
+    }
+    
+    /**
+     * 实施临时封禁
+     * 使用累进惩罚机制，重复违规的用户将面临更长时间的封禁
+     * 
+     * @param userId 用户ID 
+     */
+    private tempBanUser(userId: number): void {
+        const now = this.currentTimestamp || Date.now();
+        
+        // 获取用户历史封禁次数
+        const banCount = this.userBanCount.get(userId) || 0;
+        
+        // 计算本次封禁时长（累进惩罚）
+        const banDuration = this.TEMP_BAN_DURATION_BASE * Math.pow(this.BAN_MULTIPLIER, Math.min(banCount, 3));
+        
+        // 设置解除时间
+        const banExpireTime = now + banDuration;
+        this.tempBannedUsers.set(userId, banExpireTime);
+        
+        // 增加封禁计数
+        this.userBanCount.set(userId, banCount + 1);
+        
+        // 清空命令历史
+        this.userCommandHistory.set(userId, []);
+        
+        // 计算人类可读的封禁时长
+        const banMinutes = Math.ceil(banDuration / 60000);
+        log.warn(`用户 ${userId} 触发频率保护机制，临时限制使用命令 ${banMinutes} 分钟（第${banCount+1}次）`);
+    }
+    
+    /**
+     * 计算需要等待的时间
+     * 根据窗口起始时间和最大命令数，计算用户需要等待多久才能发送下一个命令
+     * 
+     * @param commandHistory 命令历史时间戳数组
+     * @param windowStart 窗口起始时间
+     * @param maxCommands 窗口内最大命令数
+     * @returns 需要等待的毫秒数
+     */
+    private calculateWaitTime(commandHistory: number[], windowStart: number, maxCommands: number): number {
+        // 过滤出窗口内的命令
+        const windowCommands = commandHistory.filter(time => time >= windowStart);
+        
+        // 如果命令数小于最大值，不需要等待
+        if (windowCommands.length < maxCommands) {
+            return 0;
+        }
+        
+        // 否则，需要等待最早的一条命令过期
+        // 对窗口内命令按时间排序
+        windowCommands.sort((a, b) => a - b);
+        
+        // 找到第N个最早的命令（下一个可以执行的位置）
+        const oldestCommand = windowCommands[windowCommands.length - maxCommands] || Date.now(); // 修复：添加默认值
+        
+        // 计算该命令过期需要的时间
+        const now = this.currentTimestamp || Date.now();
+        const waitTime = oldestCommand + (windowStart + this.SHORT_WINDOW_SIZE - now) - now;
+        
+        // 确保等待时间为正数，最小等待1秒
+        return Math.max(waitTime, 1000);
+    }
 }
+
