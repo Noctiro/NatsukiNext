@@ -135,17 +135,22 @@ const URL_PATTERNS = {
     // 构建合并规则的正则表达式
     buildCombinedRulePattern: () => {
         // 从platformRules中提取所有模式并合并成一个大正则表达式
-        const patterns = platformRules.map(rule => {
-            // 移除开始/结束标记并提取正则源代码
-            const pattern = rule.pattern.source.replace(/^\/|\/[gimsuy]*$/g, '');
-            // 用命名捕获组包装每个规则，以便识别匹配了哪个规则
-            return `(?<${rule.name.replace(/[^a-zA-Z0-9]/g, '_')}>${pattern})`;
-        });
-        // 使用|组合所有模式，并创建全局正则
         try {
+            const patterns = platformRules.map(rule => {
+                // 移除开始/结束标记并提取正则源代码
+                const pattern = rule.pattern.source.replace(/^\/|\/[gimsuy]*$/g, '');
+                
+                // 用命名捕获组包装每个规则，确保规则名称是有效的正则命名捕获组名
+                // 命名捕获组名只能包含字母、数字和下划线，不能以数字开头
+                const safeName = rule.name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1');
+                
+                return `(?<${safeName}>${pattern})`;
+            });
+            
+            // 使用|组合所有模式，并创建全局正则
             return new RegExp(patterns.join('|'), 'g');
         } catch (e) {
-            // 如果正则表达式过于复杂，创建失败，返回null
+            // 如果正则表达式过于复杂，创建失败，打印详细错误并返回null
             plugin.logger?.error(`创建组合正则表达式失败: ${e}`);
             return null;
         }
@@ -880,23 +885,16 @@ function cleanUrl(url: string): { url: string, platformName?: string } {
 
 // 初始化函数 - 在插件加载时调用
 function initializeUrlPatterns(): void {
-    // 清理并填充规则映射
-    RULE_MAP.clear();
-
     // 检查规则定义是否正确
     for (const rule of platformRules) {
         // 检查特殊处理规则是否具有转换函数
         if (rule.needsSpecialHandling && !rule.transform) {
             plugin.logger?.warn(`规则"${rule.name}"被标记为需要特殊处理，但没有提供transform函数`);
         }
-
-        // 注册规则到Map
-        const normalizedName = rule.name.replace(/[^a-zA-Z0-9]/g, '_');
-        RULE_MAP.set(normalizedName, rule);
     }
 
     // 日志输出
-    plugin.logger?.debug(`初始化了 ${RULE_MAP.size} 个平台规则映射`);
+    plugin.logger?.debug(`初始化了 ${platformRules.length} 个平台规则`);
 }
 
 // 初始化特殊规则标识
@@ -914,8 +912,7 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
             return { url: shortUrl };
         }
 
-        // 准备URL（添加协议前缀如果需要）
-        const originalHasProtocol = UrlUtils.hasProtocol(shortUrl);
+        // 准备URL
         const urlWithProtocol = UrlUtils.ensureProtocol(shortUrl);
 
         // 使用统一方法匹配规则
@@ -970,13 +967,17 @@ function findMatchingRule(shortUrl: string, urlWithProtocol: string): { rule: Sp
         const match = combinedRulePattern.exec(shortUrl) || combinedRulePattern.exec(urlWithProtocol);
         if (match && match.groups) {
             // 找到匹配的规则名称
-            const matchedRuleName = Object.keys(match.groups).find(key => match.groups![key]);
-
-            if (matchedRuleName && RULE_MAP.has(matchedRuleName)) {
-                return {
-                    rule: RULE_MAP.get(matchedRuleName)!,
-                    match
-                };
+            for (const [key, value] of Object.entries(match.groups)) {
+                if (value) {
+                    // 查找对应的规则
+                    for (const rule of platformRules) {
+                        // 生成与buildCombinedRulePattern中相同的安全名称
+                        const safeName = rule.name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1');
+                        if (safeName === key) {
+                            return { rule, match };
+                        }
+                    }
+                }
             }
         }
     }
@@ -1775,9 +1776,9 @@ const plugin: BotPlugin = {
         // 尝试构建组合正则表达式
         combinedRulePattern = URL_PATTERNS.buildCombinedRulePattern();
         if (combinedRulePattern) {
-            plugin.logger?.debug("成功构建组合正则表达式");
+            plugin.logger?.info("成功构建组合正则表达式");
         } else {
-            plugin.logger?.debug("无法构建组合正则表达式，将使用传统匹配方式");
+            plugin.logger?.warn("无法构建组合正则表达式，将使用传统匹配方式");
         }
     }
 };
