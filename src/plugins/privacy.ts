@@ -139,14 +139,14 @@ const URL_PATTERNS = {
             const patterns = platformRules.map(rule => {
                 // 移除开始/结束标记并提取正则源代码
                 const pattern = rule.pattern.source.replace(/^\/|\/[gimsuy]*$/g, '');
-                
+
                 // 用命名捕获组包装每个规则，确保规则名称是有效的正则命名捕获组名
                 // 命名捕获组名只能包含字母、数字和下划线，不能以数字开头
                 const safeName = rule.name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1');
-                
+
                 return `(?<${safeName}>${pattern})`;
             });
-            
+
             // 使用|组合所有模式，并创建全局正则
             return new RegExp(patterns.join('|'), 'g');
         } catch (e) {
@@ -156,9 +156,6 @@ const URL_PATTERNS = {
         }
     }
 };
-
-// 存储规则名称到规则对象的映射，用于快速查找
-const RULE_MAP = new Map<string, SpecialUrlRule>();
 
 // 通用URL转换函数 - 在UrlUtils之前定义
 const CommonTransforms = {
@@ -389,12 +386,35 @@ const platformRules: SpecialUrlRule[] = [
     // YouTube 系列 - 需要特殊处理，因为参数中包含视频ID
     {
         name: "YouTube短链接",
-        pattern: /https?:\/\/youtu\.be\/([a-zA-Z0-9_-]+)\?.+/,
+        pattern: /https?:\/\/youtu\.be\/([a-zA-Z0-9_-]+)(?:\?[^&]+(?:&[^&]+)*)?/,
         description: "将YouTube短链接转换为标准格式",
         needsSpecialHandling: true,
         transform: (url, match) => {
             if (match && match[1]) {
-                return `https://www.youtube.com/watch?v=${match[1]}`;
+                const videoId = match[1];
+
+                // 直接使用视频ID构建标准YouTube链接
+                let result = `https://www.youtube.com/watch?v=${videoId}`;
+
+                try {
+                    // 使用URL对象解析参数
+                    const parsedUrl = new URL(url);
+                    // 提取时间参数
+                    const timeParam = parsedUrl.searchParams.get('t');
+
+                    // 如果有时间参数，加入到结果链接
+                    if (timeParam) {
+                        result = `https://www.youtube.com/watch?v=${videoId}&t=${timeParam}`;
+                    }
+                } catch (e) {
+                    // 解析URL失败时，使用正则表达式提取时间参数
+                    const timeMatch = url.match(/[?&]t=([^&]+)/);
+                    if (timeMatch && timeMatch[1]) {
+                        result = `https://www.youtube.com/watch?v=${videoId}&t=${timeMatch[1]}`;
+                    }
+                }
+
+                return result;
             }
             return url;
         }
@@ -689,23 +709,6 @@ const platformRules: SpecialUrlRule[] = [
         }
     },
     {
-        name: "YouTube短链接",
-        pattern: /https?:\/\/youtu\.be\/([a-zA-Z0-9_-]+)(?:\?.+)?/,
-        description: "将YouTube短链接转换为标准格式",
-        needsSpecialHandling: true,
-        transform: (url, match) => {
-            if (match && match[1]) {
-                // 尝试提取时间戳参数
-                const timeMatch = url.match(/[?&]t=([^&]+)/);
-                if (timeMatch && timeMatch[1]) {
-                    return `https://www.youtube.com/watch?v=${match[1]}&t=${timeMatch[1]}`;
-                }
-                return `https://www.youtube.com/watch?v=${match[1]}`;
-            }
-            return url;
-        }
-    },
-    {
         name: "微信公众号文章",
         pattern: /https?:\/\/mp\.weixin\.qq\.com\/s\/([a-zA-Z0-9_-]+)(?:\?.*)?/,
         description: "清理微信公众号文章链接",
@@ -769,48 +772,52 @@ const platformRules: SpecialUrlRule[] = [
  * @param url 原始URL
  * @returns 处理后的URL和平台名称
  */
-function applySpecialRules(url: string): { url: string, platformName?: string } {
+async function applySpecialRules(url: string): Promise<{ url: string, platformName?: string }> {
     // 为无协议前缀的URL添加临时前缀以便匹配规则
     const hasProtocol = UrlUtils.hasProtocol(url);
     const urlWithProtocol = UrlUtils.ensureProtocol(url);
 
-    for (const rule of platformRules) {
-        // 对于全局正则模式，需要重置lastIndex
-        if (rule.pattern.global) {
-            rule.pattern.lastIndex = 0;
-        }
+    try {
+        // 使用统一方法匹配规则
+        const matchedRule = findMatchingRule(url, urlWithProtocol);
+        if (matchedRule) {
+            const { rule, match } = matchedRule;
 
-        // 尝试匹配URL（带协议和不带协议的都尝试）
-        const match = url.match(rule.pattern) ||
-            (!hasProtocol ? urlWithProtocol.match(rule.pattern) : null);
-
-        if (match) {
             if (rule.needsSpecialHandling && rule.transform) {
-                // 检查是否需要转换
-                if (rule.shouldTransform && !rule.shouldTransform(urlWithProtocol, match)) {
+                try {
+                    // 检查是否需要转换
+                    if (rule.shouldTransform && !rule.shouldTransform(urlWithProtocol, match)) {
+                        return { url, platformName: rule.name };
+                    }
+
+                    // 应用转换
+                    const transformedUrl = rule.transform(url, match);
+                    if (transformedUrl && transformedUrl !== url) {
+                        // 保持原始URL的协议风格
+                        const finalUrl = UrlUtils.removeProtocolIfNeeded(url, transformedUrl);
+                        return { url: finalUrl, platformName: rule.name };
+                    }
+                } catch (transformError) {
+                    // 转换过程中出现错误，记录并返回原始URL
+                    plugin.logger?.warn(`规则 ${rule.name} 转换失败: ${transformError}`);
                     return { url, platformName: rule.name };
                 }
-
-                // 应用转换
-                const transformedUrl = rule.transform(url, match);
-
-                // 如果原始URL没有协议前缀，且转换后有了前缀，则根据需求移除
-                const finalUrl = UrlUtils.removeProtocolIfNeeded(url, transformedUrl);
-
-                return {
-                    url: finalUrl,
-                    platformName: rule.name
-                };
-            } else {
-                // 不需要特殊处理的平台，仅记录平台名
-                return {
-                    url,
-                    platformName: rule.name
-                };
+            } else if (!rule.needsSpecialHandling) {
+                // 短链接平台，进行网络请求解析
+                try {
+                    return await resolveShortUrl(url, urlWithProtocol, rule.name);
+                } catch (error) {
+                    plugin.logger?.warn(`解析短链接 ${url} 失败: ${error}`);
+                    return { url, platformName: rule.name };
+                }
             }
         }
+
+        return { url };
+    } catch (error) {
+        plugin.logger?.error(`应用特殊规则时出错: ${error}`);
+        return { url };
     }
-    return { url };
 }
 
 /**
@@ -853,12 +860,12 @@ function shouldProcessUrl(url: string): boolean {
  * @param url 原始URL
  * @returns 清理后的URL和平台信息
  */
-function cleanUrl(url: string): { url: string, platformName?: string } {
+async function cleanUrl(url: string): Promise<{ url: string, platformName?: string }> {
     if (!url) return { url: '' };
 
     try {
         // 处理特定平台的特殊规则
-        const specialResult = applySpecialRules(url);
+        const specialResult = await applySpecialRules(url);
 
         // 如果有特殊处理结果，直接返回
         if (specialResult.url !== url) {
@@ -942,7 +949,7 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
         // 检查是否需要清理参数
         if (shouldProcessUrl(shortUrl)) {
             // 一般URL清理
-            const { url: cleanedUrl, platformName } = cleanUrl(shortUrl);
+            const { url: cleanedUrl, platformName } = await cleanUrl(shortUrl);
             if (cleanedUrl !== shortUrl) {
                 return { url: cleanedUrl, platformName };
             }
@@ -974,7 +981,14 @@ function findMatchingRule(shortUrl: string, urlWithProtocol: string): { rule: Sp
                         // 生成与buildCombinedRulePattern中相同的安全名称
                         const safeName = rule.name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1');
                         if (safeName === key) {
-                            return { rule, match };
+                            // 使用原始规则的pattern重新匹配，以获取正确的捕获组
+                            const originalMatch = value.match(rule.pattern);
+                            if (originalMatch) {
+                                return { rule, match: originalMatch };
+                            }
+                            // 如果重新匹配失败，创建一个简单的匹配结果
+                            const simpleMatch = [value, value.match(rule.pattern)?.[1] || ''];
+                            return { rule, match: simpleMatch as RegExpMatchArray };
                         }
                     }
                 }
@@ -1161,7 +1175,7 @@ async function resolveShortUrl(
                 // 如果没有匹配特定规则，返回清理后的URL
                 // 根据标准规则清理参数
                 if (shouldProcessUrl(resolvedUrl)) {
-                    const { url: cleanedUrl } = cleanUrl(resolvedUrl);
+                    const { url: cleanedUrl } = await cleanUrl(resolvedUrl);
                     return {
                         url: UrlUtils.removeProtocolIfNeeded(originalUrl, cleanedUrl),
                         platformName
@@ -1218,7 +1232,7 @@ async function resolveShortUrl(
                 // 如果没有匹配特定规则，返回清理后的URL
                 // 根据标准规则清理参数
                 if (shouldProcessUrl(getUrl)) {
-                    const { url: cleanedUrl } = cleanUrl(getUrl);
+                    const { url: cleanedUrl } = await cleanUrl(getUrl);
                     return {
                         url: UrlUtils.removeProtocolIfNeeded(originalUrl, cleanedUrl),
                         platformName
