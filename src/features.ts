@@ -4255,7 +4255,7 @@ export class Features {
             return {
                 allowed: false,
                 remainingMs: waitTime,
-                reason: `命令发送过于频繁，${this.SHORT_WINDOW_SIZE/1000}秒内最多${this.SHORT_WINDOW_MAX_COMMANDS}个命令`
+                reason: `⏱️ 命令发送过于频繁，${this.SHORT_WINDOW_SIZE/1000}秒内最多${this.SHORT_WINDOW_MAX_COMMANDS}个命令`
             };
         }
         
@@ -4269,7 +4269,7 @@ export class Features {
             return {
                 allowed: false,
                 remainingMs: waitTime,
-                reason: `命令发送过于频繁，请适当放慢操作速度`
+                reason: `⚠️ 命令发送过于频繁，请适当放慢操作速度`
             };
         }
         
@@ -4283,7 +4283,7 @@ export class Features {
             return {
                 allowed: false,
                 remainingMs: waitTime,
-                reason: `已达到命令频率限制，请稍后再试`
+                reason: `⚠️ 已达到命令频率限制，请稍后再试`
             };
         }
         
