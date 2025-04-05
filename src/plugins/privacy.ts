@@ -14,7 +14,7 @@
  *        name: "平台名称",                             // 规则名称，简短描述
  *        pattern: /https?:\/\/(?:www\.)?example\.com\/path\/(.+?)(?:\?.*)?/, // 匹配模式
  *        description: "清理示例链接",                  // 详细说明
- *        needsSpecialHandling: true,                  // 需要特殊处理
+ *        needsRedirection: false,                  // 是否需要重定向解析
  *        transform: CommonTransforms.removeAllParams  // 使用预定义的转换函数
  *    }
  *    ```
@@ -25,7 +25,7 @@
  *        name: "视频平台",
  *        pattern: /https?:\/\/(?:www\.)?example\.com\/watch\?v=([\w-]+)(?:&.*)?/,
  *        description: "保留视频ID和时间戳参数",
- *        needsSpecialHandling: true,
+ *        needsRedirection: false,
  *        shouldTransform: (url, match) => {           // 可选：检查是否需要转换
  *            try {
  *                const parsedUrl = new URL(url);
@@ -46,7 +46,7 @@
  *        name: "重定向处理",
  *        pattern: /https?:\/\/(?:www\.)?example\.com\/redirect\?url=([^&]+)(?:&.*)?/,
  *        description: "提取并解码重定向链接",
- *        needsSpecialHandling: true,
+ *        needsRedirection: false,
  *        transform: (url, match) => {
  *            if (match && match[1]) {
  *                try {
@@ -61,25 +61,20 @@
  *    }
  *    ```
  * 
- * 4. 域名规范化规则 - 统一不同子域名:
+ * 4. 短链接处理规则 - 需要解析重定向:
  *    ```typescript
  *    {
- *        name: "移动站点规范化",
- *        pattern: /https?:\/\/(?:m|mobile|app)\.example\.com\/([^?]+)(?:\?.*)?/,
- *        description: "将移动版网站链接转换为桌面版",
- *        needsSpecialHandling: true,
- *        transform: CommonTransforms.standardizeDomain('www.example.com')
- *    }
- *    ```
- * 
- * 5. 路径重构规则 - 使用模板重建URL:
- *    ```typescript
- *    {
- *        name: "新版本路径",
- *        pattern: /https?:\/\/(?:www\.)?example\.com\/old\/(\w+)\/(\d+)(?:\?.*)?/,
- *        description: "将旧版路径转换为新版格式",
- *        needsSpecialHandling: true,
- *        transform: CommonTransforms.buildFromMatch('https://example.com/new/$1/item/$2')
+ *        name: "短链接平台",
+ *        pattern: /https?:\/\/(?:www\.)?t\.co\/[a-zA-Z0-9]+/,
+ *        description: "解析短链接并清理参数",
+ *        needsRedirection: true,  // 表示需要解析重定向
+ *        transform: (url, match, redirectResult) => { // 第三个参数为重定向结果
+ *            if (redirectResult) {
+ *                // 处理重定向后的URL
+ *                return CommonTransforms.removeAllParams(redirectResult, null);
+ *            }
+ *            return url; // 默认返回原始URL
+ *        }
  *    }
  *    ```
  * 
@@ -89,7 +84,6 @@
  * - CommonTransforms.keepOnlyParams(['param1', 'param2']): 仅保留指定参数
  * - CommonTransforms.removeParams(['param1', 'param2']): 移除指定参数，保留其他参数
  * - CommonTransforms.removeTrackingParams: 移除常见跟踪参数
- * - CommonTransforms.standardizeDomain('domain.com'): 统一域名
  * - CommonTransforms.buildFromMatch('template'): 使用模板和正则匹配结果构建URL
  */
 
@@ -116,8 +110,8 @@ interface SpecialUrlRule {
     name: string;            // 平台名称
     pattern: RegExp;         // 匹配模式
     description: string;     // 规则描述
-    needsSpecialHandling: boolean; // 是否需要特殊处理（不能简单移除参数）
-    transform?: (url: string, match: RegExpMatchArray | null) => string; // 转换函数，needsSpecialHandling为false时可选
+    needsRedirection?: boolean;   // 是否需要解析重定向（如短链接）
+    transform?: (url: string, match: RegExpMatchArray | null, redirectResult?: string) => string; // 转换函数，第三个参数为重定向结果
     shouldTransform?: (url: string, match: RegExpMatchArray | null) => boolean; // 是否应该转换的条件函数
 }
 
@@ -387,7 +381,7 @@ const platformRules: SpecialUrlRule[] = [
         name: "YouTube短链接",
         pattern: /https?:\/\/youtu\.be\/([a-zA-Z0-9_-]+)(?:\?[^&]+(?:&[^&]+)*)?/,
         description: "将YouTube短链接转换为标准格式",
-        needsSpecialHandling: true,
+        needsRedirection: true,
         transform: (url, match) => {
             if (match && match[1]) {
                 const videoId = match[1];
@@ -422,7 +416,7 @@ const platformRules: SpecialUrlRule[] = [
         name: "YouTube标准链接",
         pattern: /https?:\/\/(?:www\.)?youtube\.com\/watch\?v=([\w-]+)(?:&.*)?/,
         description: "保留YouTube视频ID和时间戳，移除跟踪参数",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         shouldTransform: (url, match) => {
             // 如果已经是标准格式（只有v参数或v和t参数），则不转换
             try {
@@ -442,7 +436,7 @@ const platformRules: SpecialUrlRule[] = [
         name: "YouTube Shorts",
         pattern: /https?:\/\/(?:www\.)?youtube\.com\/shorts\/([\w-]+)(?:\?.*)?/,
         description: "将YouTube Shorts转换为标准视频格式",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         transform: (url, match) => {
             if (match && match[1]) {
                 return `https://www.youtube.com/watch?v=${match[1]}`;
@@ -456,7 +450,7 @@ const platformRules: SpecialUrlRule[] = [
         name: "哔哩哔哩视频",
         pattern: /https?:\/\/(?:www\.)?bilibili\.com\/video\/(?:[Bb][Vv][\w-]+|[Aa][Vv]\d+)(?:\/?\?.*)?/i,
         description: "保留哔哩哔哩视频ID和时间戳，移除其他跟踪参数",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         shouldTransform: (url, match) => {
             try {
                 const parsedUrl = new URL(url);
@@ -475,16 +469,8 @@ const platformRules: SpecialUrlRule[] = [
         name: "Twitter/X",
         pattern: /https?:\/\/(?:www\.)?(?:twitter|x)\.com\/(\w+)\/status\/(\d+)(?:\?.*)?/,
         description: "保留推文ID，移除跟踪参数",
-        needsSpecialHandling: true,
-        shouldTransform: (url, match) => {
-            try {
-                const parsedUrl = new URL(url);
-                // 如果已经是干净URL（没有参数），则不转换
-                return parsedUrl.search !== '';
-            } catch (e) {
-                return true; // 解析失败时默认转换
-            }
-        },
+        needsRedirection: false,
+        shouldTransform: (url) => url.includes('?'), // 只有有参数时才转换
         transform: CommonTransforms.removeAllParams
     },
 
@@ -493,25 +479,24 @@ const platformRules: SpecialUrlRule[] = [
         name: "Instagram帖子",
         pattern: /https?:\/\/(?:www\.)?instagram\.com\/p\/([\w-]+)(?:\?.*)?/,
         description: "清理Instagram帖子链接，移除igsh等跟踪参数",
-        needsSpecialHandling: true,
-        shouldTransform: (url) => {
-            // 只要有查询参数就应该转换
-            return url.includes('?');
-        },
+        needsRedirection: false,
+        shouldTransform: (url) => url.includes('?'), // 只有有参数时才转换
         transform: CommonTransforms.removeAllParams
     },
     {
         name: "Instagram Reels",
         pattern: /https?:\/\/(?:www\.)?instagram\.com\/reel\/([\w-]+)(?:\?.*)?/,
         description: "统一Instagram Reels格式",
-        needsSpecialHandling: true,
+        needsRedirection: false,
+        shouldTransform: (url) => url.includes('?'), // 只有有参数时才转换
         transform: CommonTransforms.removeAllParams
     },
     {
         name: "Instagram Stories",
         pattern: /https?:\/\/(?:www\.)?instagram\.com\/stories\/([^\/]+)\/(\d+)(?:\?.*)?/,
         description: "清理Instagram Stories链接",
-        needsSpecialHandling: true,
+        needsRedirection: false,
+        shouldTransform: (url) => url.includes('?'), // 只有有参数时才转换
         transform: CommonTransforms.removeAllParams
     },
 
@@ -520,31 +505,28 @@ const platformRules: SpecialUrlRule[] = [
         name: "Facebook视频",
         pattern: /https?:\/\/(?:www\.)?facebook\.com\/(?:watch\/\?v=|[\w.]+\/videos\/)(\d+)(?:\?.*)?/,
         description: "统一Facebook视频格式，移除跟踪参数",
-        needsSpecialHandling: true,
-        shouldTransform: (url, match) => {
-            try {
-                const parsedUrl = new URL(url);
-                // 如果已经是标准格式（只有v参数），则不转换
-                if (url.includes('/watch/?v=')) {
+        needsRedirection: false,
+        shouldTransform: (url) => {
+            // 如果是watch/?v=格式，检查是否有其他参数
+            if (url.includes('/watch/?v=')) {
+                try {
+                    const parsedUrl = new URL(url);
+                    // 如果只有v参数，则不需要转换
                     return !(parsedUrl.searchParams.size === 1 && parsedUrl.searchParams.has('v'));
+                } catch (e) {
+                    return true; // 解析失败时默认转换
                 }
-                return true; // 其他格式都需要转换
-            } catch (e) {
-                return true; // 解析失败时默认转换
             }
+            // 其他格式（如/videos/）都需要转换
+            return true;
         },
-        transform: (url, match) => {
-            if (match && match[1]) {
-                return `https://www.facebook.com/watch/?v=${match[1]}`;
-            }
-            return url;
-        }
+        transform: CommonTransforms.buildFromMatch('https://www.facebook.com/watch/?v=$1')
     },
     {
         name: "Facebook帖子",
         pattern: /https?:\/\/(?:www\.)?facebook\.com\/(?:[\w.]+\/posts\/|permalink\.php\?story_fbid=)(\d+)(?:&|\?)?(?:.*)?/,
         description: "清理Facebook帖子链接",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         transform: (url, match) => {
             if (match && match[1]) {
                 // 如果是permalink.php格式，需要处理特殊情况
@@ -577,59 +559,40 @@ const platformRules: SpecialUrlRule[] = [
         name: "TikTok",
         pattern: /https?:\/\/(?:www\.)?tiktok\.com\/@([\w.]+)\/video\/(\d+)(?:\?.*)?/,
         description: "清理TikTok视频链接",
-        needsSpecialHandling: true,
-        transform: (url, match) => {
-            if (match && match[1] && match[2]) {
-                return `https://www.tiktok.com/@${match[1]}/video/${match[2]}`;
-            }
-            return url;
-        }
+        needsRedirection: false,
+        shouldTransform: (url) => url.includes('?'), // 只有有参数时才转换
+        transform: CommonTransforms.buildFromMatch('https://www.tiktok.com/@$1/video/$2')
     },
 
     {
         name: "Reddit",
         pattern: /https?:\/\/(?:www\.)?reddit\.com\/r\/([^\/]+)\/comments\/([^\/]+)(?:\/[^\/]+)?(?:\/)?(?:\?.*)?/,
         description: "清理Reddit帖子链接",
-        needsSpecialHandling: true,
-        transform: (url, match) => {
-            if (match && match[1] && match[2]) {
-                return `https://www.reddit.com/r/${match[1]}/comments/${match[2]}`;
-            }
-            return url;
-        }
+        needsRedirection: false,
+        transform: CommonTransforms.buildFromMatch('https://www.reddit.com/r/$1/comments/$2')
     },
 
     {
         name: "LinkedIn",
         pattern: /https?:\/\/(?:www\.)?linkedin\.com\/(?:posts|feed\/update)(?:\/|\?)(?:.*?)(?:activity:|id=)([\w-]+)(?:&.*)?/,
         description: "清理LinkedIn帖子链接",
-        needsSpecialHandling: true,
-        transform: (url, match) => {
-            if (match && match[1]) {
-                return `https://www.linkedin.com/feed/update/urn:li:activity:${match[1]}`;
-            }
-            return url;
-        }
+        needsRedirection: false,
+        transform: CommonTransforms.buildFromMatch('https://www.linkedin.com/feed/update/urn:li:activity:$1')
     },
 
     {
         name: "Pinterest",
         pattern: /https?:\/\/(?:www\.)?pinterest\.(?:com|[a-z]{2})\/pin\/(\d+)(?:\?.*)?/,
         description: "清理Pinterest图钉链接",
-        needsSpecialHandling: true,
-        transform: (url, match) => {
-            if (match && match[1]) {
-                return `https://www.pinterest.com/pin/${match[1]}`;
-            }
-            return url;
-        }
+        needsRedirection: false,
+        transform: CommonTransforms.buildFromMatch('https://www.pinterest.com/pin/$1')
     },
 
     {
         name: "Spotify",
         pattern: /https?:\/\/open\.spotify\.com\/(track|album|playlist|artist)\/([a-zA-Z0-9]+)(?:\?.*)?/,
         description: "清理Spotify链接",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         transform: CommonTransforms.removeAllParams
     },
 
@@ -637,7 +600,7 @@ const platformRules: SpecialUrlRule[] = [
         name: "SoundCloud",
         pattern: /https?:\/\/(?:www\.)?soundcloud\.com\/([^\/]+)\/([^\/\?]+)(?:\?.*)?/,
         description: "清理SoundCloud链接",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         transform: CommonTransforms.removeAllParams
     },
 
@@ -645,7 +608,7 @@ const platformRules: SpecialUrlRule[] = [
         name: "Medium",
         pattern: /https?:\/\/(?:www\.)?medium\.com\/(?:@?[^\/]+\/)?([^\/\?]+)(?:\?.*)?/,
         description: "清理Medium文章链接",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         transform: CommonTransforms.removeAllParams
     },
 
@@ -653,31 +616,131 @@ const platformRules: SpecialUrlRule[] = [
         name: "哔哩哔哩短链接",
         pattern: /https?:\/\/b23\.tv\/[\w-]+/,
         description: "解析哔哩哔哩短链接并清理参数",
-        needsSpecialHandling: false // 使用通用解析方式，让程序自动处理重定向
+        needsRedirection: true,
+        transform: (url, match, redirectResult) => {
+            // 如果是重定向结果处理
+            if (redirectResult) {
+                try {
+                    const parsedUrl = new URL(redirectResult);
+                    // 如果是哔哩哔哩视频链接，只保留t和p参数
+                    if (parsedUrl.hostname.includes('bilibili.com') &&
+                        (parsedUrl.pathname.includes('/video/') || /[Bb][Vv]\w+/.test(parsedUrl.pathname))) {
+                        return CommonTransforms.keepOnlyParams(['t', 'p'])(redirectResult, null);
+                    }
+                } catch (e) {
+                    // 解析失败则使用默认清理
+                }
+                // 默认情况下移除所有参数
+                return CommonTransforms.removeAllParams(redirectResult, null);
+            }
+
+            // 默认返回原URL（重定向前）
+            return url;
+        }
     },
     {
         name: "小红书短链接",
         pattern: /https?:\/\/xhslink\.com\/[\w-]+/,
         description: "解析小红书链接并清理参数",
-        needsSpecialHandling: false
+        needsRedirection: true,
+        transform: (url, match, redirectResult) => {
+            // 如果是重定向结果处理
+            if (redirectResult) {
+                // 如果解析到小红书链接，保持简洁格式
+                try {
+                    if (redirectResult.includes('xiaohongshu.com')) {
+                        const parsedUrl = new URL(redirectResult);
+                        // 小红书笔记链接特殊处理
+                        if (parsedUrl.pathname.includes('/explore/')) {
+                            const noteIdMatch = parsedUrl.pathname.match(/\/explore\/(\w+)/);
+                            if (noteIdMatch && noteIdMatch[1]) {
+                                return `https://www.xiaohongshu.com/explore/${noteIdMatch[1]}`;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    // 处理失败，使用默认清理
+                }
+                // 默认清理所有参数
+                return CommonTransforms.removeAllParams(redirectResult, null);
+            }
+
+            // 默认返回原URL（重定向前）
+            return url;
+        }
     },
     {
         name: "微博短链接",
         pattern: /https?:\/\/t\.cn\/[\w-]+/,
         description: "解析微博短链接并清理参数",
-        needsSpecialHandling: false
+        needsRedirection: true,
+        transform: (url, match, redirectResult) => {
+            // 如果是重定向结果处理
+            if (redirectResult) {
+                // 微博链接特殊处理
+                try {
+                    const parsedUrl = new URL(redirectResult);
+                    // 如果是微博域名
+                    if (parsedUrl.hostname.includes('weibo.com') || parsedUrl.hostname.includes('weibo.cn')) {
+                        // 对微博详情页特殊处理
+                        if (parsedUrl.pathname.includes('/detail/')) {
+                            const detailIdMatch = parsedUrl.pathname.match(/\/detail\/(\w+)/);
+                            if (detailIdMatch && detailIdMatch[1]) {
+                                // 构建干净的微博详情页链接
+                                return `https://weibo.com/detail/${detailIdMatch[1]}`;
+                            }
+                        }
+                        // 对用户主页特殊处理
+                        else if (parsedUrl.pathname.match(/\/u\/\d+/)) {
+                            const userIdMatch = parsedUrl.pathname.match(/\/u\/(\d+)/);
+                            if (userIdMatch && userIdMatch[1]) {
+                                return `https://weibo.com/u/${userIdMatch[1]}`;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    // 处理失败，使用默认清理
+                }
+                // 默认清理所有参数
+                return CommonTransforms.removeAllParams(redirectResult, null);
+            }
+
+            // 默认返回原URL（重定向前）
+            return url;
+        }
     },
     {
         name: "抖音短链接",
         pattern: /https?:\/\/v\.douyin\.com\/[\w-]+/,
         description: "解析抖音短链接并清理参数",
-        needsSpecialHandling: false
+        needsRedirection: true,
+        transform: (url, match, redirectResult) => {
+            // 如果是重定向结果处理
+            if (redirectResult) {
+                // 如果解析到了抖音视频网页版，提取视频ID并构建干净链接
+                try {
+                    if (redirectResult.includes('douyin.com/video/')) {
+                        const match = redirectResult.match(/\/video\/(\d+)/);
+                        if (match && match[1]) {
+                            return `https://www.douyin.com/video/${match[1]}`;
+                        }
+                    }
+                } catch (e) {
+                    // 处理失败，返回默认清理
+                }
+                // 默认情况下移除所有参数
+                return CommonTransforms.removeAllParams(redirectResult, null);
+            }
+
+            // 默认返回原URL（重定向前）
+            return url;
+        }
     },
     {
         name: "知乎外链",
         pattern: /https?:\/\/link\.zhihu\.com\/\?(?:target|url)=([^&]+)(?:&.*)?/,
         description: "解析知乎外链",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         transform: (url, match) => {
             if (match && match[1]) {
                 try {
@@ -694,7 +757,7 @@ const platformRules: SpecialUrlRule[] = [
         name: "360搜索",
         pattern: /https?:\/\/(?:www\.)?so\.com\/link\?(?:url|m)=([^&]+)(?:&.*)?/,
         description: "解析360搜索跟踪链接",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         transform: (url, match) => {
             if (match && match[1]) {
                 try {
@@ -711,19 +774,15 @@ const platformRules: SpecialUrlRule[] = [
         name: "微信公众号文章",
         pattern: /https?:\/\/mp\.weixin\.qq\.com\/s\/([a-zA-Z0-9_-]+)(?:\?.*)?/,
         description: "清理微信公众号文章链接",
-        needsSpecialHandling: true,
-        transform: (url, match) => {
-            if (match && match[1]) {
-                return `https://mp.weixin.qq.com/s/${match[1]}`;
-            }
-            return url;
-        }
+        needsRedirection: false,
+        shouldTransform: (url) => url.includes('?'), // 只有有参数时才转换
+        transform: CommonTransforms.buildFromMatch('https://mp.weixin.qq.com/s/$1')
     },
     {
         name: "亚马逊产品",
         pattern: /https?:\/\/(?:www\.)?amazon\.(?:com|co\.jp|co\.uk|de|fr|it|es|cn)\/(?:.*\/)?(?:dp|gp\/product)\/([A-Z0-9]{10})(?:\/.*)?(?:\?.*)?/,
         description: "清理亚马逊产品链接",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         transform: (url, match) => {
             if (match && match[1]) {
                 try {
@@ -746,7 +805,7 @@ const platformRules: SpecialUrlRule[] = [
         name: "淘宝/天猫商品",
         pattern: /https?:\/\/(?:item|detail)\.(?:taobao|tmall)\.com\/item\.htm\?id=(\d+)(?:&.*)?/,
         description: "清理淘宝/天猫商品链接",
-        needsSpecialHandling: true,
+        needsRedirection: false,
         transform: (url, match) => {
             if (match && match[1]) {
                 // 判断是淘宝还是天猫
@@ -758,10 +817,19 @@ const platformRules: SpecialUrlRule[] = [
         }
     },
     {
-        name: "Instagram带igsh参数",
-        pattern: /https?:\/\/(?:www\.)?instagram\.com\/p\/([\w-]+)\/?\?(?:igsh|utm_source)=[^&\s]+(?:&.*)?/,
-        description: "清理Instagram带跟踪参数的链接",
-        needsSpecialHandling: true,
+        name: "Apple Music",
+        pattern: /https?:\/\/music\.apple\.com\/(?:[a-z]{2}\/)?(?:album|playlist|artist)\/(?:[^\/]+)\/(?:[^\/\?]+)(?:\?.*)?/,
+        description: "清理Apple Music链接，移除跟踪参数",
+        needsRedirection: false,
+        shouldTransform: (url) => url.includes('?'),
+        transform: CommonTransforms.removeAllParams
+    },
+    {
+        name: "Telegram公开链接",
+        pattern: /https?:\/\/(?:t\.me|telegram\.me)\/([^\/\?]+)(?:\/\d+)?(?:\?.*)?/,
+        description: "清理Telegram公开链接参数",
+        needsRedirection: false,
+        shouldTransform: (url) => url.includes('?'),
         transform: CommonTransforms.removeAllParams
     }
 ];
@@ -782,7 +850,7 @@ async function applySpecialRules(url: string): Promise<{ url: string, platformNa
         if (matchedRule) {
             const { rule, match } = matchedRule;
 
-            if (rule.needsSpecialHandling && rule.transform) {
+            if (!rule.needsRedirection && rule.transform) {
                 try {
                     // 检查是否需要转换
                     if (rule.shouldTransform && !rule.shouldTransform(urlWithProtocol, match)) {
@@ -801,7 +869,7 @@ async function applySpecialRules(url: string): Promise<{ url: string, platformNa
                     plugin.logger?.warn(`规则 ${rule.name} 转换失败: ${transformError}`);
                     return { url, platformName: rule.name };
                 }
-            } else if (!rule.needsSpecialHandling) {
+            } else if (rule.needsRedirection) {
                 // 短链接平台，进行网络请求解析
                 try {
                     return await resolveShortUrl(url, urlWithProtocol, rule.name);
@@ -872,9 +940,6 @@ async function cleanUrl(url: string): Promise<{ url: string, platformName?: stri
             return specialResult;
         }
 
-        // 尝试解析URL
-        const urlObj = new URL(UrlUtils.ensureProtocol(url));
-
         // 对于一般URL，移除全部参数
         const cleanedUrl = UrlUtils.normalizeUrl(url);
 
@@ -893,14 +958,18 @@ async function cleanUrl(url: string): Promise<{ url: string, platformName?: stri
 function initializeUrlPatterns(): void {
     // 检查规则定义是否正确
     for (const rule of platformRules) {
-        // 检查特殊处理规则是否具有转换函数
-        if (rule.needsSpecialHandling && !rule.transform) {
-            plugin.logger?.warn(`规则"${rule.name}"被标记为需要特殊处理，但没有提供transform函数`);
+        // 检查转换规则是否具有转换函数
+        if (!rule.transform) {
+            plugin.logger?.warn(`规则"${rule.name}"没有提供transform函数`);
         }
     }
 
+    // 统计不同类型的规则数量
+    const redirectionRules = platformRules.filter(rule => rule.needsRedirection).length;
+    const directTransformRules = platformRules.filter(rule => !rule.needsRedirection).length;
+
     // 日志输出
-    plugin.logger?.debug(`初始化了 ${platformRules.length} 个平台规则`);
+    plugin.logger?.debug(`初始化了 ${platformRules.length} 个平台规则，其中 ${redirectionRules} 个需要重定向解析，${directTransformRules} 个直接转换`);
 }
 
 // 初始化特殊规则标识
@@ -926,7 +995,7 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
         if (matchedRule) {
             const { rule, match } = matchedRule;
 
-            if (rule.needsSpecialHandling && rule.transform) {
+            if (!rule.needsRedirection && rule.transform) {
                 // 检查是否需要转换
                 if (rule.shouldTransform && !rule.shouldTransform(urlWithProtocol, match)) {
                     return { url: shortUrl, platformName: rule.name };
@@ -939,7 +1008,7 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                     const finalUrl = UrlUtils.removeProtocolIfNeeded(shortUrl, transformedUrl);
                     return { url: finalUrl, platformName: rule.name };
                 }
-            } else if (!rule.needsSpecialHandling) {
+            } else if (rule.needsRedirection) {
                 // 短链接平台，进行网络请求解析
                 return await resolveShortUrl(shortUrl, urlWithProtocol, rule.name);
             }
@@ -1046,82 +1115,43 @@ async function performHeadRequest(url: string): Promise<{ url: string }> {
 }
 
 /**
- * 执行GET请求的辅助函数 - 改进版
+ * 执行GET请求，支持重定向
+ * @param url 要访问的URL
+ * @returns 重定向后的URL（如果有重定向）或者原URL
  */
 async function performGetRequest(url: string): Promise<{ url: string }> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), config.requestTimeout);
-
     try {
-        const response = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'User-Agent': generateRandomUserAgent(),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                'Referer': 'https://www.google.com/'
-            },
-            redirect: 'follow',
-            signal: controller.signal
-        });
-
-        clearTimeout(timeoutId);
-
-        // 对于短链接特殊处理，有时候HTTP重定向不完整
-        // 从响应中尝试提取可能的最终URL
-        const urlRule = platformRules.find(rule =>
-            rule.pattern.test(url) && !rule.needsSpecialHandling
-        );
-
-        if (urlRule) {
-            const respUrl = response.url || url;
-
-            // 如果已通过HTTP重定向获得新URL，直接返回
-            if (respUrl !== url) {
-                plugin.logger?.debug(`短链接平台 ${urlRule.name} 解析成功: ${respUrl}`);
-                return { url: respUrl };
-            }
-
-            // 尝试从响应体中提取最终URL
-            try {
-                const text = await response.text();
-
-                // 常见重定向方式1: HTML meta刷新
-                const metaMatch = text.match(/<meta\s+http-equiv=["']refresh["']\s+content=["']0;\s*url=(https?:\/\/[^"']+)["']/i);
-                if (metaMatch && metaMatch[1]) {
-                    plugin.logger?.debug(`从响应体中提取最终链接(meta刷新): ${metaMatch[1]}`);
-                    return { url: metaMatch[1] };
-                }
-
-                // 常见重定向方式2: JavaScript变量
-                const shareMatch = text.match(/shareUrl\s*=\s*["'](https?:\/\/[^"']+)["']/);
-                if (shareMatch && shareMatch[1]) {
-                    plugin.logger?.debug(`从响应体中提取最终链接(JS变量): ${shareMatch[1]}`);
-                    return { url: shareMatch[1] };
-                }
-
-                // 常见重定向方式3: Open Graph协议URL
-                const ogUrlMatch = text.match(/<meta\s+property=["']og:url["']\s+content=["'](https?:\/\/[^"']+)["']/i);
-                if (ogUrlMatch && ogUrlMatch[1]) {
-                    plugin.logger?.debug(`从响应体中提取最终链接(OG标签): ${ogUrlMatch[1]}`);
-                    return { url: ogUrlMatch[1] };
-                }
-
-                // 常见重定向方式4: 规范链接
-                const canonicalMatch = text.match(/<link\s+rel=["']canonical["']\s+href=["'](https?:\/\/[^"']+)["']/i);
-                if (canonicalMatch && canonicalMatch[1]) {
-                    plugin.logger?.debug(`从响应体中提取最终链接(规范链接): ${canonicalMatch[1]}`);
-                    return { url: canonicalMatch[1] };
-                }
-            } catch (e) {
-                plugin.logger?.debug(`解析响应体失败: ${e}`);
-            }
+        // 对于无法解析的链接，提前返回
+        if (!url.includes("http")) {
+            return { url };
         }
 
-        return { url: response.url || url };
-    } catch (error) {
-        clearTimeout(timeoutId);
-        throw error;
+        // 检查是否是需要处理的短链接
+        const matchedRule = findMatchingRule("", url);
+        if (matchedRule && matchedRule.rule.needsRedirection) {
+            const response = await fetch(url, {
+                method: "GET",
+                redirect: "follow",
+                headers: {
+                    "User-Agent": generateRandomUserAgent(),
+                },
+            });
+
+            // 检查是否成功响应
+            if (!response.ok) {
+                return { url };
+            }
+
+            // 获取最终URL
+            const finalUrl = response.url;
+            return { url: finalUrl };
+        }
+
+        // 非短链接或未匹配规则，返回原URL
+        return { url };
+    } catch (e) {
+        plugin.logger?.debug(`GET请求失败: ${e}`);
+        return { url };
     }
 }
 
@@ -1140,6 +1170,17 @@ async function resolveShortUrl(
 
             // 如果解析成功且获得不同URL，清理并返回
             if (resolvedUrl && resolvedUrl !== urlWithProtocol) {
+                // 查找匹配的规则
+                const matchedRule = findMatchingRule(originalUrl, urlWithProtocol);
+                if (matchedRule && matchedRule.rule.needsRedirection && matchedRule.rule.transform) {
+                    // 使用原始规则的transform方法处理重定向结果
+                    const cleanedUrl = matchedRule.rule.transform(originalUrl, matchedRule.match, resolvedUrl);
+                    return {
+                        url: UrlUtils.removeProtocolIfNeeded(originalUrl, cleanedUrl),
+                        platformName: matchedRule.rule.name
+                    };
+                }
+
                 // 检查解析后的URL是否匹配特定平台规则
                 for (const rule of platformRules) {
                     if (rule.pattern.global) {
@@ -1147,7 +1188,7 @@ async function resolveShortUrl(
                     }
 
                     // 只检查需要特殊处理的平台规则
-                    if (rule.needsSpecialHandling && rule.transform) {
+                    if (!rule.needsRedirection && rule.transform) {
                         const match = resolvedUrl.match(rule.pattern);
                         if (match) {
                             // 找到匹配的平台规则，应用规则转换
@@ -1197,6 +1238,17 @@ async function resolveShortUrl(
         try {
             const { url: getUrl } = await performGetRequest(urlWithProtocol);
             if (getUrl && getUrl !== urlWithProtocol) {
+                // 查找匹配的规则
+                const matchedRule = findMatchingRule(originalUrl, urlWithProtocol);
+                if (matchedRule && matchedRule.rule.needsRedirection && matchedRule.rule.transform) {
+                    // 使用原始规则的transform方法处理重定向结果
+                    const cleanedUrl = matchedRule.rule.transform(originalUrl, matchedRule.match, getUrl);
+                    return {
+                        url: UrlUtils.removeProtocolIfNeeded(originalUrl, cleanedUrl),
+                        platformName: matchedRule.rule.name
+                    };
+                }
+
                 // 检查解析后的URL是否匹配特定平台规则
                 for (const rule of platformRules) {
                     if (rule.pattern.global) {
@@ -1204,7 +1256,7 @@ async function resolveShortUrl(
                     }
 
                     // 只检查需要特殊处理的平台规则
-                    if (rule.needsSpecialHandling && rule.transform) {
+                    if (!rule.needsRedirection && rule.transform) {
                         const match = getUrl.match(rule.pattern);
                         if (match) {
                             // 找到匹配的平台规则，应用规则转换
@@ -1613,9 +1665,6 @@ const plugin: BotPlugin = {
             aliases: ['antitrack', 'notrack'],
 
             async handler(ctx: CommandContext): Promise<void> {
-                // 获取需要特殊处理的平台数量
-                const platforms = platformRules.filter(rule => rule.needsSpecialHandling);
-
                 await ctx.message.replyText(html`
                     🔒 <b>隐私保护插件状态</b><br>
 <br>
@@ -1623,7 +1672,7 @@ const plugin: BotPlugin = {
 - 已支持平台: ${platformRules.length}<br>
 - 活跃状态: ✅ 运行中<br>
 <br>
-<b>支持类型</b> ${platforms.map(p => p.name).join(', ')}`);
+<b>支持类型:</b> ${platformRules.map(p => p.name).join(', ')}`);
             }
         }
     ],
