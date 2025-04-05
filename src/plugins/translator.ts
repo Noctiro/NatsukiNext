@@ -41,12 +41,10 @@ const HELP_TEXT =
     '📝 **使用方式**\n' +
     '/tr [文本] - 翻译指定文本\n' +
     '/tr (回复消息) - 翻译被回复的消息\n\n' +
-    '🌍 **支持语言**\n' +
-    '英语、日语、韩语、俄语、法语、德语、西班牙语等\n\n' +
     '💡 发送非中文消息时会自动翻译';
 
 // AI翻译提示词
-const DEFAULT_PROMPT = `请将以下文本翻译成简体中文，要求译文忠实、流畅、优雅（信达雅）。译文需以“翻译: ”开头，仅在遇到明显的歧义或文化背景需要澄清时，另起一行以“补充: ”进行说明。`;
+const DEFAULT_PROMPT = `请将以下文本翻译成简体中文，要求译文忠实、流畅、优雅（信达雅）。译文需以"翻译: "开头，仅在遇到明显的歧义或文化背景需要澄清时，另起一行以"补充: "进行说明。`;
 
 // 类型定义
 interface GoogleTranslateResponse {
@@ -97,35 +95,12 @@ const ALL_LANG_SOURCES = Object.values(LANGUAGE_RANGES)
     .join('');
 const COMBINED_ALL_LANG_REGEX = new RegExp(`[${ALL_LANG_SOURCES}]`, 'g');
 
-// 翻译按钮回调数据前缀
-const CALLBACK_PREFIX = 'tr';
-const DELETE_CALLBACK_PREFIX = `${CALLBACK_PREFIX}:del`;
-
 // 定义翻译相关回调数据构建器
 // 使用新的工厂方法创建回调构建器，指定插件名和功能名
 const DeleteTranslationCallback = new CallbackDataBuilder<{
     initiatorId: number;
     originalSenderId?: number;
 }>('tr', 'del', ['initiatorId', 'originalSenderId']);
-
-/**
- * 生成删除回调数据
- * @param initiatorId 翻译发起人ID
- * @param originalSenderId 原始消息发送者ID（如回复翻译时）
- */
-function generateDeleteCallbackData(initiatorId: number, originalSenderId: number = 0): string {
-    // 使用插件名:功能名:参数格式
-    // 格式: tr:del:initiatorId:originalSenderId
-    // 简化实现，确保参数值有效
-    
-    // 如果原始发送者与发起人相同，则不包含原始发送者ID
-    if (!originalSenderId || originalSenderId === initiatorId) {
-        return `tr:del:${initiatorId}`;
-    }
-    
-    // 包含原始发送者ID
-    return `tr:del:${initiatorId}:${originalSenderId}`;
-}
 
 /**
  * 移除文本中的非语言内容（URL、数字、符号、Emoji等）以进行语言分析
@@ -458,7 +433,10 @@ async function streamTranslateWithAI(
             // 添加带有发起者和原始发送者信息的删除按钮
             // 确保originalSenderId有默认值，即使传入undefined也能正常工作
             const senderId = typeof originalSenderId === 'number' ? originalSenderId : 0;
-            const callbackData = generateDeleteCallbackData(initiatorId, senderId);
+            const callbackData = DeleteTranslationCallback.build({
+                initiatorId,
+                originalSenderId: senderId
+            });
             const keyboard = BotKeyboard.inline([
                 [BotKeyboard.callback('🗑️ 删除', callbackData)]
             ]);
@@ -498,7 +476,10 @@ async function simpleTranslateText(ctx: MessageEventContext, text: string): Prom
         const originalSenderId = ctx.message.sender.id;
         
         // 添加带有发起者和原始发送者信息的删除按钮
-        const callbackData = generateDeleteCallbackData(initiatorId, originalSenderId);
+        const callbackData = DeleteTranslationCallback.build({
+            initiatorId,
+            originalSenderId: originalSenderId
+        });
         const keyboard = BotKeyboard.inline([
             [BotKeyboard.callback('🗑️ 删除', callbackData)]
         ]);
@@ -523,7 +504,10 @@ async function simpleTranslateText(ctx: MessageEventContext, text: string): Prom
             const originalSenderId = ctx.message.sender.id;
             
             // 添加带有发起者和原始发送者信息的删除按钮
-            const callbackData = generateDeleteCallbackData(initiatorId, originalSenderId);
+            const callbackData = DeleteTranslationCallback.build({
+                initiatorId,
+                originalSenderId: originalSenderId
+            });
             const keyboard = BotKeyboard.inline([
                 [BotKeyboard.callback('🗑️ 删除', callbackData)]
             ]);
@@ -579,9 +563,14 @@ async function commandTranslateText(ctx: CommandContext, text: string, originalS
             const initiatorId = ctx.message.sender.id;
             
             // 添加带有发起者和原始发送者信息的删除按钮
-            // 确保originalSenderId有默认值
+            // 确保originalSenderId有默认值，即使传入undefined也能正常工作
             const senderId = typeof originalSenderId === 'number' ? originalSenderId : 0;
-            const callbackData = generateDeleteCallbackData(initiatorId, senderId);
+            // 只有当原始发送者ID不为0且与发起人不同时，才添加originalSenderId参数
+            const callbackParams: {initiatorId: number, originalSenderId?: number} = {initiatorId};
+            if (senderId > 0 && senderId !== initiatorId) {
+                callbackParams.originalSenderId = senderId;
+            }
+            const callbackData = DeleteTranslationCallback.build(callbackParams);
             const keyboard = BotKeyboard.inline([
                 [BotKeyboard.callback('🗑️ 删除', callbackData)]
             ]);
@@ -620,9 +609,14 @@ async function commandTranslateText(ctx: CommandContext, text: string, originalS
             const initiatorId = ctx.message.sender.id;
             
             // 添加带有发起者和原始发送者信息的删除按钮
-            // 确保originalSenderId有默认值
+            // 确保originalSenderId有默认值，即使传入undefined也能正常工作
             const senderId = typeof originalSenderId === 'number' ? originalSenderId : 0;
-            const callbackData = generateDeleteCallbackData(initiatorId, senderId);
+            // 只有当原始发送者ID不为0且与发起人不同时，才添加originalSenderId参数
+            const callbackParams: {initiatorId: number, originalSenderId?: number} = {initiatorId};
+            if (senderId > 0 && senderId !== initiatorId) {
+                callbackParams.originalSenderId = senderId;
+            }
+            const callbackData = DeleteTranslationCallback.build(callbackParams);
             const keyboard = BotKeyboard.inline([
                 [BotKeyboard.callback('🗑️ 删除', callbackData)]
             ]);
@@ -705,8 +699,8 @@ async function handleDeleteCallback(ctx: CallbackEventContext): Promise<void> {
         const data = ctx.match || {};
         
         // 获取参数
-        const initiatorId = typeof data._param0 === 'number' ? data._param0 : 0;
-        const originalSenderId = typeof data._param1 === 'number' ? data._param1 : 0;
+        const initiatorId = typeof data.initiatorId === 'number' ? data.initiatorId : 0;
+        const originalSenderId = typeof data.originalSenderId === 'number' ? data.originalSenderId : 0;
         
         // 获取当前用户ID
         const currentUserId = ctx.query.user.id;

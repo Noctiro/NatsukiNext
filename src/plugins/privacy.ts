@@ -100,7 +100,6 @@ import { CallbackDataBuilder } from "../utils/callback";
 
 // 插件配置
 const config = {
-    debug: false,  // 默认禁用调试模式
     enableTLS: true, // 强制使用TLS
     textSeparator: '...', // 用于显示的文本分隔符
     maxConcurrentRequests: 5, // 最大并发请求数
@@ -1260,9 +1259,8 @@ async function resolveShortUrl(
 
 // 定义删除回调数据构建器
 const DeletePrivacyCallback = new CallbackDataBuilder<{
-    initiatorId: number;
     originalSenderId: number;
-}>('privacy', 'del', ['initiatorId', 'originalSenderId']);
+}>('privacy', 'del', ['originalSenderId']);
 
 /**
  * 检查用户是否是群组管理员
@@ -1521,17 +1519,6 @@ async function processLinksInMessage(messageText: string): Promise<{
     // 重置正则表达式状态
     URL_PATTERNS.NO_PROTOCOL_URL.lastIndex = 0;
 
-    // 在链接识别完成后添加日志
-    plugin.logger?.debug(`共找到 ${foundLinks.length} 个链接`);
-    if (config.debug) {
-        for (let i = 0; i < foundLinks.length; i++) {
-            const link = foundLinks[i];
-            if (link && link.original) {
-                plugin.logger?.debug(`链接 ${i + 1}: ${link.original} (${link.start}-${link.end}) ${link.originalWithAt ? '带@前缀' : ''}`);
-            }
-        }
-    }
-
     // 如果没有找到任何链接，直接返回原始文本
     if (foundLinks.length === 0) {
         return { text: messageText, foundLinks: false, processedCount: 0 };
@@ -1627,91 +1614,16 @@ const plugin: BotPlugin = {
 
             async handler(ctx: CommandContext): Promise<void> {
                 // 获取需要特殊处理的平台数量
-                const specialPlatforms = platformRules.filter(rule => rule.needsSpecialHandling);
-
-                // 处理调试模式切换
-                if (ctx.args.length > 0 && (ctx.args[0] === 'debug' || ctx.args[0] === '调试')) {
-                    config.debug = !config.debug;
-                    await ctx.message.replyText(`调试模式已${config.debug ? '开启' : '关闭'}`);
-                    return;
-                }
-
-                // 检查是否有参数，如果有则测试链接处理
-                if (ctx.args.length > 0) {
-                    const testUrl = ctx.args.join(' ');
-                    await ctx.message.replyText(`开始测试处理链接：${testUrl}`);
-
-                    // 启用调试以获取详细输出
-                    const originalDebugState = config.debug;
-                    config.debug = true;
-                    plugin.logger?.debug(`测试处理链接: ${testUrl}`);
-
-                    try {
-                        // 测试URL正则匹配
-                        const hasProtocol = testUrl.includes('://');
-                        const urlWithProtocol = hasProtocol ? testUrl : `https://${testUrl}`;
-
-                        // 测试链接识别
-                        let identified = false;
-                        for (const rule of platformRules) {
-                            if (rule.pattern.global) {
-                                rule.pattern.lastIndex = 0;
-                            }
-
-                            let match = testUrl.match(rule.pattern);
-                            if (!match && !hasProtocol) {
-                                match = urlWithProtocol.match(rule.pattern);
-                            }
-
-                            if (match) {
-                                identified = true;
-                                await ctx.message.replyText(`链接匹配规则: ${rule.name}\n匹配结果: ${JSON.stringify(match)}`);
-                                break;
-                            }
-                        }
-
-                        if (!identified) {
-                            await ctx.message.replyText(`链接未匹配任何已知平台规则，将使用通用处理`);
-                        }
-
-                        // 测试链接解析结果
-                        const { url: processedUrl, platformName } = await resolveUrl(testUrl);
-
-                        // 显示处理结果
-                        let result = `原始链接: ${testUrl}\n处理结果: ${processedUrl}`;
-                        if (platformName) {
-                            result += `\n识别平台: ${platformName}`;
-                        }
-
-                        result += `\n链接实际变化: ${processedUrl !== testUrl ? '✅ 已修改' : '❌ 无变化'}`;
-
-                        await ctx.message.replyText(result);
-                    } catch (error) {
-                        plugin.logger?.error(`测试链接处理失败: ${error}`);
-                        await ctx.message.replyText(`处理链接失败: ${error}`);
-                    } finally {
-                        // 恢复调试状态
-                        config.debug = originalDebugState;
-                    }
-
-                    return;
-                }
+                const platforms = platformRules.filter(rule => rule.needsSpecialHandling);
 
                 await ctx.message.replyText(html`
                     🔒 <b>隐私保护插件状态</b><br>
 <br>
 - 版本: 2.3.0<br>
-- 总支持平台: ${platformRules.length}<br>
-- 特殊规则平台: ${specialPlatforms.length}<br>
+- 已支持平台: ${platformRules.length}<br>
 - 活跃状态: ✅ 运行中<br>
-- 调试模式: ${config.debug ? '✅ 已开启' : '❌ 已关闭'}
 <br>
-<b>特殊处理平台:</b> ${specialPlatforms.map(p => p.name).join(', ')}<br>
-<br>
-<b>使用方法:</b><br>
-1. 发送带链接的消息, 插件会自动清理跟踪参数<br>
-2. 使用 /privacy <链接> 测试链接处理<br>
-3. 使用 /privacy debug 切换调试模式`);
+<b>支持类型</b> ${platforms.map(p => p.name).join(', ')}`);
             }
         }
     ],
@@ -1746,9 +1658,8 @@ const plugin: BotPlugin = {
                     if (foundLinks && processedCount > 0 && processedText !== messageText) {
                         const content = html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName}</a> 分享内容（隐私保护，已移除跟踪参数）:\n${processedText}`;
 
-                        // 添加删除按钮（系统自动触发使用0作为发起人ID）
+                        // 添加删除按钮
                         const callbackData = DeletePrivacyCallback.build({
-                            initiatorId: 0,
                             originalSenderId: ctx.message.sender.id
                         });
 

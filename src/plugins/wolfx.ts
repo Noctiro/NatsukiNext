@@ -112,11 +112,6 @@ interface EarthquakeData {
     };
 }
 
-// WebSocket消息类型
-type WebSocketMessage =
-    | { type: 'heartbeat' | 'pong', timestamp: number }
-    | EarthquakeData;
-
 // 配置参数
 const CONFIG = {
     magThreshold: 3,     // 震级阈值(大于等于此值才播报)
