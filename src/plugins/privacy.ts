@@ -846,7 +846,7 @@ async function applySpecialRules(url: string): Promise<{ url: string, platformNa
 
     try {
         // 使用统一方法匹配规则
-        const matchedRule = findMatchingRule(url, urlWithProtocol);
+        const matchedRule = findMatchingPlatformRule(url, urlWithProtocol);
         if (matchedRule) {
             const { rule, match } = matchedRule;
 
@@ -872,7 +872,7 @@ async function applySpecialRules(url: string): Promise<{ url: string, platformNa
             } else if (rule.needsRedirection) {
                 // 短链接平台，进行网络请求解析
                 try {
-                    return await resolveShortUrl(url, urlWithProtocol, rule.name);
+                    return await resolveAndCleanShortUrl(url, urlWithProtocol, rule.name);
                 } catch (error) {
                     plugin.logger?.warn(`解析短链接 ${url} 失败: ${error}`);
                     return { url, platformName: rule.name };
@@ -908,7 +908,7 @@ function shouldProcessUrl(url: string): boolean {
         }
 
         // 检查是否匹配特定平台规则的标准格式
-        const matchedRule = findMatchingRule(url, urlWithProtocol);
+        const matchedRule = findMatchingPlatformRule(url, urlWithProtocol);
         if (matchedRule && matchedRule.rule.shouldTransform) {
             // 如果规则指定不需要转换，则不处理
             if (!matchedRule.rule.shouldTransform(urlWithProtocol, matchedRule.match)) {
@@ -923,11 +923,20 @@ function shouldProcessUrl(url: string): boolean {
 }
 
 /**
- * 清理URL函数 - 移除所有参数，提供最大隐私保护
+ * 检查URL是否需要参数清理处理
+ * 判断URL是否包含需要清理的参数，避免处理已经干净的URL
+ */
+function needsTrackingParamsCleaning(url: string): boolean {
+    // 直接使用旧的函数实现，保持一致性
+    return shouldProcessUrl(url);
+}
+
+/**
+ * 应用通用清理规则 - 移除常见跟踪参数
  * @param url 原始URL
  * @returns 清理后的URL和平台信息
  */
-async function cleanUrl(url: string): Promise<{ url: string, platformName?: string }> {
+async function applyGeneralTrackingCleanRules(url: string): Promise<{ url: string, platformName?: string }> {
     if (!url) return { url: '' };
 
     try {
@@ -940,8 +949,8 @@ async function cleanUrl(url: string): Promise<{ url: string, platformName?: stri
             return specialResult;
         }
 
-        // 对于一般URL，移除全部参数
-        const cleanedUrl = UrlUtils.normalizeUrl(url);
+        // 对于一般URL，仅移除常见跟踪参数，而不是移除全部参数
+        const cleanedUrl = CommonTransforms.removeTrackingParams(url, null);
 
         return {
             url: UrlUtils.removeProtocolIfNeeded(url, cleanedUrl),
@@ -976,11 +985,11 @@ function initializeUrlPatterns(): void {
 let combinedRulePattern: RegExp | null = null;
 
 /**
- * 解析链接为原始URL - 优化版本
- * @param shortUrl 短链接
- * @returns 解析后的URL和平台信息
+ * 智能处理链接 - 应用平台规则或解析短链接
+ * @param shortUrl 原始链接或短链接
+ * @returns 处理后的URL和平台信息
  */
-async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName?: string }> {
+async function processUrlWithRules(shortUrl: string): Promise<{ url: string, platformName?: string }> {
     try {
         // 快速检查
         if (!shortUrl || shortUrl.length < config.minUrlLength) {
@@ -991,7 +1000,7 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
         const urlWithProtocol = UrlUtils.ensureProtocol(shortUrl);
 
         // 使用统一方法匹配规则
-        const matchedRule = findMatchingRule(shortUrl, urlWithProtocol);
+        const matchedRule = findMatchingPlatformRule(shortUrl, urlWithProtocol);
         if (matchedRule) {
             const { rule, match } = matchedRule;
 
@@ -1010,21 +1019,21 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
                 }
             } else if (rule.needsRedirection) {
                 // 短链接平台，进行网络请求解析
-                return await resolveShortUrl(shortUrl, urlWithProtocol, rule.name);
+                return await resolveAndCleanShortUrl(shortUrl, urlWithProtocol, rule.name);
             }
         }
 
         // 检查是否需要清理参数
-        if (shouldProcessUrl(shortUrl)) {
+        if (needsTrackingParamsCleaning(shortUrl)) {
             // 一般URL清理
-            const { url: cleanedUrl, platformName } = await cleanUrl(shortUrl);
+            const { url: cleanedUrl, platformName } = await applyGeneralTrackingCleanRules(shortUrl);
             if (cleanedUrl !== shortUrl) {
                 return { url: cleanedUrl, platformName };
             }
         }
 
         // 如果上述处理都没效果，尝试网络请求
-        return await resolveShortUrl(shortUrl, urlWithProtocol);
+        return await resolveAndCleanShortUrl(shortUrl, urlWithProtocol);
     } catch (error) {
         plugin.logger?.error(`解析链接出现意外错误: ${error}`);
         return { url: shortUrl };
@@ -1032,14 +1041,15 @@ async function resolveUrl(shortUrl: string): Promise<{ url: string, platformName
 }
 
 /**
- * 查找匹配规则的辅助函数
+ * 查找URL匹配的平台处理规则
+ * 尝试使用组合正则表达式或单独规则进行匹配
  */
-function findMatchingRule(shortUrl: string, urlWithProtocol: string): { rule: SpecialUrlRule, match: RegExpMatchArray } | null {
+function findMatchingPlatformRule(url: string, urlWithProtocol: string): { rule: SpecialUrlRule, match: RegExpMatchArray } | null {
     // 先尝试使用组合正则表达式匹配
     if (combinedRulePattern) {
         combinedRulePattern.lastIndex = 0; // 重置正则状态
 
-        const match = combinedRulePattern.exec(shortUrl) || combinedRulePattern.exec(urlWithProtocol);
+        const match = combinedRulePattern.exec(url) || combinedRulePattern.exec(urlWithProtocol);
         if (match && match.groups) {
             // 找到匹配的规则名称
             for (const [key, value] of Object.entries(match.groups)) {
@@ -1065,7 +1075,7 @@ function findMatchingRule(shortUrl: string, urlWithProtocol: string): { rule: Sp
     }
 
     // 回退到单独规则匹配
-    const originalHasProtocol = UrlUtils.hasProtocol(shortUrl);
+    const originalHasProtocol = UrlUtils.hasProtocol(url);
     for (const rule of platformRules) {
         // 重置正则状态
         if (rule.pattern.global) {
@@ -1073,7 +1083,7 @@ function findMatchingRule(shortUrl: string, urlWithProtocol: string): { rule: Sp
         }
 
         // 尝试匹配
-        let match = shortUrl.match(rule.pattern);
+        let match = url.match(rule.pattern);
         if (!match && !originalHasProtocol) {
             match = urlWithProtocol.match(rule.pattern);
         }
@@ -1127,7 +1137,7 @@ async function performGetRequest(url: string): Promise<{ url: string }> {
         }
 
         // 检查是否是需要处理的短链接
-        const matchedRule = findMatchingRule("", url);
+        const matchedRule = findMatchingPlatformRule("", url);
         if (matchedRule && matchedRule.rule.needsRedirection) {
             const response = await fetch(url, {
                 method: "GET",
@@ -1156,9 +1166,9 @@ async function performGetRequest(url: string): Promise<{ url: string }> {
 }
 
 /**
- * 专门处理短链接解析的辅助函数
+ * 专门处理短链接解析的辅助函数 - 通过网络请求解析短链接
  */
-async function resolveShortUrl(
+async function resolveAndCleanShortUrl(
     originalUrl: string,
     urlWithProtocol: string,
     platformName?: string
@@ -1171,7 +1181,7 @@ async function resolveShortUrl(
             // 如果解析成功且获得不同URL，清理并返回
             if (resolvedUrl && resolvedUrl !== urlWithProtocol) {
                 // 查找匹配的规则
-                const matchedRule = findMatchingRule(originalUrl, urlWithProtocol);
+                const matchedRule = findMatchingPlatformRule(originalUrl, urlWithProtocol);
                 if (matchedRule && matchedRule.rule.needsRedirection && matchedRule.rule.transform) {
                     // 使用原始规则的transform方法处理重定向结果
                     const cleanedUrl = matchedRule.rule.transform(originalUrl, matchedRule.match, resolvedUrl);
@@ -1214,15 +1224,15 @@ async function resolveShortUrl(
 
                 // 如果没有匹配特定规则，返回清理后的URL
                 // 根据标准规则清理参数
-                if (shouldProcessUrl(resolvedUrl)) {
-                    const { url: cleanedUrl } = await cleanUrl(resolvedUrl);
+                if (needsTrackingParamsCleaning(resolvedUrl)) {
+                    const { url: cleanedUrl } = await applyGeneralTrackingCleanRules(resolvedUrl);
                     return {
                         url: UrlUtils.removeProtocolIfNeeded(originalUrl, cleanedUrl),
                         platformName
                     };
                 } else {
                     // 不需要处理的URL，标准化后返回
-                    const cleanedUrl = UrlUtils.normalizeUrl(resolvedUrl);
+                    const cleanedUrl = CommonTransforms.removeTrackingParams(resolvedUrl, null);
                     return {
                         url: UrlUtils.removeProtocolIfNeeded(originalUrl, cleanedUrl),
                         platformName
@@ -1239,7 +1249,7 @@ async function resolveShortUrl(
             const { url: getUrl } = await performGetRequest(urlWithProtocol);
             if (getUrl && getUrl !== urlWithProtocol) {
                 // 查找匹配的规则
-                const matchedRule = findMatchingRule(originalUrl, urlWithProtocol);
+                const matchedRule = findMatchingPlatformRule(originalUrl, urlWithProtocol);
                 if (matchedRule && matchedRule.rule.needsRedirection && matchedRule.rule.transform) {
                     // 使用原始规则的transform方法处理重定向结果
                     const cleanedUrl = matchedRule.rule.transform(originalUrl, matchedRule.match, getUrl);
@@ -1282,15 +1292,15 @@ async function resolveShortUrl(
 
                 // 如果没有匹配特定规则，返回清理后的URL
                 // 根据标准规则清理参数
-                if (shouldProcessUrl(getUrl)) {
-                    const { url: cleanedUrl } = await cleanUrl(getUrl);
+                if (needsTrackingParamsCleaning(getUrl)) {
+                    const { url: cleanedUrl } = await applyGeneralTrackingCleanRules(getUrl);
                     return {
                         url: UrlUtils.removeProtocolIfNeeded(originalUrl, cleanedUrl),
                         platformName
                     };
                 } else {
                     // 不需要处理的URL，标准化后返回
-                    const cleanedUrl = UrlUtils.normalizeUrl(getUrl);
+                    const cleanedUrl = CommonTransforms.removeTrackingParams(getUrl, null);
                     return {
                         url: UrlUtils.removeProtocolIfNeeded(originalUrl, cleanedUrl),
                         platformName
@@ -1429,7 +1439,7 @@ async function processLinkInfo(linkInfo: LinkInfo): Promise<LinkInfo> {
 
         try {
             // 应用链接处理
-            const { url: processedUrl, platformName } = await resolveUrl(link);
+            const { url: processedUrl, platformName } = await processUrlWithRules(link);
 
             // 根据链接类型（特殊格式或普通链接）构建返回结果
             if (isSpecialFormat) {
