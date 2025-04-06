@@ -27,7 +27,7 @@ log.setConfig({
     }
 });
 
-log.info(`Login in ${self.username} (${self.id})`, { remote: true });
+log.info(`Login in ${self.displayName} (${self.id})`, { remote: true });
 
 // 初始化功能模块
 // Features类负责设置事件处理器和命令处理
@@ -41,7 +41,7 @@ const initSuccess = await features.init();
 if (initSuccess) {
     log.info('功能模块初始化完毕', { remote: true });
 } else {
-    log.error('功能模块初始化失败，程序可能无法正常工作', { remote: true });
+    log.error('功能模块初始化失败', { remote: true });
     process.exit(1);
 }
 
