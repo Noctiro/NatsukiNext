@@ -1,7 +1,7 @@
-import { html, Long, type Message } from '@mtcute/bun';
+import { html, Long } from '@mtcute/bun';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext, PluginEvent } from '../features';
 import DynamicMap from '../utils/DynamicMap';
-import { detectRepeatedSubstrings } from '../utils/MsgRepeatedCheck';
+import { detectRepeatedSubstrings, calculateTextSimilarity } from '../utils/MsgRepeatedCheck';
 
 /**
  * 防刷屏插件配置接口
@@ -201,38 +201,6 @@ function calculateHighFrequencyPenalty(userData: UserData, messageContext: Messa
 }
 
 /**
- * 计算两个词频映射的余弦相似度
- * @param freqMap1 第一个词频映射
- * @param freqMap2 第二个词频映射
- * @returns 相似度分数 (0-1)
- */
-function cosineSimilarity(freqMap1: Record<string, number>, freqMap2: Record<string, number>): number {
-    const words1 = Object.keys(freqMap1);
-    const words2 = Object.keys(freqMap2);
-    const allWords = new Set([...words1, ...words2]);
-
-    // 边缘情况处理：任意一个映射为空时返回0
-    if (allWords.size === 0) return 0;
-
-    let dotProduct = 0;
-    let norm1 = 0;
-    let norm2 = 0;
-
-    // 计算点积和向量范数
-    allWords.forEach(word => {
-        const count1 = freqMap1[word] || 0;
-        const count2 = freqMap2[word] || 0;
-        dotProduct += count1 * count2;
-        norm1 += count1 ** 2;
-        norm2 += count2 ** 2;
-    });
-
-    // 计算余弦相似度
-    const denominator = Math.sqrt(norm1) * Math.sqrt(norm2);
-    return denominator === 0 ? 0 : dotProduct / denominator;
-}
-
-/**
  * 计算消息相似度并评估惩罚分数
  * @param message 当前消息
  * @param lastMessage 上一条消息
@@ -246,31 +214,33 @@ function calculateSimilarityPenalty(message: string, lastMessage: string, userDa
         return 0;
     }
 
-    // 改进的分词和词频统计 (lowercase, basic punctuation handling)
-    const getWordFrequency = (text: string): Record<string, number> => {
-        // Convert to lowercase and split by non-alphanumeric characters (basic)
-        const words = text.toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/).filter(Boolean); // Basic CJK range included
-        const freqMap: Record<string, number> = {};
-        for (const word of words) {
-            freqMap[word] = (freqMap[word] || 0) + 1;
-        }
-        return freqMap;
-    };
-
-    const freqMap1 = getWordFrequency(message);
-    const freqMap2 = getWordFrequency(lastMessage);
-
-    // 如果任一消息没有有效词语，则不计算相似度
-    if (Object.keys(freqMap1).length === 0 || Object.keys(freqMap2).length === 0) {
-        userData.consecutiveSimilarityCount = 0;
-        return 0;
-    }
-
-    const similarityScore = cosineSimilarity(freqMap1, freqMap2);
+    // 使用优化的中文相似度检测
+    const similarityScore = calculateTextSimilarity(message, lastMessage);
+    
+    // 日志记录相似度得分 (调试期间可以使用)
+    // console.log(`相似度得分: ${similarityScore.toFixed(4)}, 消息长度: ${message.length}`);
 
     if (similarityScore > config.similarity.threshold) {
+        // 对长文本的相似度阈值需要更高
+        // 较长文本需要有更高的相似度才会触发惩罚
+        const lengthAdjustedThreshold = config.similarity.threshold + 
+            (Math.log(Math.max(message.length, lastMessage.length) / 100 + 1) * 0.05);
+        
+        // 如果是长文本且得分只是略微超过基础阈值，可能不触发惩罚
+        if (message.length > 200 && similarityScore <= lengthAdjustedThreshold) {
+            userData.consecutiveSimilarityCount = 0; // 重置连续相似计数
+            return 0;
+        }
+        
         // 基础惩罚分，使用对数平滑
         let penalty = Math.log(similarityScore + 1) * config.similarity.penaltyBase;
+        
+        // 对较长文本的相似性给予更高的基础惩罚，因为长文本的相似更可能是有意为之
+        if (message.length > 100) {
+            const lengthBonus = Math.log(message.length / 100 + 1) * 0.5;
+            penalty *= (1 + lengthBonus);
+        }
+        
         // 连续相似惩罚加成
         penalty *= 1 + userData.consecutiveSimilarityCount * config.similarity.incrementalFactor;
         userData.consecutiveSimilarityCount++;
