@@ -442,7 +442,7 @@ function parseRSS(xmlContent: string): RSSFeed {
                         items: []
                     };
                     
-                    // 尝试从内容中直接提取标题 - 改进CDATA处理
+                    // 尝试从内容中直接提取标题 - CDATA处理
                     const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/i.exec(normalizedContent);
                     if (titleMatch) {
                         const cdataContent = titleMatch[1] || '';
@@ -450,7 +450,7 @@ function parseRSS(xmlContent: string): RSSFeed {
                         channel.title = cleanText(cdataContent || regularContent, { maxLength: 500 });
                     }
                     
-                    // 尝试从内容中直接提取描述 - 改进CDATA处理
+                    // 尝试从内容中直接提取描述 - CDATA处理
                     const descMatch = /<description[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/description>/i.exec(normalizedContent);
                     if (descMatch) {
                         const cdataContent = descMatch[1] || '';
@@ -515,7 +515,7 @@ function parseRSS2(xmlContent: string, version: string): RSSFeed {
         // 使用放宽的匹配结果
         const channelContent = relaxedMatch[1];
         
-        // 改进：直接提取并处理CDATA标题
+        // 直接提取并处理CDATA标题
         let title = '';
         const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/is.exec(channelContent);
         if (titleMatch) {
@@ -526,7 +526,7 @@ function parseRSS2(xmlContent: string, version: string): RSSFeed {
             title = cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }) || 'Unknown Feed';
         }
         
-        // 改进：直接提取并处理CDATA描述
+        // 直接提取并处理CDATA描述
         let description = '';
         const descMatch = /<description[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/description>/is.exec(channelContent);
         if (descMatch) {
@@ -564,7 +564,7 @@ function parseRSS2(xmlContent: string, version: string): RSSFeed {
 
     const channelContent = channelMatch[1];
     
-    // 改进：直接提取并处理CDATA标题
+    // 直接提取并处理CDATA标题
     let title = '';
     const titleMatch = /<title[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/is.exec(channelContent);
     if (titleMatch) {
@@ -575,7 +575,7 @@ function parseRSS2(xmlContent: string, version: string): RSSFeed {
         title = cleanText(safeExtract(channelContent, "title"), { maxLength: 500 }) || 'Unknown Feed';
     }
     
-    // 改进：直接提取并处理CDATA描述
+    // 直接提取并处理CDATA描述
     let description = '';
     const descMatch = /<description[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/description>/is.exec(channelContent);
     if (descMatch) {

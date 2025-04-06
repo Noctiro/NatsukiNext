@@ -106,7 +106,6 @@ export interface BaseContext {
     chatId: number;
     // 权限检查函数
     hasPermission(permission: string): boolean;
-    // 不再提供reply方法，请直接使用message对象上的具体方法如replyText、replyMedia等
 }
 
 // 命令上下文
@@ -1339,7 +1338,6 @@ export class Features {
      * 2. 设置整体命令处理超时（3分钟）
      * 3. 清理资源（计时器、队列）
      * 4. 错误处理与传播
-     * 优化版：改进队列管理，提高多用户并发处理效率
      * 
      * @param ctx 消息上下文
      */
@@ -1455,7 +1453,7 @@ export class Features {
             // 获取用户ID
             const userId = ctx.sender.id;
 
-            // 首先检查用户命令频率限制 - 使用改进的滑动窗口方法
+            // 首先检查用户命令频率限制 - 滑动窗口方法
             const rateLimitCheck = this.checkUserCommandRateLimit(userId);
             if (!rateLimitCheck.allowed) {
                 // 用户发送命令过于频繁
@@ -3774,7 +3772,6 @@ export class Features {
     /**
      * 优化对象池大小
      * 动态调整对象池容量，以平衡性能和内存使用
-     * 改进版：根据使用状况和堆内存压力自适应调整池大小
      * 
      * @param aggressive 是否执行更积极的缩减
      * @returns 从池中移除的对象数量
@@ -4225,7 +4222,7 @@ export class Features {
         for (let i = commandHistory.length - 1; i >= 0; i--) {
             const timestamp = commandHistory[i];
             
-            // 修复：添加未定义检查
+            // 未定义检查
             if (timestamp === undefined) continue;
             
             if (timestamp >= shortWindowStart) {

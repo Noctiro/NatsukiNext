@@ -101,7 +101,7 @@ const createPositionedBubble = (asciiArt: string, text: string, styleIndex: numb
         }, 0);
     }));
 
-    // --- 生成改进的气泡形状 ---
+    // --- 生成气泡形状 ---
     // 允许选择不同的气泡风格
     const bubbleStyles = [
         { // 标准气泡

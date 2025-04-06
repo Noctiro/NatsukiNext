@@ -101,7 +101,7 @@ class UserManager {
     incrementUsage(userId: number, messageLength?: number): void {
         // 不适用于无限制用户
         this.userCount.get(userId).then(count => {
-            // 修复类型问题：确保count是数字
+            // 确保count是数字
             const numericCount = typeof count === 'number' ? count : 0;
 
             // 计算基于消息长度的增长值
@@ -1750,7 +1750,6 @@ class AIPlugin {
                 throw error; // 重新抛出错误以便外层 catch 捕获
             }
         } catch (error) {
-            // 改进错误处理以提供更友好的错误信息
             plugin.logger?.error('AI processing error:', error);
 
             let errorMessage = '处理请求时出错';

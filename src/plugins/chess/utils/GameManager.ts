@@ -1,6 +1,7 @@
 import { Game } from '../models/Game';
 import { PieceColor } from '../models/ChessTypes';
 import type { IInvite } from '../models/ChessTypes';
+import { GameStatus } from '../models/ChessTypes';
 
 /**
  * 游戏管理器，负责管理所有游戏和邀请
@@ -157,5 +158,28 @@ export class GameManager {
      */
     getChatGames(chatId: number): Game[] {
         return Array.from(this.activeGames.values()).filter(game => game.chatId === chatId);
+    }
+
+    /**
+     * 检查并结束超时的游戏
+     * @param timeoutHours 超时时间（小时）
+     * @returns 超时并被结束的游戏列表
+     */
+    checkTimeoutGames(timeoutHours: number = 12): Game[] {
+        const now = Date.now();
+        const timeoutMs = timeoutHours * 60 * 60 * 1000; // 转换为毫秒
+        const timeoutGames: Game[] = [];
+
+        for (const game of this.activeGames.values()) {
+            if (game.status === GameStatus.PLAYING && (now - game.lastActiveTime) > timeoutMs) {
+                // 游戏超时，标记为已结束
+                game.status = GameStatus.FINISHED;
+                // 根据当前回合确定获胜方（超时方判负）
+                game.winner = game.currentTurn === PieceColor.RED ? PieceColor.BLACK : PieceColor.RED;
+                timeoutGames.push(game);
+            }
+        }
+
+        return timeoutGames;
     }
 } 

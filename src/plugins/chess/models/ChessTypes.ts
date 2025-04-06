@@ -49,6 +49,7 @@ export interface IGame {
     lastMove?: string; // 上一步的走法描述
     history: string[]; // 历史走法
     startTime: number; // 游戏开始时间
+    lastActiveTime: number; // 最后活动时间 用于超时注销
     winner?: PieceColor; // 获胜方
 }
 

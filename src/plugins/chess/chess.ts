@@ -38,9 +38,18 @@ const plugin: BotPlugin = {
     version: '1.0.0',
 
     // 添加onLoad钩子，初始化BoardRenderer的logger
-    async onLoad() {
+    async onLoad(client) {
         // 初始化BoardRenderer的logger
         BoardRenderer.setLogger(this.logger);
+
+        // 创建检查超时游戏的定时器
+        setInterval(async () => {
+            try {
+                await checkTimeoutGames(client, this.logger);
+            } catch (error) {
+                this.logger?.error('检查超时游戏时出错:', error);
+            }
+        }, 60 * 60 * 1000); // 每小时检查一次
     },
 
     commands: [
@@ -307,6 +316,9 @@ async function moveCommand(ctx: CommandContext) {
             return;
         }
 
+        // 确保成功移动后，更新游戏的最后活动时间
+        game.lastActiveTime = Date.now();
+
         if (game.status === GameStatus.FINISHED) {
             const winner = game.winner === PieceColor.RED ? '红方' : '黑方';
             await renderAndSendBoard(game, ctx, `游戏结束！${winner}获胜！`);
@@ -421,6 +433,9 @@ async function processAIMove(game: Game, ctx: CommandContext) {
         }
 
         game.move(aiMove.from, aiMove.to);
+
+        // 更新AI移动后的最后活动时间
+        game.lastActiveTime = Date.now();
 
         const statusMessage = game.status === GameStatus.FINISHED
             ? 'AI获胜了！'
@@ -980,6 +995,64 @@ async function handleMenuCallback(ctx: CallbackEventContext) {
             text: '返回菜单时出错',
             alert: true
         }).catch(() => { });
+    }
+}
+
+/**
+ * 检查并处理超时游戏
+ * @param client Telegram客户端
+ * @param logger 日志记录器
+ */
+async function checkTimeoutGames(client: any, logger: any): Promise<void> {
+    try {
+        // 检查超时游戏 (超过12小时无活动的游戏)
+        const timeoutGames = gameManager.checkTimeoutGames(12);
+
+        // 处理超时游戏
+        if (timeoutGames.length > 0) {
+            logger?.info(`发现 ${timeoutGames.length} 个超时游戏，准备结束`);
+
+            for (const game of timeoutGames) {
+                try {
+                    // 获取超时方和获胜方信息
+                    const timeoutColor = game.winner === PieceColor.RED ? PieceColor.BLACK : PieceColor.RED;
+                    const timeoutPlayer = timeoutColor === PieceColor.RED ? game.redPlayer : game.blackPlayer;
+                    const winnerPlayer = timeoutColor === PieceColor.RED ? game.blackPlayer : game.redPlayer;
+
+                    // 准备消息内容
+                    let timeoutMessage = `⏰ 中国象棋游戏 #${game.id.substring(5, 13)} 超时结束！\n`;
+                    timeoutMessage += `由于超过12小时没有操作，`;
+
+                    if (typeof timeoutPlayer === 'number' && typeof winnerPlayer === 'number') {
+                        timeoutMessage += `<a href="tg://user?id=${timeoutPlayer}">${timeoutColor === PieceColor.RED ? '红方' : '黑方'}玩家</a>超时判负，`;
+                        timeoutMessage += `<a href="tg://user?id=${winnerPlayer}">${timeoutColor === PieceColor.RED ? '黑方' : '红方'}玩家</a>获胜！`;
+                    } else if (typeof timeoutPlayer === 'number') {
+                        // AI获胜
+                        timeoutMessage += `<a href="tg://user?id=${timeoutPlayer}">${timeoutColor === PieceColor.RED ? '红方' : '黑方'}玩家</a>超时判负，AI获胜！`;
+                    } else if (typeof winnerPlayer === 'number') {
+                        // 玩家获胜
+                        timeoutMessage += `AI超时，<a href="tg://user?id=${winnerPlayer}">${timeoutColor === PieceColor.RED ? '黑方' : '红方'}玩家</a>获胜！`;
+                    }
+
+                    // 发送超时通知
+                    await client.sendText(game.chatId, html(timeoutMessage));
+
+                    // 结束游戏
+                    gameManager.endGame(game.id);
+                    logger?.info(`成功结束超时游戏 ${game.id}`);
+                } catch (gameError) {
+                    logger?.error(`处理超时游戏 ${game.id} 时出错:`, gameError);
+                }
+            }
+        }
+
+        // 清理过期邀请
+        gameManager.cleanupExpiredInvites();
+
+        // 清理已完成游戏
+        gameManager.cleanupFinishedGames();
+    } catch (error) {
+        logger?.error('检查超时游戏任务出错:', error);
     }
 }
 
