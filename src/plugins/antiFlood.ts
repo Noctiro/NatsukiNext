@@ -21,6 +21,9 @@ interface AntiFloodConfig {
     };
     repeat: {
         penalty: number;
+        historyTimeWindow: number;    // 重复消息历史记录的时间窗口（毫秒）
+        exponentialBase: number;      // 指数惩罚的基数
+        maxRepetitionMultiplier: number; // 重复惩罚的最大倍数
     };
     similarity: {
         threshold: number;           // 基础相似度阈值
@@ -60,7 +63,10 @@ const defaultConfig: AntiFloodConfig = {
         weight: 0.2, // 消息长度得分的权重
     },
     repeat: {
-        penalty: 5, // 重复消息的惩罚分数
+        penalty: 5, // 重复消息的基础惩罚分数
+        historyTimeWindow: 180000, // 重复消息历史记录的时间窗口（3分钟）
+        exponentialBase: 1.5, // 指数惩罚的基数
+        maxRepetitionMultiplier: 5.0 // 重复惩罚的最大倍数
     },
     similarity: {
         threshold: 0.75, // 消息相似度阈值（降低基础阈值，让特殊情况由专门的逻辑处理）
@@ -84,38 +90,78 @@ const defaultConfig: AntiFloodConfig = {
     warningMessageDeleteAfter: 30, // 警告消息自动删除时间（秒）
 };
 
-/**
- * 用户活动数据接口
- * 存储用户的消息状态和行为特征
- */
-interface UserData {
-    score: number;                      // 当前累计分数
-    consecutiveSimilarityCount: number; // 连续相似消息计数
-    lastMessageTime: number;            // 最后一条消息的时间戳（秒）
-    lastMessage: string;                // 上一条消息内容
-    lastMediaGroupID?: Long;            // 上一条媒体组ID
-    // Timestamps for high-frequency check: [timestamp_ms, score_contribution]
-    // Using a tuple array as a simple queue.
-    timestamps: [number, number][];
-    // Keep track of the sum of scores within the current window to avoid recalculation
-    highFrequencyScoreSum: number;
-    warningMessageId?: number;          // 当前警告消息的ID
-    lastWarningSentTime: number;        // 上次发送警告的时间戳（秒）
-}
-
 // 插件配置状态（运行时）
 let config: AntiFloodConfig = { ...defaultConfig };
 
-// 用户数据存储
+/**
+ * 用户活动数据接口 - 结构优化，按功能分组
+ * 存储用户的消息状态和行为特征
+ */
+interface UserData {
+    // 核心评分数据
+    score: {
+        current: number;                    // 当前累计分数
+        lastIncrease: number;               // 上次分数增加值（用于调试）
+    };
+
+    // 消息内容特征
+    content: {
+        lastMessage: string;                // 上一条消息内容
+        lastMessageTime: number;            // 最后一条消息的时间戳（秒）
+        lastMediaGroupID?: Long;            // 上一条媒体组ID
+        consecutiveSimilarityCount: number; // 连续相似消息计数
+    };
+
+    // 重复检测数据 - 简化为仅保留最近一条消息和时间列表
+    repetition: {
+        lastMessage: string;                // 最后一条消息记录
+        timestamps: number[];               // 消息时间戳列表（毫秒）
+    };
+
+    // 高频检测数据
+    frequency: {
+        timestamps: [number, number][];     // [时间戳, 分数贡献]
+        scoreSum: number;                   // 当前窗口内的分数总和
+    };
+
+    // 警告消息状态
+    warnings: {
+        messageId?: number;                 // 当前警告消息的ID
+        lastSentTime: number;               // 上次发送警告的时间戳（秒）
+    };
+}
+
+// 扩展DynamicMap类型以包含delete方法
+interface UserDynamicMap<K, V> {
+    get(key: K): Promise<V>;
+    forEach(fn: (value: V, key: K) => void): void;
+    delete?(key: K): void;
+    reset(key: K): void;
+}
+
+// 用户数据存储 - 使用新的结构初始化
 const userActivityMap = new DynamicMap<number, UserData>(() => ({
-    score: 0,
-    consecutiveSimilarityCount: 0,
-    lastMessageTime: 0,
-    lastMessage: '',
-    timestamps: [],
-    highFrequencyScoreSum: 0, // Initialize the sum
-    lastWarningSentTime: 0,
-}));
+    score: {
+        current: 0,
+        lastIncrease: 0
+    },
+    content: {
+        lastMessage: '',
+        lastMessageTime: 0,
+        consecutiveSimilarityCount: 0
+    },
+    repetition: {
+        lastMessage: null,
+        timestamps: []
+    },
+    frequency: {
+        timestamps: [],
+        scoreSum: 0
+    },
+    warnings: {
+        lastSentTime: 0
+    }
+})) as UserDynamicMap<number, UserData>;
 
 // Define minimum length for similarity check as a constant
 const MIN_LENGTH_FOR_SIMILARITY = 5;
@@ -149,8 +195,8 @@ function calculateHighFrequencyPenalty(userData: UserData, messageContext: Messa
     // 1. Remove expired timestamps and subtract their score from the sum
     let expiredScoreSum = 0;
     let firstValidIndex = 0;
-    for (let i = 0; i < userData.timestamps.length; i++) {
-        const timestampEntry = userData.timestamps[i];
+    for (let i = 0; i < userData.frequency.timestamps.length; i++) {
+        const timestampEntry = userData.frequency.timestamps[i];
         // Although the loop condition should prevent this, adding a check for robustness
         // and to satisfy stricter compiler checks.
         if (!timestampEntry) continue;
@@ -163,11 +209,11 @@ function calculateHighFrequencyPenalty(userData: UserData, messageContext: Messa
         }
     }
     if (firstValidIndex > 0) {
-        userData.timestamps.splice(0, firstValidIndex); // Efficiently remove expired entries
-        userData.highFrequencyScoreSum -= expiredScoreSum;
+        userData.frequency.timestamps.splice(0, firstValidIndex); // Efficiently remove expired entries
+        userData.frequency.scoreSum -= expiredScoreSum;
     }
     // Ensure sum doesn't drift due to potential floating point issues
-    userData.highFrequencyScoreSum = Math.max(0, userData.highFrequencyScoreSum);
+    userData.frequency.scoreSum = Math.max(0, userData.frequency.scoreSum);
 
 
     // 2. Determine score contribution of the current message
@@ -176,28 +222,28 @@ function calculateHighFrequencyPenalty(userData: UserData, messageContext: Messa
     if (msg.groupedId) {
         // Optimization: If part of the same media group as the last message, maybe score it 0?
         // This prevents penalizing rapid uploads within a single group.
-        if (userData.lastMediaGroupID && userData.lastMediaGroupID.equals(msg.groupedId)) {
+        if (userData.content.lastMediaGroupID && userData.content.lastMediaGroupID.equals(msg.groupedId)) {
             currentMessageScore = 0; // No penalty for subsequent messages in the *same* group
         } else {
             currentMessageScore = config.highFrequency.forgivenessScore.mediaGroup;
-            userData.lastMediaGroupID = msg.groupedId; // Update last seen group ID
+            userData.content.lastMediaGroupID = msg.groupedId; // Update last seen group ID
         }
     } else if (msg.forward) {
         currentMessageScore = config.highFrequency.forgivenessScore.forward;
-        userData.lastMediaGroupID = undefined; // Reset last media group ID
+        userData.content.lastMediaGroupID = undefined; // Reset last media group ID
     } else {
-        userData.lastMediaGroupID = undefined; // Reset last media group ID
+        userData.content.lastMediaGroupID = undefined; // Reset last media group ID
     }
 
 
     // 3. Add current message's timestamp and score
     if (currentMessageScore > 0) { // Only add if it contributes score
-        userData.timestamps.push([currentTimeMs, currentMessageScore]);
-        userData.highFrequencyScoreSum += currentMessageScore;
+        userData.frequency.timestamps.push([currentTimeMs, currentMessageScore]);
+        userData.frequency.scoreSum += currentMessageScore;
     }
 
     // 4. Check if the limit is exceeded
-    if (userData.highFrequencyScoreSum > config.highFrequency.limit) {
+    if (userData.frequency.scoreSum > config.highFrequency.limit) {
         // Return the penalty, but don't apply it directly to userData.score here.
         // Let the main processing logic handle the total score increase.
         return config.highFrequency.penalty;
@@ -216,137 +262,100 @@ function calculateHighFrequencyPenalty(userData: UserData, messageContext: Messa
 function calculateSimilarityPenalty(message: string, lastMessage: string, userData: UserData): number {
     // 消息太短或上一条消息不存在时不计算
     if (!lastMessage || message.length < MIN_LENGTH_FOR_SIMILARITY || lastMessage.length < MIN_LENGTH_FOR_SIMILARITY) {
-        userData.consecutiveSimilarityCount = 0;
+        userData.content.consecutiveSimilarityCount = 0;
         return 0;
     }
 
     // 1. 长度比例检查 - 长度差异过大的文本自然相似度较低
     const lengthRatio = Math.min(message.length, lastMessage.length) / Math.max(message.length, lastMessage.length);
-    
+
     // 如果长度差异过大（短消息长度不到长消息的阈值比例），则启用特殊处理逻辑
     if (lengthRatio < config.similarity.lengthRatioThreshold) {
         // 根据差异程度调整相似度判定阈值
         const ratioAdjustment = config.similarity.lengthRatioThreshold - lengthRatio; // 0到阈值之间的调整值
-        
+
         // 使用优化的中文相似度检测
         const similarityScore = calculateTextSimilarity(message, lastMessage);
-        
+
         // 对于长度差异大的情况，设置更高的相似度要求
         const adjustedThreshold = config.similarity.threshold + ratioAdjustment * 1.5;
-        
+
         // 只有极高的相似度才认为是有问题的（例如一个短语重复出现在长文本中）
         if (similarityScore > adjustedThreshold) {
             // 降低惩罚强度，因为长度差异大
             let penalty = Math.log(similarityScore + 1) * config.similarity.penaltyBase * lengthRatio * 2;
-            userData.consecutiveSimilarityCount++;
-            return penalty;
-        } else {
-            userData.consecutiveSimilarityCount = 0;
-            return 0;
-        }
-    }
-    
-    // 2. 结构特征分析 - 针对中等长度及以上的文本
-    if (message.length > 50 && lastMessage.length > 50) {
-        // 计算句子数量 - 通过常见标点符号粗略估计
-        const sentenceCount1 = (message.match(/[。！？\.!?]+/g) || []).length + 1;
-        const sentenceCount2 = (lastMessage.match(/[。！？\.!?]+/g) || []).length + 1;
-        
-        // 句子数量差异过大表明结构不同
-        const sentenceRatio = Math.min(sentenceCount1, sentenceCount2) / Math.max(sentenceCount1, sentenceCount2);
-        
-        // 段落结构差异检查 - 如果换行符数量差异大，可能是不同的文本格式
-        const lineBreaks1 = (message.match(/\n/g) || []).length + 1;
-        const lineBreaks2 = (lastMessage.match(/\n/g) || []).length + 1;
-        const lineBreakRatio = Math.min(lineBreaks1, lineBreaks2) / Math.max(lineBreaks1, lineBreaks2);
-        
-        // 如果结构差异大，提高相似度要求
-        let structuralAdjustment = 0;
-        if (sentenceRatio < config.similarity.minSentenceRatio) structuralAdjustment += 0.1;
-        if (lineBreakRatio < config.similarity.minSentenceRatio) structuralAdjustment += 0.1;
-        
-        // 使用优化的中文相似度检测
-        const similarityScore = calculateTextSimilarity(message, lastMessage);
-        
-        // 根据结构差异调整阈值
-        const structuralThreshold = config.similarity.threshold + structuralAdjustment;
-        
-        if (similarityScore > structuralThreshold) {
-            // 基础惩罚分，使用对数平滑
-            let penalty = Math.log(similarityScore + 1) * config.similarity.penaltyBase;
-            
-            // 对结构相似的长文本给予更高惩罚（可能是复制粘贴）
-            if (sentenceRatio > 0.7 && lineBreakRatio > 0.7) {
-                penalty *= config.similarity.structuralWeight;
+
+            // 连续相似消息的惩罚加成 - 使用指数增长模式
+            if (userData.content.consecutiveSimilarityCount > 0) {
+                const exponentialFactor = Math.min(
+                    Math.pow(1.3, userData.content.consecutiveSimilarityCount),
+                    4.0 // 限制最大倍数
+                );
+                penalty *= exponentialFactor;
             }
-            
-            // 连续相似惩罚加成
-            penalty *= 1 + userData.consecutiveSimilarityCount * config.similarity.incrementalFactor;
-            userData.consecutiveSimilarityCount++;
+
+            userData.content.consecutiveSimilarityCount++;
             return penalty;
         } else {
-            userData.consecutiveSimilarityCount = 0;
+            userData.content.consecutiveSimilarityCount = 0;
             return 0;
         }
     }
-    
-    // 3. 标准相似度检测（用于其他情况）
+
+    // 2. 标准相似度检测（用于其他情况）
     const similarityScore = calculateTextSimilarity(message, lastMessage);
-    
-    // 日志记录相似度得分 (调试期间可以使用)
-    // console.log(`相似度得分: ${similarityScore.toFixed(4)}, 消息长度: ${message.length}`);
 
     if (similarityScore > config.similarity.threshold) {
         // 对长文本的相似度阈值需要更高
         // 较长文本需要有更高的相似度才会触发惩罚
-        const lengthAdjustedThreshold = config.similarity.threshold + 
+        const lengthAdjustedThreshold = config.similarity.threshold +
             (Math.log(Math.max(message.length, lastMessage.length) / 100 + 1) * 0.05);
-        
+
         // 如果是长文本且得分只是略微超过基础阈值，可能不触发惩罚
         if (message.length > 200 && similarityScore <= lengthAdjustedThreshold) {
-            userData.consecutiveSimilarityCount = 0; // 重置连续相似计数
+            userData.content.consecutiveSimilarityCount = 0; // 重置连续相似计数
             return 0;
         }
-        
+
         // 基础惩罚分，使用对数平滑
         let penalty = Math.log(similarityScore + 1) * config.similarity.penaltyBase;
-        
+
         // 对较长文本的相似性给予更高的基础惩罚，考虑实际长度比例
         if (message.length > 100) {
             // 修改为考虑两条消息的实际长度比例
             const lengthBonus = Math.log(message.length / 100 + 1) * 0.5 * lengthRatio;
             penalty *= (1 + lengthBonus);
         }
-        
+
         // 4. 内容特征分析
         // 检查数字比例 - 大量相同数字可能是刷屏
         const digitRatio1 = (message.match(/\d/g) || []).length / message.length;
         const digitRatio2 = (lastMessage.match(/\d/g) || []).length / lastMessage.length;
-        
+
         // 特殊内容检测 - URL/链接、代码片段等
         const urlPattern = /(https?:\/\/[^\s]+)|(www\.[^\s]+)/g;
         const hasUrl1 = urlPattern.test(message);
         urlPattern.lastIndex = 0; // 重置正则表达式状态
         const hasUrl2 = urlPattern.test(lastMessage);
-        
+
         // 检测代码风格文本 (有大量标点符号、缩进、括号等)
         const codeStylePattern = /[{}\[\]()<>:;]/g;
         const codeCharCount1 = (message.match(codeStylePattern) || []).length;
         const codeCharCount2 = (lastMessage.match(codeStylePattern) || []).length;
         const codeStyleRatio1 = codeCharCount1 / message.length;
         const codeStyleRatio2 = codeCharCount2 / lastMessage.length;
-        
+
         // 内容特征调整
         // 如果两条消息都有高比例的数字且相似，可能是重复发送数据/代码
         if (digitRatio1 > 0.3 && digitRatio2 > 0.3 && Math.abs(digitRatio1 - digitRatio2) < 0.1) {
             penalty *= 1.2;
         }
-        
+
         // URL相似性处理 - 如果含有相似URL，可能是广告刷屏
         if (hasUrl1 && hasUrl2) {
-            penalty *= 1.1; 
+            penalty *= 1.1;
         }
-        
+
         // 代码风格文本处理 - 更宽松对待代码片段
         if (codeStyleRatio1 > 0.05 && codeStyleRatio2 > 0.05) {
             // 如果同时具有代码风格并且相似度较高，更可能是合法的代码分享
@@ -355,13 +364,21 @@ function calculateSimilarityPenalty(message: string, lastMessage: string, userDa
                 penalty *= 0.8; // 降低惩罚
             }
         }
-        
-        // 连续相似惩罚加成
-        penalty *= 1 + userData.consecutiveSimilarityCount * config.similarity.incrementalFactor;
-        userData.consecutiveSimilarityCount++;
+
+        // 连续相似惩罚加成 - 改为指数增长模式
+        if (userData.content.consecutiveSimilarityCount > 0) {
+            // 指数增长的惩罚系数，但设置上限避免过度惩罚
+            const exponentialFactor = Math.min(
+                Math.pow(1.5, userData.content.consecutiveSimilarityCount),
+                5.0 // 最大倍数限制
+            );
+            penalty *= exponentialFactor;
+        }
+
+        userData.content.consecutiveSimilarityCount++;
         return penalty;
     } else {
-        userData.consecutiveSimilarityCount = 0; // 重置连续相似计数
+        userData.content.consecutiveSimilarityCount = 0; // 重置连续相似计数
         return 0;
     }
 }
@@ -393,17 +410,17 @@ async function defend(ctx: MessageEventContext, userData: UserData): Promise<voi
 
     const currentTimeSec = Math.floor(Date.now() / 1000);
 
-    if (userData.score > config.limitScore) {
+    if (userData.score.current > config.limitScore) {
         // 删除触发刷屏的消息
         await safeDeleteMessage(ctx.client, ctx.chatId, ctx.message.id, "[AntiFlood]");
 
         // 检查是否需要发送新的警告消息
-        const timeSinceLastWarning = currentTimeSec - userData.lastWarningSentTime;
+        const timeSinceLastWarning = currentTimeSec - userData.warnings.lastSentTime;
         if (timeSinceLastWarning >= config.warningMessageInterval) {
             // 删除旧警告消息（如果存在）
-            if (userData.warningMessageId) {
-                await safeDeleteMessage(ctx.client, ctx.chatId, userData.warningMessageId, "[AntiFlood]");
-                userData.warningMessageId = undefined;
+            if (userData.warnings.messageId) {
+                await safeDeleteMessage(ctx.client, ctx.chatId, userData.warnings.messageId, "[AntiFlood]");
+                userData.warnings.messageId = undefined;
             }
 
             // 计算预计恢复时间 (using multiplicative decay logic)
@@ -424,8 +441,8 @@ async function defend(ctx: MessageEventContext, userData: UserData): Promise<voi
                 // We need the smallest integer n satisfying this, so we use Math.ceil().
                 const decayFactor = 1 - config.decay.rate;
                 // Ensure score is actually above limit and decay factor is valid for calculation
-                if (userData.score > config.limitScore && decayFactor > 0 && decayFactor < 1) {
-                    const numerator = Math.log(config.limitScore / userData.score);
+                if (userData.score.current > config.limitScore && decayFactor > 0 && decayFactor < 1) {
+                    const numerator = Math.log(config.limitScore / userData.score.current);
                     const denominator = Math.log(decayFactor);
                     // Check for potential division by zero or invalid log results, though decayFactor check helps
                     if (denominator !== 0 && isFinite(numerator) && isFinite(denominator)) {
@@ -436,11 +453,11 @@ async function defend(ctx: MessageEventContext, userData: UserData): Promise<voi
                     } else {
                         timeToRecoverSec = '计算错误'; // Error case
                     }
-                } else if (userData.score <= config.limitScore) {
+                } else if (userData.score.current <= config.limitScore) {
                     timeToRecoverSec = 0; // Already below limit
                 }
                 // If decay rate is 0 or >= 1, timeToRecoverSec remains '永久' unless already below limit
-            } else if (userData.score <= config.limitScore) {
+            } else if (userData.score.current <= config.limitScore) {
                 timeToRecoverSec = 0; // Already below limit
             }
 
@@ -450,25 +467,25 @@ async function defend(ctx: MessageEventContext, userData: UserData): Promise<voi
                 const warningText = html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName}</a> 你已触发刷屏保护<br>预计 ${timeToRecoverSec} 秒后解除限制<br>#防刷屏保护`;
                 const warningMsg = await ctx.message.answerText(warningText);
 
-                userData.warningMessageId = warningMsg.id; // 存储新警告消息的 ID
-                userData.lastWarningSentTime = currentTimeSec; // 更新上次发送警告的时间
+                userData.warnings.messageId = warningMsg.id; // 存储新警告消息的 ID
+                userData.warnings.lastSentTime = currentTimeSec; // 更新上次发送警告的时间
 
                 // 设置定时删除警告消息
                 setTimeout(async () => {
                     // Need client and chatId again for the delayed deletion
-                    if (userData.warningMessageId === warningMsg.id) {
+                    if (userData.warnings.messageId === warningMsg.id) {
                         await safeDeleteMessage(ctx.client, ctx.chatId, warningMsg.id, "[AntiFlood]");
-                        userData.warningMessageId = undefined; // Clear ID only after successful deletion attempt
+                        userData.warnings.messageId = undefined; // Clear ID only after successful deletion attempt
                     }
                 }, config.warningMessageDeleteAfter * 1000);
             } catch (error) {
-                plugin.logger?.error(`[AntiFlood] 发送警告消息失败: ${error}`);
+                plugin.logger?.error(`发送警告消息失败: ${error}`);
             }
         }
-    } else if (userData.warningMessageId) {
+    } else if (userData.warnings.messageId) {
         // 如果分数降到阈值以下，并且有警告消息，则删除
-        await safeDeleteMessage(ctx.client, ctx.chatId, userData.warningMessageId, "[AntiFlood]");
-        userData.warningMessageId = undefined;
+        await safeDeleteMessage(ctx.client, ctx.chatId, userData.warnings.messageId, "[AntiFlood]");
+        userData.warnings.messageId = undefined;
     }
 }
 
@@ -495,7 +512,7 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
     let highFrequencyPenalty = 0;
 
     // 1. 高频发送检测 (Calculate penalty first, as it uses pre-update state)
-    // Note: calculateHighFrequencyPenalty updates userData.timestamps and userData.highFrequencyScoreSum internally
+    // Note: calculateHighFrequencyPenalty updates userData.frequency.timestamps and userData.frequency.scoreSum internally
     highFrequencyPenalty = calculateHighFrequencyPenalty(userData, ctx, currentTimeMs);
     scoreIncrease += highFrequencyPenalty;
 
@@ -504,13 +521,49 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
         // 2a. 长度得分
         scoreIncrease += calculateLengthScore(messageText.length);
 
-        // 2b. 完全重复惩罚 (Check against previous message)
-        if (userData.lastMessage && userData.lastMessage === messageText) {
-            scoreIncrease += config.repeat.penalty;
+        // 2b. 重复消息历史处理 - 简化版本
+        const historyWindowStart = currentTimeMs - config.repeat.historyTimeWindow;
+
+        // 清理过期时间戳
+        userData.repetition.timestamps = userData.repetition.timestamps.filter(
+            timestamp => timestamp >= historyWindowStart
+        );
+
+        // 检查当前消息是否与记录的最后一条消息相同
+        if (userData.repetition.lastMessage && userData.repetition.timestamps.length > 0) {
+            // 重复消息检测
+            if (userData.repetition.lastMessage === messageText) {
+                // 添加当前消息时间戳
+                userData.repetition.timestamps.push(currentTimeMs);
+
+                // 计算指数增长惩罚值 - 基于连续重复次数
+                const repetitionFactor = Math.min(
+                    Math.pow(config.repeat.exponentialBase, userData.repetition.timestamps.length - 1),
+                    config.repeat.maxRepetitionMultiplier
+                );
+
+                // 计算短时间内消息密度 - 基于时间窗口内消息数量
+                const messageDensity = Math.min(2.0, userData.repetition.timestamps.length / 3);
+
+                // 最终重复惩罚分数 - 结合重复次数和消息密度
+                const repetitionPenalty = config.repeat.penalty * repetitionFactor * messageDensity;
+                scoreIncrease += repetitionPenalty;
+
+                // 记录本次增加的分数，用于调试
+                userData.score.lastIncrease = repetitionPenalty;
+            } else {
+                // 消息内容不同，创建新记录
+                userData.repetition.lastMessage = messageText;
+                userData.repetition.timestamps = [Date.now()];
+            }
+        } else {
+            // 没有最近记录或记录已过期，创建新记录
+            userData.repetition.lastMessage = messageText;
+            userData.repetition.timestamps = [Date.now()];
         }
 
-        // 2c. 相似度惩罚 (Also updates userData.consecutiveSimilarityCount)
-        scoreIncrease += calculateSimilarityPenalty(messageText, userData.lastMessage, userData);
+        // 2c. 相似度惩罚 (Also updates userData.content.consecutiveSimilarityCount)
+        scoreIncrease += calculateSimilarityPenalty(messageText, userData.content.lastMessage, userData);
 
         // 2d. 消息内重复子串惩罚
         scoreIncrease += detectRepeatedSubstrings(messageText); // Assuming this returns a score penalty
@@ -519,25 +572,25 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
     // --- 更新用户总分 ---
     // Only apply increase if it's positive to avoid score reduction from checks alone
     if (scoreIncrease > 0) {
-        userData.score += scoreIncrease;
+        userData.score.current += scoreIncrease;
         // Clamp score between 0 and maxScore
-        userData.score = Math.min(Math.max(0, userData.score), config.maxScore);
+        userData.score.current = Math.min(Math.max(0, userData.score.current), config.maxScore);
     }
 
     // --- 轻度警告 ---
     // Trigger if score is approaching the limit AND this message contributed significantly (e.g., > 1 point or triggered high freq)
     // Simplified condition: Check if score is in the upper range and *increased*
     const mildWarningThreshold = config.limitScore * 0.7; // Example: 70% threshold
-    if (userData.score > mildWarningThreshold && scoreIncrease >= 1 && userData.score < config.limitScore) {
+    if (userData.score.current > mildWarningThreshold && scoreIncrease >= 1 && userData.score.current < config.limitScore) {
         try {
-            const percentage = (userData.score / config.limitScore * 100).toFixed(1);
-            const warningText = html`检测到风险行为，请注意发言频率 ${userData.score.toFixed(1)}/${config.limitScore.toFixed(1)} (${percentage}%)`;
+            const percentage = (userData.score.current / config.limitScore * 100).toFixed(1);
+            const warningText = html`检测到风险行为，请注意发言频率 ${userData.score.current.toFixed(1)}/${config.limitScore.toFixed(1)} (${percentage}%)`;
             const mildWarningMsg = await ctx.message.replyText(warningText);
 
             // Short display duration
             setTimeout(() => safeDeleteMessage(ctx.client, ctx.chatId, mildWarningMsg.id, "[AntiFlood Mild]"), 5000); // Increased slightly to 5s
         } catch (error) {
-            plugin.logger?.error(`[AntiFlood] 发送轻度警告失败: ${error}`);
+            plugin.logger?.error(`发送轻度警告失败: ${error}`);
         }
     }
 
@@ -547,10 +600,10 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
     // --- 更新用户最后消息状态 ---
     // Update last message only if it has text content, otherwise similarity check breaks
     if (messageText) {
-        userData.lastMessage = messageText;
+        userData.content.lastMessage = messageText;
     }
     // Always update last message time
-    userData.lastMessageTime = Math.floor(currentTimeMs / 1000);
+    userData.content.lastMessageTime = Math.floor(currentTimeMs / 1000);
     // Note: lastMediaGroupID is updated within calculateHighFrequencyPenalty now
 
 }
@@ -589,7 +642,7 @@ const plugin: BotPlugin = {
             const decayFactor = 1 - config.decay.rate;
             if (decayFactor <= 0 || decayFactor >= 1) {
                 if (config.decay.rate !== 0) { // Avoid logging if decay is intentionally off
-                    this.logger?.warn(`[AntiFlood] Invalid decay rate: ${config.decay.rate}. Decay disabled.`);
+                    this.logger?.warn(`Invalid decay rate: ${config.decay.rate}. Decay disabled.`);
                 }
                 return; // Stop decay process if rate is invalid
             }
@@ -597,18 +650,18 @@ const plugin: BotPlugin = {
             const usersToRemove: number[] = [];
             userActivityMap.forEach((userData, userId) => {
                 // Decay score
-                userData.score *= decayFactor;
+                userData.score.current *= decayFactor;
 
                 // Optimization: If score is very close to 0, set it to 0.
                 // Also, check if other state relevant to keeping the user entry active is default.
                 // If score is 0 and other state is default, mark for potential removal.
-                if (userData.score < 0.001) {
-                    userData.score = 0;
+                if (userData.score.current < 0.001) {
+                    userData.score.current = 0;
                     // Check if user state is effectively "reset" (can be removed from map)
-                    if (userData.consecutiveSimilarityCount === 0 &&
-                        userData.timestamps.length === 0 &&
-                        userData.highFrequencyScoreSum === 0 &&
-                        !userData.warningMessageId) // Check if no active warning
+                    if (userData.content.consecutiveSimilarityCount === 0 &&
+                        userData.frequency.timestamps.length === 0 &&
+                        userData.frequency.scoreSum === 0 &&
+                        !userData.warnings.messageId) // Check if no active warning
                     {
                         // Mark user for removal after iteration (modifying map during iteration is risky)
                         // This depends on DynamicMap allowing explicit deletion.
@@ -622,7 +675,11 @@ const plugin: BotPlugin = {
             // Remove inactive users (if DynamicMap supports it)
             if (usersToRemove.length > 0 && typeof userActivityMap.delete === 'function') {
                 this.logger?.debug(`[Decay] Removing ${usersToRemove.length} inactive users from map.`);
-                usersToRemove.forEach(userId => userActivityMap.delete(userId));
+                for (const userId of usersToRemove) {
+                    if (userActivityMap.delete) {
+                        userActivityMap.delete(userId);
+                    }
+                }
             }
 
         }, config.decay.interval);
@@ -676,9 +733,9 @@ const plugin: BotPlugin = {
                         }
                         // Also delete existing warning message if any
                         const existingUserData = await userActivityMap.get(targetUserId);
-                        if (existingUserData.warningMessageId) {
+                        if (existingUserData.warnings.messageId) {
                             // Pass client and chatId from CommandContext
-                            await safeDeleteMessage(ctx.client, ctx.chatId, existingUserData.warningMessageId, "[AntiFlood Reset]");
+                            await safeDeleteMessage(ctx.client, ctx.chatId, existingUserData.warnings.messageId, "[AntiFlood Reset]");
                         }
                         userActivityMap.reset(targetUserId); // Resets score and other fields
                         await ctx.message.replyText(`${targetName} 的警报值和状态已重置。`);
@@ -691,14 +748,14 @@ const plugin: BotPlugin = {
                         }
 
                         try {
-                            const { timestamps, ...simpleUserData } = targetUserData;
+                            const { frequency, ...simpleUserData } = targetUserData;
                             const displayData = {
                                 ...simpleUserData,
-                                timestampCount: timestamps.length,
-                                lastTimestamp: timestamps.length > 0
+                                timestampCount: frequency.timestamps.length,
+                                lastTimestamp: frequency.timestamps.length > 0
                                     ? (() => {
                                         // Access the first element (index 0) for the timestamp
-                                        const lastTime = timestamps[timestamps.length - 1]?.[0];
+                                        const lastTime = frequency.timestamps[frequency.timestamps.length - 1]?.[0];
                                         return lastTime ? new Date(lastTime).toISOString() : 'N/A';
                                     })()
                                     : 'N/A'
@@ -706,7 +763,7 @@ const plugin: BotPlugin = {
 
                             await ctx.message.replyText(JSON.stringify(displayData, null, 2));
                         } catch (error) {
-                            plugin.logger?.error(`[AntiFlood] 检查用户数据时出错: ${error}`);
+                            plugin.logger?.error(`检查用户数据时出错: ${error}`);
                             await ctx.message.replyText("无法显示用户详细数据。");
                         }
                         break;
@@ -735,7 +792,7 @@ const plugin: BotPlugin = {
 
                     default:
                         // 默认显示分数
-                        const score = targetUserData.score;
+                        const score = targetUserData.score.current;
                         const status = score >= config.limitScore ? ' [限制中]' : '';
                         await ctx.message.replyText(`${targetName} 的警报值为: ${score.toFixed(3)}${status}`);
                 }
