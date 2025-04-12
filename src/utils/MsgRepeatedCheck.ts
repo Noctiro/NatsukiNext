@@ -63,6 +63,72 @@ interface LanguageProcessorFactory {
     createProcessor(scriptType: ScriptType): LanguageProcessor;
 }
 
+/**
+ * 文本相似度检测选项接口
+ */
+export interface TextSimilarityOptions {
+    // 基础选项
+    minTextLength: number;           // 最小文本长度
+    minWordsCount: number;           // 最小词语数量
+
+    // 相似度阈值选项
+    baseThreshold: number;           // 基础相似度阈值
+    lengthRatioThreshold: number;    // 长度比例阈值
+
+    // 语言特定的调整参数
+    languageAdjustments: {
+        cjk: {                       // 中日韩文字特定调整
+            thresholdAdjustment: number;  // 相似度阈值调整
+            overlapThreshold: number;     // 字符重叠阈值
+        },
+        latin: {                     // 拉丁文字特定调整
+            thresholdAdjustment: number;
+            overlapThreshold: number;
+        },
+        other: {                     // 其他语言特定调整
+            thresholdAdjustment: number;
+            overlapThreshold: number;
+        }
+    };
+
+    // 长文本处理选项
+    longTextThreshold: number;       // 长文本阈值
+    longTextAdjustment: number;      // 长文本相似度调整
+}
+
+/**
+ * 默认的文本相似度检测选项
+ */
+export const DEFAULT_SIMILARITY_OPTIONS: TextSimilarityOptions = {
+    // 基础选项
+    minTextLength: 6,
+    minWordsCount: 3,
+    
+    // 相似度阈值选项
+    baseThreshold: 0.75,
+    lengthRatioThreshold: 0.3,
+    
+    // 语言特定的调整参数
+    languageAdjustments: {
+        cjk: {
+            thresholdAdjustment: 0.08,  // 中日韩文本需要更高的相似度阈值
+            overlapThreshold: 0.3,      // 中日韩文本需要更高的字符重叠率
+        },
+        latin: {
+            thresholdAdjustment: 0,
+            overlapThreshold: 0.2,
+        },
+        other: {
+            thresholdAdjustment: 0,
+            overlapThreshold: 0.2,
+        }
+    },
+    
+    // 长文本处理选项
+    longTextThreshold: 200,
+    longTextAdjustment: 0.05,
+};
+
 // ==========================================================
 // 常量和配置
 // ==========================================================
@@ -126,15 +192,15 @@ const chinesePunctuations: Set<string> = new Set([
  */
 abstract class BaseLanguageProcessor implements LanguageProcessor {
     protected scriptType: ScriptType;
-    
+
     constructor(scriptType: ScriptType) {
         this.scriptType = scriptType;
     }
-    
+
     // 抽象方法，需子类实现
     // 确保返回值永远是字符串数组，即使是空数组
     abstract segment(text: string): string[];
-    
+
     // 默认的子串有效性检测，子类可覆盖
     isValidSubstring(substr: string): boolean {
         const trimmed = substr.trim();
@@ -154,12 +220,12 @@ abstract class BaseLanguageProcessor implements LanguageProcessor {
 
         return true;
     }
-    
+
     // 可选的模式检测方法
     detectPatterns(segments: string[]): number {
         return 0; // 默认不检测任何模式
     }
-    
+
     // 默认的相似度参数
     get similarityParams() {
         return {
@@ -170,7 +236,7 @@ abstract class BaseLanguageProcessor implements LanguageProcessor {
             coveragePower: 1.2
         };
     }
-    
+
     // 默认的子串检测参数
     get substringParams() {
         return {
@@ -184,7 +250,7 @@ abstract class BaseLanguageProcessor implements LanguageProcessor {
             }
         };
     }
-    
+
     // 获取当前语言的分隔符
     getLanguageSeparators(): string[] {
         const separators = languageSeparators[this.scriptType];
@@ -199,17 +265,17 @@ class ChineseProcessor extends BaseLanguageProcessor {
     constructor() {
         super('chinese');
     }
-    
+
     segment(text: string): string[] {
         // 性能优化：对短文本使用简单分词，对长文本使用结巴分词
-        const result = text.length < 50 ? 
-            simpleSegmentChinese(text) : 
+        const result = text.length < 50 ?
+            simpleSegmentChinese(text) :
             jieba.cut(text, false);
-        
+
         // 确保返回值是数组
         return Array.isArray(result) ? result : [];
     }
-    
+
     isValidSubstring(substr: string): boolean {
         const trimmed = substr.trim();
         if (!trimmed) return false;
@@ -221,17 +287,47 @@ class ChineseProcessor extends BaseLanguageProcessor {
         if (/^[\p{P}\p{Z}]+$/u.test(trimmed)) return false;
         
         // 中文文本对熵的要求更低，因为中文字符本身携带更多信息
-        if (substr.length > 6 && new Set(substr).size <= 2) return false;
+        if (substr.length > 5 && new Set(substr).size <= 2) return false;
         if (substr.length > 15 && new Set(substr).size <= 4) return false;
+        
+        // 中文文本特殊判断 - 对于6-10字的短文本，要求每个字的信息量更高
+        if (substr.length >= 6 && substr.length <= 10) {
+            // 计算中文字符的比例（优化性能）
+            let chineseCharCount = 0;
+            let i = 0;
+            const len = substr.length;
+            
+            // 手动迭代而不是使用数组方法，避免创建临时数组
+            for (; i < len; i++) {
+                const code = substr.codePointAt(i) || 0;
+                // 检查是否在中文 CJK 统一汉字范围内
+                if (code >= 0x4e00 && code <= 0x9fff) {
+                    chineseCharCount++;
+                }
+                // 如果是代理对，跳过低代理
+                if (code > 0xFFFF) {
+                    i++;
+                }
+            }
+            
+            const chineseRatio = chineseCharCount / substr.length;
+            
+            // 如果主要是中文字符，需要更高的熵
+            if (chineseRatio > 0.7) {
+                // 对于主要由中文组成的短文本，要求至少一半以上的字符是不同的
+                const uniqueCharsRatio = new Set(substr).size / substr.length;
+                if (uniqueCharsRatio < 0.5) return false;
+            }
+        }
         
         return true;
     }
-    
+
     detectPatterns(segments: string[]): number {
         if (!segments || segments.length < 10) return 0;
         return detectChinesePatterns(segments);
     }
-    
+
     get similarityParams() {
         return {
             lengthThreshold: 50,
@@ -241,7 +337,7 @@ class ChineseProcessor extends BaseLanguageProcessor {
             coveragePower: 1.3
         };
     }
-    
+
     get substringParams() {
         return {
             maxLength: (length: number) => Math.min(Math.floor(length / 2), 80),
@@ -263,52 +359,52 @@ class JapaneseProcessor extends BaseLanguageProcessor {
     constructor() {
         super('japanese');
     }
-    
+
     segment(text: string): string[] {
         const result = segmentJapaneseText(text);
         return Array.isArray(result) ? result : [];
     }
-    
+
     isValidSubstring(substr: string): boolean {
         const trimmed = substr.trim();
         if (!trimmed) return false;
-        
+
         // 忽略单字符重复
         if (/^(.)\1+$/.test(trimmed)) return false;
-        
+
         // 忽略全是标点或空格的子串
         if (/^[\p{P}\p{Z}]+$/u.test(trimmed)) return false;
-        
+
         // 由于假名字符比中文字符信息量更低，需要更严格的熵要求
         if (substr.length > 5 && new Set(substr).size <= 2) return false;
         if (substr.length > 12 && new Set(substr).size <= 3) return false;
-        
+
         // 检查是否为纯假名串，假名重复性更高
         const hiraganaRatio = (trimmed.match(/[\u3040-\u309f]/g) || []).length / trimmed.length;
         const katakanaRatio = (trimmed.match(/[\u30a0-\u30ff]/g) || []).length / trimmed.length;
-        
+
         if ((hiraganaRatio > 0.8 || katakanaRatio > 0.8) && new Set(trimmed).size <= 3) {
             return false;
         }
-        
+
         return true;
     }
-    
+
     detectPatterns(segments: string[]): number {
         if (!segments || segments.length < 10) return 0;
         return detectJapanesePatterns(segments);
     }
-    
+
     get similarityParams() {
         return {
             lengthThreshold: 50,
             adjustmentFactor: 0.11,
             lenRatioThreshold: 0.25,
-            penaltyFactor: 1.1, 
+            penaltyFactor: 1.1,
             coveragePower: 1.25
         };
     }
-    
+
     get substringParams() {
         return {
             maxLength: (length: number) => Math.min(Math.floor(length / 2), 60),
@@ -330,29 +426,29 @@ class KoreanProcessor extends BaseLanguageProcessor {
     constructor() {
         super('korean');
     }
-    
+
     segment(text: string): string[] {
         const result = segmentKoreanText(text);
         return Array.isArray(result) ? result : [];
     }
-    
+
     isValidSubstring(substr: string): boolean {
         const trimmed = substr.trim();
         if (!trimmed) return false;
-        
+
         // 忽略单字符重复
         if (/^(.)\1+$/.test(trimmed)) return false;
-        
+
         // 忽略全是标点或空格的子串
         if (/^[\p{P}\p{Z}]+$/u.test(trimmed)) return false;
-        
+
         // 韩文字符的熵要求
         if (substr.length > 5 && new Set(substr).size <= 2) return false;
         if (substr.length > 10 && new Set(substr).size <= 3) return false;
-        
+
         return true;
     }
-    
+
     get similarityParams() {
         return {
             lengthThreshold: 50,
@@ -362,7 +458,7 @@ class KoreanProcessor extends BaseLanguageProcessor {
             coveragePower: 1.25
         };
     }
-    
+
     get substringParams() {
         return {
             maxLength: (length: number) => Math.min(Math.floor(length / 2), 70),
@@ -384,29 +480,29 @@ class ThaiProcessor extends BaseLanguageProcessor {
     constructor() {
         super('thai');
     }
-    
+
     segment(text: string): string[] {
         const result = segmentThaiText(text);
         return Array.isArray(result) ? result : [];
     }
-    
+
     isValidSubstring(substr: string): boolean {
         const trimmed = substr.trim();
         if (!trimmed) return false;
-        
+
         // 忽略单字符重复
         if (/^(.)\1+$/.test(trimmed)) return false;
-        
+
         // 忽略全是标点或空格的子串
         if (/^[\p{P}\p{Z}]+$/u.test(trimmed)) return false;
-        
+
         // 泰文字符的熵要求
         if (substr.length > 5 && new Set(substr).size <= 2) return false;
         if (substr.length > 10 && new Set(substr).size <= 3) return false;
-        
+
         return true;
     }
-    
+
     get similarityParams() {
         return {
             lengthThreshold: 50,
@@ -416,7 +512,7 @@ class ThaiProcessor extends BaseLanguageProcessor {
             coveragePower: 1.25
         };
     }
-    
+
     get substringParams() {
         return {
             maxLength: (length: number) => Math.min(Math.floor(length / 2), 70),
@@ -438,12 +534,12 @@ class LatinProcessor extends BaseLanguageProcessor {
     constructor() {
         super('latin');
     }
-    
+
     segment(text: string): string[] {
         const result = segmentLatinText(text);
         return Array.isArray(result) ? result : [];
     }
-    
+
     get similarityParams() {
         return {
             lengthThreshold: 50,
@@ -461,11 +557,11 @@ class LatinProcessor extends BaseLanguageProcessor {
 class LanguageProcessorFactoryImpl implements LanguageProcessorFactory {
     private static instance: LanguageProcessorFactoryImpl;
     private processors: Map<ScriptType, LanguageProcessor> = new Map();
-    
+
     private constructor() {
         // 私有构造函数，防止外部直接实例化
     }
-    
+
     /**
      * 获取工厂单例
      */
@@ -475,7 +571,7 @@ class LanguageProcessorFactoryImpl implements LanguageProcessorFactory {
         }
         return LanguageProcessorFactoryImpl.instance;
     }
-    
+
     /**
      * 获取语言处理器实例
      * 优先使用缓存，缓存未命中时创建新实例
@@ -486,7 +582,7 @@ class LanguageProcessorFactoryImpl implements LanguageProcessorFactory {
         }
         return this.processors.get(scriptType)!;
     }
-    
+
     /**
      * 创建语言处理器实例
      */
@@ -662,7 +758,7 @@ class SubstringDetector {
 
         // 检测文本的脚本类型
         this.scriptType = detectMainScript(input);
-        
+
         // 获取对应的语言处理器
         this.languageProcessor = languageProcessorFactory.getProcessor(this.scriptType);
 
@@ -690,10 +786,10 @@ class SubstringDetector {
     private adjustMinLength(): void {
         // 使用语言处理器计算最小长度
         this.adjustedMinLength = this.languageProcessor.substringParams.minLength(
-            this.minLength, 
+            this.minLength,
             this.totalLength
         );
-        
+
         // 确保最小长度至少为2
         this.adjustedMinLength = Math.max(2, this.adjustedMinLength);
     }
@@ -709,35 +805,35 @@ class SubstringDetector {
         if (this.resultCache.has(cacheKey)) {
             return this.resultCache.get(cacheKey)!;
         }
-        
+
         // 快速路径：极短文本直接返回0
         if (this.totalLength < this.adjustedMinLength * 2) {
             return 0;
         }
-        
+
         // 快速路径：检查字符多样性 - 如果文本熵很低，可能包含大量重复
         const uniqueChars = new Set(this.input).size;
         const charDiversity = uniqueChars / this.totalLength;
-        
+
         // 极低熵文本（如重复字符）快速返回高惩罚
         if (this.totalLength > 10 && charDiversity < 0.1) {
             const quickPenalty = 0.5 + (1 - charDiversity) * 0.5;
             this.resultCache.set(cacheKey, quickPenalty);
             return quickPenalty;
         }
-        
+
         // 根据语言类型调整最大长度
         const maxLength = this.languageProcessor.substringParams.maxLength(this.totalLength);
 
         let totalPenalty = 0;
         let totalCoverageLength = 0; // 所有覆盖段长度之和
-        
+
         // 长度搜索策略优化
         // 1. 非常长的文本 (>10000): 稀疏采样检查，主要关注较长子串
         // 2. 长文本 (1000-10000): 二分采样搜索
         // 3. 中等文本 (100-1000): 常规增量搜索
         // 4. 短文本 (<100): 精确搜索所有可能长度
-        
+
         // 策略1：非常长的文本，超稀疏采样
         if (this.totalLength > 10000) {
             // 只检查几个长度代表性样本
@@ -747,7 +843,7 @@ class SubstringDetector {
                 Math.floor(maxLength * 0.3),
                 Math.floor(this.adjustedMinLength * 2)
             ].filter(len => len >= this.adjustedMinLength);
-            
+
             for (const strLen of representativeLengths) {
                 totalPenalty += this.detectForLength(strLen, true); // 启用稀疏采样
             }
@@ -758,7 +854,7 @@ class SubstringDetector {
             for (const strLen of potentialLengths) {
                 totalPenalty += this.detectForLength(strLen);
             }
-        } 
+        }
         // 策略3和4：中短文本，特殊优化
         else {
             // 针对无空格语言的特殊处理
@@ -770,13 +866,13 @@ class SubstringDetector {
                         totalPenalty += patternPenalty;
                     }
                 }
-                
+
                 // 处理分词结果中的重复短语
                 if (this.segmentedInput.length >= 4) {
                     totalPenalty += this.detectSegmentedRepeats();
                 }
             }
-            
+
             // 短文本使用更密集的长度步长
             const lengthStep = this.totalLength < 100 ? 1 : 2;
             for (let strLen = maxLength; strLen >= this.adjustedMinLength; strLen -= lengthStep) {
@@ -786,7 +882,7 @@ class SubstringDetector {
 
         // 最终惩罚调整
         // 不同语言的覆盖比例需要不同程度的惩罚
-        const coverageRatio = this.totalLength > 0 ? 
+        const coverageRatio = this.totalLength > 0 ?
             Math.min(totalCoverageLength / this.totalLength, 1.0) : 0;
 
         // 语言相关的覆盖率调整
@@ -801,7 +897,7 @@ class SubstringDetector {
         this.resultCache.set(cacheKey, finalPenalty);
         return finalPenalty;
     }
-    
+
     /**
      * 针对特定长度执行子串检测，支持稀疏采样
      * @param strLen 子串长度
@@ -810,29 +906,29 @@ class SubstringDetector {
      */
     private detectForLength(strLen: number, sparseSampling: boolean = false): number {
         let lengthPenalty = 0;
-        
+
         // 根据语言设置步长，调整遍历粒度
         let step = this.languageProcessor.substringParams.stepSize(strLen);
-        
+
         // 估算候选子串数量，如果太多则增加步长
         const candidateCount = Math.ceil((this.totalLength - strLen) / step);
-        
+
         // 使用稀疏采样时大幅增加步长
         if (sparseSampling) {
             step = Math.max(step * 4, Math.ceil((this.totalLength - strLen) / 500));
         }
         // 正常采样的自适应步长
         else {
-            step = candidateCount > 1000 ? 
-                Math.max(step, Math.ceil((this.totalLength - strLen) / 1000)) : 
+            step = candidateCount > 1000 ?
+                Math.max(step, Math.ceil((this.totalLength - strLen) / 1000)) :
                 step;
         }
-        
+
         // 使用块处理策略，减少范围检查次数
         const blockSize = Math.min(1000, this.totalLength);
         for (let blockStart = 0; blockStart < this.totalLength - strLen; blockStart += blockSize) {
             const blockEnd = Math.min(blockStart + blockSize, this.totalLength - strLen);
-            
+
             // 检查这个块是否已经被完全覆盖
             let blockFullyCovered = true;
             for (let pos = blockStart; pos < blockEnd; pos += Math.max(1, Math.floor(strLen / 2))) {
@@ -841,9 +937,9 @@ class SubstringDetector {
                     break;
                 }
             }
-            
+
             if (blockFullyCovered) continue;
-            
+
             // 处理当前块中的候选子串
             for (let i = blockStart; i < blockEnd; i += step) {
                 // 如果该位置已被标记为覆盖，则跳过
@@ -857,7 +953,7 @@ class SubstringDetector {
                 if (this.processedSubstrings.has(substr)) {
                     continue;
                 }
-                
+
                 this.processedSubstrings.add(substr);
 
                 // 判断子串是否有效
@@ -890,37 +986,37 @@ class SubstringDetector {
                 }
             }
         }
-        
+
         return lengthPenalty;
     }
-    
+
     /**
      * 获取采样的长度值，用于超长文本的二分检测
      */
     private getSampledLengths(maxLength: number, minLength: number): number[] {
         const result: number[] = [];
-        
+
         // 添加最大长度
         result.push(maxLength);
-        
+
         // 使用对数缩放采样间隔
         const samples = Math.min(10, maxLength - minLength);
         const logRange = Math.log(maxLength / minLength);
-        
+
         for (let i = 1; i < samples; i++) {
             const factor = Math.exp(logRange * (i / samples));
             const length = Math.floor(minLength * factor);
-            
+
             if (!result.includes(length) && length > minLength && length < maxLength) {
                 result.push(length);
             }
         }
-        
+
         // 添加最小长度
         if (!result.includes(minLength)) {
             result.push(minLength);
         }
-        
+
         // 按降序排序
         return result.sort((a, b) => b - a);
     }
@@ -935,9 +1031,9 @@ class SubstringDetector {
         if (this.coveredRanges.length === 0) {
             return false;
         }
-        
+
         const newRange = new Range(position, position + length);
-        
+
         // 二分查找优化 - 按起始位置排序并二分查找相近的范围
         // 简化版：直接顺序遍历，但跳过明显不可能重叠的范围
         for (const range of this.coveredRanges) {
@@ -945,12 +1041,12 @@ class SubstringDetector {
             if (range.start >= newRange.end) {
                 continue;
             }
-            
+
             // 快速路径：如果当前范围的结束位置小于新范围的起始位置，则跳过
             if (range.end <= newRange.start) {
                 continue;
             }
-            
+
             // 经过快速路径筛选后，检查是否重叠
             if (range.overlaps(newRange)) {
                 return true;
@@ -964,7 +1060,7 @@ class SubstringDetector {
      */
     private markRangeCovered(position: number, length: number): void {
         this.coveredRanges.push(new Range(position, position + length));
-        
+
         // 性能优化：当覆盖范围过多时，按起始位置排序以优化后续查找
         if (this.coveredRanges.length % 50 === 0) {
             this.coveredRanges.sort((a, b) => a.start - b.start);
@@ -1015,29 +1111,29 @@ class SubstringDetector {
     private buildKMPTable(pattern: string): number[] {
         const patternLength = pattern.length;
         const table: number[] = new Array(patternLength).fill(0);
-        
+
         // 性能优化：预先分配内存
         let prefixLen = 0; // 前一个最长前缀后缀的长度
-        
+
         // 优化循环：避免重复字符串索引访问
         const patternChars = [...pattern];
-        
+
         // table[0]始终为0，从i = 1开始
         for (let i = 1; i < patternLength; i++) {
             // 处理前缀匹配
             while (prefixLen > 0 && patternChars[i] !== patternChars[prefixLen]) {
                 prefixLen = table[prefixLen - 1]!;
             }
-            
+
             // 如果当前字符匹配前缀的下一个字符，则前缀长度加1
             if (patternChars[i] === patternChars[prefixLen]) {
                 prefixLen++;
             }
-            
+
             // 设置表项
             table[i] = prefixLen;
         }
-        
+
         return table;
     }
 
@@ -1050,8 +1146,8 @@ class SubstringDetector {
         let searchStartIndex = 0; // 在输入文本中开始下一次搜索的位置
 
         // 性能优化：对于长度超过100的文本，限制最大查找位置数
-        const maxPositions = this.totalLength > 10000 ? 50 : 
-                            (this.totalLength > 1000 ? 100 : 200);
+        const maxPositions = this.totalLength > 10000 ? 50 :
+            (this.totalLength > 1000 ? 100 : 200);
 
         while (searchStartIndex <= this.totalLength - length) {
             const foundIndex = this.kmpSearch(substr, kmpTable, searchStartIndex);
@@ -1063,7 +1159,7 @@ class SubstringDetector {
             // 检查此特定匹配项是否被先前找到的*较长*重复覆盖
             if (!this.isPositionCovered(foundIndex, length)) {
                 positions.push(foundIndex);
-                
+
                 // 限制最大位置数
                 if (positions.length >= maxPositions) {
                     break;
@@ -1099,7 +1195,7 @@ class SubstringDetector {
         if (this.languageProcessor.detectPatterns) {
             return this.languageProcessor.detectPatterns(this.segmentedInput);
         }
-        
+
         return 0;
     }
 
@@ -1148,57 +1244,57 @@ class SubstringDetector {
         if (!this.segmentedInput || this.segmentedInput.length < 4) {
             return 0;
         }
-        
+
         let penalty = 0;
         const segments = this.segmentedInput;
         const totalSegments = segments.length;
-        
+
         // 检测重复的词组(2-4个词的组合)
         for (let phraseLen = 2; phraseLen <= 4; phraseLen++) {
             if (totalSegments < phraseLen * 2) continue;
-            
+
             const phraseCounts: Map<string, number[]> = new Map();
-            
+
             // 统计所有词组出现次数和位置
             for (let i = 0; i <= totalSegments - phraseLen; i++) {
                 const phrase = segments.slice(i, i + phraseLen).join("");
                 if (!phrase.trim()) continue;
-                
+
                 // 忽略熵过低的短语
                 if (phraseLen === 2 && new Set(phrase).size < 2) continue;
                 if (phraseLen > 2 && new Set(phrase).size < phraseLen) continue;
-                
+
                 if (!phraseCounts.has(phrase)) {
                     phraseCounts.set(phrase, [i]);
                 } else {
                     phraseCounts.get(phrase)!.push(i);
                 }
             }
-            
+
             // 计算重复短语的惩罚
             for (const [phrase, positions] of phraseCounts.entries()) {
                 if (positions.length > 1) {
                     // 计算短语的基础重要性分数 (短语长度越长，重要性越高)
                     const importance = Math.pow(phraseLen, 1.2) / 4;
-                    
+
                     // 计算重复次数的对数惩罚
                     const repetitionPenalty = Math.log2(positions.length) * 0.2;
-                    
+
                     // 计算间距的惩罚 (间距越近，惩罚越重)
                     let proximityPenalty = 0;
                     for (let i = 1; i < positions.length; i++) {
-                        const distance = positions[i]! - positions[i-1]!;
+                        const distance = positions[i]! - positions[i - 1]!;
                         // 距离越近，惩罚越高，但有一个上限
                         proximityPenalty += Math.max(0, (10 - distance) / 10);
                     }
                     proximityPenalty = Math.min(proximityPenalty, positions.length);
-                    
+
                     // 组合所有惩罚因子
                     penalty += importance * (1 + repetitionPenalty + proximityPenalty / positions.length);
                 }
             }
         }
-        
+
         return penalty * this.languageProcessor.similarityParams.penaltyFactor;
     }
 }
@@ -1233,9 +1329,17 @@ export function detectRepeatedSubstrings(input: string, debug: boolean = false, 
  * 
  * @param text1 第一个文本
  * @param text2 第二个文本
+ * @param options 可选的相似度计算选项，使用部分 TextSimilarityOptions
  * @returns 相似度得分 (0-1)，0表示完全不同，1表示完全相同
  */
-export function calculateTextSimilarity(text1: string, text2: string): number {
+export function calculateTextSimilarity(
+    text1: string,
+    text2: string,
+    options: Partial<TextSimilarityOptions> = {}
+): number {
+    // 使用辅助函数深度合并配置
+    const opts = mergeOptions(DEFAULT_SIMILARITY_OPTIONS, options);
+    
     // 快速路径1: 空文本或完全相同文本的处理
     if (!text1 || !text2) return 0;
     const trimmed1 = text1.trim();
@@ -1246,44 +1350,59 @@ export function calculateTextSimilarity(text1: string, text2: string): number {
     if (trimmed1 === trimmed2) return 1.0;
     
     // 快速路径3: 非常短的文本直接比较
-    if (trimmed1.length < 5 && trimmed2.length < 5) {
+    if (trimmed1.length < opts.minTextLength && trimmed2.length < opts.minTextLength) {
         return trimmed1 === trimmed2 ? 1.0 : 0.0;
     }
-
+    
     // 快速路径4: 长度比较，如果长度相差太多，可以快速判定相似度较低
     const len1 = trimmed1.length;
     const len2 = trimmed2.length;
     const lenRatio = Math.min(len1, len2) / Math.max(len1, len2);
     
-    // 长度差异过大
-    if (lenRatio < 0.1) {
-        return lenRatio * 0.5; // 基于长度比例给出一个较低的相似度估计
-    }
-
+    // 检测文本的主要语言类型
+    const script1 = detectMainScript(trimmed1);
+    const script2 = detectMainScript(trimmed2);
+    
+    // 获取语言类别
+    const getScriptCategory = (script: ScriptType): 'cjk' | 'latin' | 'other' => {
+        if (['chinese', 'japanese', 'korean'].includes(script)) return 'cjk';
+        if (script === 'latin') return 'latin';
+        return 'other';
+    };
+    
+    const scriptCategory1 = getScriptCategory(script1);
+    const scriptCategory2 = getScriptCategory(script2);
+    
+    // 优先使用复杂度更高的语言参数
+    const scriptPriority = { 'cjk': 2, 'latin': 1, 'other': 0 };
+    const primaryScriptCategory = 
+        scriptPriority[scriptCategory1] >= scriptPriority[scriptCategory2] 
+            ? scriptCategory1 
+            : scriptCategory2;
+    
     // 快速路径5: 字符集差异检查 - 如果两个文本的字符集完全不同，相似度很低
     if (len1 > 10 && len2 > 10) {
         const chars1 = new Set(trimmed1.substring(0, 100));
         const chars2 = new Set(trimmed2.substring(0, 100));
-        
+
         // 检查字符集交集比例
         let overlap = 0;
         for (const char of chars1) {
             if (chars2.has(char)) overlap++;
         }
-        
+
+        // 使用对应语言类别的重叠阈值
         const overlapRatio = overlap / Math.min(chars1.size, chars2.size);
-        if (overlapRatio < 0.2) {
+        const overlapThreshold = opts.languageAdjustments[primaryScriptCategory].overlapThreshold;
+
+        if (overlapRatio < overlapThreshold) {
             return overlapRatio * 0.5; // 极低字符重叠，直接返回低相似度
         }
     }
 
-    // 检测文本的主要语言类型
-    const script1 = detectMainScript(trimmed1);
-    const script2 = detectMainScript(trimmed2);
-
     // 获取语言参数
     const params = getLanguageParams(script1);
-    const lenRatioThreshold = params.lenRatioThreshold;
+    const lenRatioThreshold = opts.lengthRatioThreshold;
 
     // 语言差异惩罚计算
     let scriptMismatchPenalty = 0;
@@ -1304,17 +1423,17 @@ export function calculateTextSimilarity(text1: string, text2: string): number {
     if (lenRatio < lenRatioThreshold) {
         return Math.max(0, lenRatio * 0.5 - scriptMismatchPenalty);
     }
-    
+
     // 采样优化: 超长文本只对部分内容进行比较
     // 选择重点区域比较: 开头、中间、结尾
     const maxFullAnalysisLength = 5000; // 降低全文分析长度阈值
     let sampleText1 = trimmed1;
     let sampleText2 = trimmed2;
-    
+
     if (len1 > maxFullAnalysisLength || len2 > maxFullAnalysisLength) {
         // 智能采样: 更注重文本的开头和结尾部分
         const sampleSize = Math.min(1500, Math.max(len1, len2) / 3);
-        
+
         // 采样三个区域: 开头、中间和结尾
         sampleText1 = smartSampleText(trimmed1, sampleSize);
         sampleText2 = smartSampleText(trimmed2, sampleSize);
@@ -1326,12 +1445,13 @@ export function calculateTextSimilarity(text1: string, text2: string): number {
 
     // 计算优化版的余弦相似度
     return calculateCosineSimilarity(
-        freqMap1, 
-        freqMap2, 
-        script1, 
-        len1, 
+        freqMap1,
+        freqMap2,
+        script1,
+        len1,
         len2,
-        scriptMismatchPenalty
+        scriptMismatchPenalty,
+        opts
     );
 }
 
@@ -1343,17 +1463,17 @@ export function calculateTextSimilarity(text1: string, text2: string): number {
  */
 function smartSampleText(text: string, sampleSize: number): string {
     const len = text.length;
-    
+
     if (len <= sampleSize * 3) {
         return text;
     }
-    
+
     // 采样开头、中间和结尾
     const headSample = text.substring(0, sampleSize);
     const middleStart = Math.floor((len - sampleSize) / 2);
     const middleSample = text.substring(middleStart, middleStart + sampleSize);
     const tailSample = text.substring(len - sampleSize);
-    
+
     return headSample + middleSample + tailSample;
 }
 
@@ -1366,16 +1486,16 @@ const MAX_CACHE_SIZE = 100; // 限制缓存大小
 function getWordFrequencyMap(text: string, scriptType: ScriptType = 'other'): Record<string, number> {
     // 生成缓存键
     const cacheKey = `${scriptType}:${text.substring(0, 100)}:${text.length}`;
-    
+
     // 检查缓存
     if (wordFreqCache.has(cacheKey)) {
         return wordFreqCache.get(cacheKey)!;
     }
-    
+
     // 获取语言处理器并进行分词
     const processor = languageProcessorFactory.getProcessor(scriptType);
     const segments = processor.segment(text);
-    
+
     // 统计词频
     const freqMap: Record<string, number> = {};
     for (const segment of segments) {
@@ -1384,13 +1504,13 @@ function getWordFrequencyMap(text: string, scriptType: ScriptType = 'other'): Re
             freqMap[word] = (freqMap[word] || 0) + 1;
         }
     }
-    
+
     // 缓存管理：如果缓存过大，清除最早的条目
     if (wordFreqCache.size >= MAX_CACHE_SIZE) {
         const firstKey = wordFreqCache.keys().next().value;
         wordFreqCache.delete(firstKey);
     }
-    
+
     // 存入缓存
     wordFreqCache.set(cacheKey, freqMap);
     return freqMap;
@@ -1412,8 +1532,12 @@ function calculateCosineSimilarity(
     scriptType: ScriptType,
     length1: number,
     length2: number,
-    scriptPenalty: number = 0
+    scriptPenalty: number = 0,
+    options: Partial<TextSimilarityOptions> = {}
 ): number {
+    // 使用辅助函数深度合并配置
+    const opts = mergeOptions(DEFAULT_SIMILARITY_OPTIONS, options);
+    
     const words1 = Object.keys(freqMap1);
     const words2 = Object.keys(freqMap2);
 
@@ -1422,37 +1546,30 @@ function calculateCosineSimilarity(
         return 0.1;
     }
     
+    // 检查词语数量是否至少满足配置要求，否则返回低相似度
+    if (words1.length < opts.minWordsCount || words2.length < opts.minWordsCount) {
+        return 0.2;
+    }
+
     // 词汇多样性差异检查
     const vocabRatio = Math.min(words1.length, words2.length) / Math.max(words1.length, words2.length);
     if (vocabRatio < 0.2) {
         return vocabRatio * 0.5;
     }
-    
-    // 性能优化：如果一个映射远小于另一个，使用较小的映射作为迭代基础
-    const useMap1AsBase = words1.length <= words2.length;
-    const baseWords = useMap1AsBase ? words1 : words2;
-    const compareMap = useMap1AsBase ? freqMap2 : freqMap1;
-    
-    // 预先计算平方和，避免重复计算
-    let norm1 = 0;
-    for (const word of words1) {
-        const count = freqMap1[word]!;
-        norm1 += count * count;
-    }
-    
-    let norm2 = 0;
-    for (const word of words2) {
-        const count = freqMap2[word]!;
-        norm2 += count * count;
-    }
-    
-    // 只对基础映射中的词进行点积计算，减少查找操作
+
+    // 重构点积计算，确保所有词语都被考虑
+    // 创建所有唯一词语的集合
+    const allWords = new Set([...words1, ...words2]);
+
+    // 计算点积和匹配词数
     let dotProduct = 0;
     let matches = 0;
-    for (const word of baseWords) {
-        const count1 = useMap1AsBase ? freqMap1[word]! : compareMap[word] || 0;
-        const count2 = useMap1AsBase ? compareMap[word] || 0 : freqMap2[word]!;
-        
+
+    // 遍历所有唯一词语
+    for (const word of allWords) {
+        const count1 = freqMap1[word] || 0;
+        const count2 = freqMap2[word] || 0;
+
         if (count1 > 0 && count2 > 0) {
             matches++;
             dotProduct += count1 * count2;
@@ -1460,6 +1577,19 @@ function calculateCosineSimilarity(
     }
 
     // 计算余弦相似度
+    // 预先计算平方和，避免重复计算
+    let norm1 = 0;
+    for (const word of words1) {
+        const count = freqMap1[word]!;
+        norm1 += count * count;
+    }
+
+    let norm2 = 0;
+    for (const word of words2) {
+        const count = freqMap2[word]!;
+        norm2 += count * count;
+    }
+
     const denominator = Math.sqrt(norm1) * Math.sqrt(norm2);
     if (denominator === 0) {
         return 0.1;
@@ -1467,28 +1597,49 @@ function calculateCosineSimilarity(
 
     // 基础余弦相似度
     let cosineSim = dotProduct / denominator;
-    
-    // 词汇匹配率调整 - 计算共同词汇的占比
-    const matchRatio = matches / Math.max(words1.length, words2.length);
-    cosineSim = cosineSim * (0.8 + 0.2 * matchRatio);
 
-    // 长文本相似度调整：针对不同语言进行参数调整
-    if (length1 > 50 || length2 > 50) {
+    // 获取语言类别
+    const getScriptCategory = (script: ScriptType): 'cjk' | 'latin' | 'other' => {
+        if (['chinese', 'japanese', 'korean'].includes(script)) return 'cjk';
+        if (script === 'latin') return 'latin';
+        return 'other';
+    };
+
+    const scriptCategory = getScriptCategory(scriptType);
+
+    // 词汇匹配率调整 - 计算共同词汇的占比
+    const matchRatio = matches / allWords.size; // 使用所有唯一词语数量作为分母
+
+    // 对中文等表意文字，调整相似度计算的特殊处理
+    if (scriptCategory === 'cjk') {
+        // 中文词语通常包含更多语义信息，所以匹配的权重应更高
+        cosineSim = cosineSim * (0.75 + 0.25 * matchRatio);
+
+        // 对于非常短的中文文本（但满足最小长度要求），提高差异性判断门槛
+        if (length1 < 15 && length2 < 15 && matches < 2) {
+            cosineSim *= 0.85; // 降低相似度
+        }
+    } else {
+        // 其他语言使用原来的调整方式
+        cosineSim = cosineSim * (0.8 + 0.2 * matchRatio);
+    }
+
+    // 长文本相似度调整
+    if (length1 > opts.longTextThreshold || length2 > opts.longTextThreshold) {
         const params = getLanguageParams(scriptType);
         const adjustmentFactor = params.adjustmentFactor;
-        const lengthThreshold = params.lengthThreshold;
-        
+
         // 使用对数缩放进行长度调整
         const maxLength = Math.max(length1, length2);
-        const textLengthFactor = maxLength > lengthThreshold ? 
-            adjustmentFactor * Math.log10(maxLength / lengthThreshold) : 0;
-            
+        const textLengthFactor = maxLength > opts.longTextThreshold ?
+            adjustmentFactor * Math.log10(maxLength / opts.longTextThreshold) : 0;
+
         cosineSim = Math.max(0, cosineSim - textLengthFactor);
     }
-    
+
     // 应用语言差异惩罚
     cosineSim = Math.max(0, cosineSim - scriptPenalty);
-    
+
     return cosineSim;
 }
 
@@ -1502,23 +1653,23 @@ function sampleLongText(text: string, maxLength: number): string {
     if (text.length <= maxLength) {
         return text;
     }
-    
+
     // 智能采样策略：取文本开头、中间和结尾部分
     const headRatio = 0.4; // 开头占比
     const midRatio = 0.2;  // 中间占比
     const tailRatio = 0.4; // 结尾占比
-    
+
     const headLength = Math.floor(maxLength * headRatio);
     const midLength = Math.floor(maxLength * midRatio);
     const tailLength = maxLength - headLength - midLength;
-    
+
     const head = text.substring(0, headLength);
     const mid = text.substring(
         Math.floor(text.length / 2 - midLength / 2),
         Math.floor(text.length / 2 + midLength / 2)
     );
     const tail = text.substring(text.length - tailLength);
-    
+
     return head + mid + tail;
 }
 
@@ -1619,22 +1770,23 @@ function simpleSegmentChinese(text: string): string[] {
 }
 
 /**
- * 检查字符编码是否在指定的范围数组内
- * 优化版本：内联扁平化范围检查，减少循环
+ * 检查字符编码是否在指定的 Unicode 范围内
+ * 优化版本：减少不必要的检查
  * @param charCode 字符编码
- * @param ranges 范围数组
+ * @param ranges Unicode 范围数组
  * @returns 是否在范围内
  */
 function isInRanges(charCode: number, ranges: number[][]): boolean {
-    if (!ranges) return false;
-    
+    if (!ranges || !ranges.length) return false;
+
     // 直接检查范围而不使用循环
     for (let i = 0; i < ranges.length; i++) {
         const range = ranges[i];
-        if (range && range.length === 2) {
-            const start = range[0];
-            const end = range[1];
-            if (start !== undefined && end !== undefined && charCode >= start && charCode <= end) {
+        // 确保范围数组存在且有效
+        if (range && range.length === 2 && 
+            typeof range[0] === 'number' && typeof range[1] === 'number') {
+            // 检查字符编码是否在当前范围内
+            if (charCode >= range[0] && charCode <= range[1]) {
                 return true;
             }
         }
@@ -1658,10 +1810,10 @@ function getLanguageParams(scriptType: ScriptType): {
     coveragePower: number;
     lenRatioThreshold: number;
     adjustmentFactor: number;
-    lengthThreshold: number; // 添加lengthThreshold属性
+    lengthThreshold: number; 
 } {
     const processor = languageProcessorFactory.getProcessor(scriptType);
-    
+
     return {
         maxLength: processor.substringParams.maxLength,
         stepSize: processor.substringParams.stepSize,
@@ -1669,7 +1821,7 @@ function getLanguageParams(scriptType: ScriptType): {
         coveragePower: processor.similarityParams.coveragePower,
         lenRatioThreshold: processor.similarityParams.lenRatioThreshold,
         adjustmentFactor: processor.similarityParams.adjustmentFactor,
-        lengthThreshold: 50 // 使用默认值，与processor.similarityParams.lengthThreshold保持一致
+        lengthThreshold: processor.similarityParams.lengthThreshold // 使用processor中定义的值，避免硬编码
     };
 }
 
@@ -1887,7 +2039,7 @@ export function segmentText(text: string): string[] {
     // 检测文本的主要语言类型
     const scriptType = detectMainScript(text);
     const processor = languageProcessorFactory.getProcessor(scriptType);
-    
+
     // 使用语言处理器进行分词
     return processor.segment(text);
 }
@@ -1908,12 +2060,12 @@ export function detectMainScript(text: string): ScriptType {
     // 快速检查：短文本直接返回，避免后续计算
     if (text.length <= 2) {
         const charCode = text.codePointAt(0) || 0;
-        
+
         // 快速判断最常见的情况
         if (charCode >= 0x4e00 && charCode <= 0x9fff) return 'chinese';
         if (charCode >= 0x3040 && charCode <= 0x30ff) return 'japanese';
         if (charCode >= 0xac00 && charCode <= 0xd7af) return 'korean';
-        if ((charCode >= 0x0041 && charCode <= 0x007A) || 
+        if ((charCode >= 0x0041 && charCode <= 0x007A) ||
             (charCode >= 0x0030 && charCode <= 0x0039)) return 'latin';
         if (charCode >= 0x0e00 && charCode <= 0x0e7f) return 'thai';
         return 'other';
@@ -1932,10 +2084,10 @@ export function detectMainScript(text: string): ScriptType {
     // 对于长文本，完整分析每个字符开销较大且意义不大
     const maxSampleSize = 100; // 降低采样数，提高性能
     const textLength = text.length;
-    
+
     // 创建采样方案：头部、中部、尾部各采样一定数量
     let samplePositions: number[] = [];
-    
+
     if (textLength <= maxSampleSize) {
         // 文本较短，全部采样
         for (let i = 0; i < textLength; i++) {
@@ -1948,7 +2100,7 @@ export function detectMainScript(text: string): ScriptType {
         for (let i = 0; i < textLength * 0.25; i += headStride) {
             samplePositions.push(Math.floor(i));
         }
-        
+
         // 中部采样 (30%)
         const midSamples = Math.floor(maxSampleSize * 0.3);
         const midStart = Math.floor(textLength * 0.25);
@@ -1957,7 +2109,7 @@ export function detectMainScript(text: string): ScriptType {
         for (let i = midStart; i < midEnd; i += midStride) {
             samplePositions.push(Math.floor(i));
         }
-        
+
         // 尾部采样 (30%)
         const tailSamples = Math.floor(maxSampleSize * 0.3);
         const tailStride = Math.max(1, Math.floor(textLength * 0.25 / tailSamples));
@@ -1971,38 +2123,38 @@ export function detectMainScript(text: string): ScriptType {
         // 按出现频率高低排序检查，减少平均检查次数
         if (charCode >= 0x4e00 && charCode <= 0x9fff) {
             return 'chinese'; // 最常见的CJK统一汉字范围
-        } 
+        }
         if (charCode >= 0x3040 && charCode <= 0x30ff) {
             return 'japanese'; // 日文平假名和片假名范围
-        } 
+        }
         if (charCode >= 0xac00 && charCode <= 0xd7af) {
             return 'korean'; // 韩文音节范围
-        } 
+        }
         if ((charCode >= 0x0041 && charCode <= 0x007A) ||
             (charCode >= 0x00C0 && charCode <= 0x00FF)) {
             return 'latin'; // 拉丁字母范围
-        } 
+        }
         if (charCode >= 0x0e00 && charCode <= 0x0e7f) {
             return 'thai'; // 泰文范围
         }
-        
+
         // 不常见范围检查 - 仅当主要范围未匹配时才检查
         const lessCommonType = isInLessCommonRanges(charCode);
         if (lessCommonType) {
             return lessCommonType as ScriptType;
         }
-        
+
         return 'other';
     };
 
     // 计算各种文字的字符数量
     for (const pos of samplePositions) {
         const charCode = text.codePointAt(pos) || 0;
-        
+
         // 直接使用查找函数处理字符类型
         const type = checkCharCode(charCode);
         counts[type]++;
-        
+
         // 如果是代理对，调整索引位置 (不影响采样)
         if (charCode > 0xFFFF && samplePositions.includes(pos + 1)) {
             const index = samplePositions.indexOf(pos + 1);
@@ -2053,11 +2205,11 @@ function isInLessCommonRanges(charCode: number): string | null {
         (charCode >= 0x20000 && charCode <= 0x2ebef)) {  // CJK扩展B-F
         return 'chinese';
     }
-    
+
     if (charCode >= 0x31f0 && charCode <= 0x31ff) { // 片假名音标扩展
         return 'japanese';
     }
-    
+
     if ((charCode >= 0x1100 && charCode <= 0x11ff) || // 韩文字母
         (charCode >= 0x3130 && charCode <= 0x318f)) { // 韩文兼容字母
         return 'korean';
@@ -2269,11 +2421,126 @@ function segmentThaiText(text: string): string[] {
 function segmentLatinText(text: string): string[] {
     // 确保返回非空数组
     if (!text) return [];
-    
+
     // 简单地按空格和标点分割
     return text
         .split(/([^\w\u00C0-\u00FF]|\s+)/u)
         .filter(Boolean)
         .map(word => word.trim())
         .filter(Boolean);
+}
+
+/**
+ * 检查两段文本是否相似
+ * 
+ * 整合了所有相似度检测逻辑，支持不同语言类型的处理，
+ * 避免硬编码并提供更灵活的配置选项。
+ * 
+ * @param text1 第一段文本
+ * @param text2 第二段文本
+ * @param options 相似度检测选项
+ * @returns 相似度对象，包含得分和是否相似的判断
+ */
+export function isSimilarText(
+    text1: string,
+    text2: string,
+    options: Partial<TextSimilarityOptions> = {}
+): { score: number; isSimilar: boolean; reason?: string } {
+    // 使用辅助函数深度合并配置
+    const opts = mergeOptions(DEFAULT_SIMILARITY_OPTIONS, options);
+    
+    // 获取文本相似度得分
+    const score = calculateTextSimilarity(text1, text2, opts);
+    
+    // 1. 检测文本长度是否满足最小要求
+    if (text1.length < opts.minTextLength || text2.length < opts.minTextLength) {
+        return {
+            score,
+            isSimilar: false,
+            reason: "文本长度不满足最小要求"
+        };
+    }
+    
+    // 2. 检测文本的主要语言类型
+    const script1 = detectMainScript(text1);
+    const script2 = detectMainScript(text2);
+    
+    // 3. 获取语言特定的调整参数
+    const getScriptCategory = (script: ScriptType): 'cjk' | 'latin' | 'other' => {
+        if (['chinese', 'japanese', 'korean'].includes(script)) return 'cjk';
+        if (script === 'latin') return 'latin';
+        return 'other';
+    };
+    
+    const scriptCategory1 = getScriptCategory(script1);
+    const scriptCategory2 = getScriptCategory(script2);
+    
+    // 4. 优先使用复杂度更高的语言参数
+    const scriptPriority = { 'cjk': 2, 'latin': 1, 'other': 0 };
+    const primaryScriptCategory = 
+        scriptPriority[scriptCategory1] >= scriptPriority[scriptCategory2] 
+            ? scriptCategory1 
+            : scriptCategory2;
+    
+    // 5. 获取对应语言的相似度阈值调整
+    const thresholdAdjustment = opts.languageAdjustments[primaryScriptCategory].thresholdAdjustment;
+    
+    // 6. 计算有效相似度阈值
+    let effectiveThreshold = opts.baseThreshold + thresholdAdjustment;
+    
+    // 7. 对长文本的特殊处理
+    const maxLength = Math.max(text1.length, text2.length);
+    if (maxLength > opts.longTextThreshold) {
+        const lengthAdjustment = Math.log(maxLength / 100 + 1) * opts.longTextAdjustment;
+        effectiveThreshold += lengthAdjustment;
+    }
+    
+    // 8. 返回结果
+    return {
+        score,
+        isSimilar: score > effectiveThreshold,
+        reason: score > effectiveThreshold 
+            ? `相似度 ${score.toFixed(3)} 高于阈值 ${effectiveThreshold.toFixed(3)}` 
+            : `相似度 ${score.toFixed(3)} 低于阈值 ${effectiveThreshold.toFixed(3)}`
+    };
+}
+
+/**
+ * 深度合并两个配置对象，确保嵌套对象也被正确合并
+ * @param defaultOptions 默认配置对象
+ * @param userOptions 用户提供的配置对象
+ * @returns 合并后的配置对象
+ */
+function mergeOptions<T extends Record<string, any>>(
+    defaultOptions: T, 
+    userOptions: Partial<T> = {}
+): T {
+    // 创建默认选项的浅拷贝作为基础
+    const result = { ...defaultOptions } as T;
+    
+    // 遍历用户选项
+    for (const key in userOptions) {
+        if (Object.prototype.hasOwnProperty.call(userOptions, key)) {
+            const defaultValue = defaultOptions[key];
+            const userValue = userOptions[key];
+            
+            // 如果两者都是对象且不是数组，则递归合并
+            if (
+                defaultValue && 
+                typeof defaultValue === 'object' && 
+                !Array.isArray(defaultValue) &&
+                userValue && 
+                typeof userValue === 'object' && 
+                !Array.isArray(userValue)
+            ) {
+                // 递归合并子对象
+                result[key] = mergeOptions(defaultValue, userValue);
+            } else if (userValue !== undefined) {
+                // 否则直接使用用户值（如果存在）
+                result[key] = userValue as any;
+            }
+        }
+    }
+    
+    return result;
 }

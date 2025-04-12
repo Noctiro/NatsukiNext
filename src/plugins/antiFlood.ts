@@ -1,7 +1,8 @@
 import { html, Long } from '@mtcute/bun';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext, PluginEvent } from '../features';
 import DynamicMap from '../utils/DynamicMap';
-import { detectRepeatedSubstrings, calculateTextSimilarity } from '../utils/MsgRepeatedCheck';
+import { detectRepeatedSubstrings, isSimilarText } from '../utils/MsgRepeatedCheck';
+import type { TextSimilarityOptions } from '../utils/MsgRepeatedCheck';
 
 /**
  * 防刷屏插件配置接口
@@ -32,6 +33,7 @@ interface AntiFloodConfig {
         lengthRatioThreshold: number; // 长度比率阈值，低于此值启用特殊处理
         structuralWeight: number;    // 结构相似性的权重系数
         minSentenceRatio: number;    // 句子数量比例的最小阈值
+        textSimilarityOptions: Partial<TextSimilarityOptions>; // 文本相似度选项
     };
     highFrequency: {
         limit: number;
@@ -46,6 +48,9 @@ interface AntiFloodConfig {
     warningMessageInterval: number; // seconds
     warningMessageDeleteAfter: number; // seconds
 }
+
+// Define minimum length for similarity check as a constant
+const MIN_LENGTH_FOR_SIMILARITY = 6;
 
 /**
  * 默认配置值
@@ -75,6 +80,35 @@ const defaultConfig: AntiFloodConfig = {
         lengthRatioThreshold: 0.3, // 长度比率阈值，低于此值启用特殊处理
         structuralWeight: 1.2, // 结构相似性的权重系数
         minSentenceRatio: 0.5, // 句子数量比例的最小阈值
+        textSimilarityOptions: {
+            // 基础选项
+            minTextLength: MIN_LENGTH_FOR_SIMILARITY,
+            minWordsCount: 3,
+            
+            // 相似度阈值选项  
+            baseThreshold: 0.75, // 与 threshold 保持一致
+            lengthRatioThreshold: 0.3, // 与 lengthRatioThreshold 保持一致
+            
+            // 语言特定的调整参数
+            languageAdjustments: {
+                cjk: {
+                    thresholdAdjustment: 0.08,  // 中日韩文本需要更高的相似度阈值
+                    overlapThreshold: 0.3,      // 中日韩文本需要更高的字符重叠率
+                },
+                latin: {
+                    thresholdAdjustment: 0,
+                    overlapThreshold: 0.2,
+                },
+                other: {
+                    thresholdAdjustment: 0,
+                    overlapThreshold: 0.2,
+                }
+            },
+            
+            // 长文本处理选项
+            longTextThreshold: 200,
+            longTextAdjustment: 0.05,
+        }
     },
     highFrequency: {
         limit: 3, // 高频检测的分数阈值
@@ -163,9 +197,6 @@ const userActivityMap = new DynamicMap<number, UserData>(() => ({
     }
 })) as UserDynamicMap<number, UserData>;
 
-// Define minimum length for similarity check as a constant
-const MIN_LENGTH_FOR_SIMILARITY = 5;
-
 // 分数衰减任务的间隔ID
 let decayIntervalId: NodeJS.Timeout | undefined;
 
@@ -253,6 +284,60 @@ function calculateHighFrequencyPenalty(userData: UserData, messageContext: Messa
 }
 
 /**
+ * 检测特殊内容模式并计算惩罚调整系数
+ * 抽取为单独函数以提高代码可读性和可维护性
+ * @param message 当前消息
+ * @param lastMessage 上一条消息
+ * @param similarityScore 相似度得分
+ * @returns 惩罚调整系数
+ */
+function detectContentPatterns(
+    message: string, 
+    lastMessage: string, 
+    similarityScore: number
+): number {
+    let adjustmentFactor = 1.0; // 初始调整系数
+
+    // 检查数字比例 - 大量相同数字可能是刷屏
+    const digitRatio1 = (message.match(/\d/g) || []).length / message.length;
+    const digitRatio2 = (lastMessage.match(/\d/g) || []).length / lastMessage.length;
+
+    // 特殊内容检测 - URL/链接、代码片段等
+    const urlPattern = /(https?:\/\/[^\s]+)|(www\.[^\s]+)/g;
+    const hasUrl1 = urlPattern.test(message);
+    urlPattern.lastIndex = 0; // 重置正则表达式状态
+    const hasUrl2 = urlPattern.test(lastMessage);
+
+    // 检测代码风格文本 (有大量标点符号、缩进、括号等)
+    const codeStylePattern = /[{}\[\]()<>:;]/g;
+    const codeCharCount1 = (message.match(codeStylePattern) || []).length;
+    const codeCharCount2 = (lastMessage.match(codeStylePattern) || []).length;
+    const codeStyleRatio1 = codeCharCount1 / message.length;
+    const codeStyleRatio2 = codeCharCount2 / lastMessage.length;
+
+    // 内容特征调整
+    // 如果两条消息都有高比例的数字且相似，可能是重复发送数据/代码
+    if (digitRatio1 > 0.3 && digitRatio2 > 0.3 && Math.abs(digitRatio1 - digitRatio2) < 0.1) {
+        adjustmentFactor *= 1.2;
+    }
+
+    // URL相似性处理 - 如果含有相似URL，可能是广告刷屏
+    if (hasUrl1 && hasUrl2) {
+        adjustmentFactor *= 1.1;
+    }
+
+    // 代码风格文本处理 - 更宽松对待代码片段
+    if (codeStyleRatio1 > 0.05 && codeStyleRatio2 > 0.05) {
+        // 如果同时具有代码风格并且相似度高但不极高，更可能是合法的代码分享
+        if (similarityScore < 0.9) {
+            adjustmentFactor *= 0.8; // 降低惩罚
+        }
+    }
+
+    return adjustmentFactor;
+}
+
+/**
  * 计算消息相似度并评估惩罚分数
  * @param message 当前消息
  * @param lastMessage 上一条消息
@@ -266,24 +351,26 @@ function calculateSimilarityPenalty(message: string, lastMessage: string, userDa
         return 0;
     }
 
+    // 使用统一的相似度计算选项
+    const similarityOptions: Partial<TextSimilarityOptions> = {
+        ...config.similarity.textSimilarityOptions,
+        minTextLength: MIN_LENGTH_FOR_SIMILARITY,
+        baseThreshold: config.similarity.threshold,
+        lengthRatioThreshold: config.similarity.lengthRatioThreshold
+    };
+
     // 1. 长度比例检查 - 长度差异过大的文本自然相似度较低
     const lengthRatio = Math.min(message.length, lastMessage.length) / Math.max(message.length, lastMessage.length);
 
-    // 如果长度差异过大（短消息长度不到长消息的阈值比例），则启用特殊处理逻辑
+    // 使用统一的相似度检测API
+    const similarityResult = isSimilarText(message, lastMessage, similarityOptions);
+
+    // 长度差异大的情况下，相似度判断需要更为严格
     if (lengthRatio < config.similarity.lengthRatioThreshold) {
-        // 根据差异程度调整相似度判定阈值
-        const ratioAdjustment = config.similarity.lengthRatioThreshold - lengthRatio; // 0到阈值之间的调整值
-
-        // 使用优化的中文相似度检测
-        const similarityScore = calculateTextSimilarity(message, lastMessage);
-
-        // 对于长度差异大的情况，设置更高的相似度要求
-        const adjustedThreshold = config.similarity.threshold + ratioAdjustment * 1.5;
-
-        // 只有极高的相似度才认为是有问题的（例如一个短语重复出现在长文本中）
-        if (similarityScore > adjustedThreshold) {
+        // 对于长度差异大的情况，仅当确定相似时才惩罚
+        if (similarityResult.isSimilar) {
             // 降低惩罚强度，因为长度差异大
-            let penalty = Math.log(similarityScore + 1) * config.similarity.penaltyBase * lengthRatio * 2;
+            let penalty = Math.log(similarityResult.score + 1) * config.similarity.penaltyBase * lengthRatio * 2;
 
             // 连续相似消息的惩罚加成 - 使用指数增长模式
             if (userData.content.consecutiveSimilarityCount > 0) {
@@ -302,23 +389,10 @@ function calculateSimilarityPenalty(message: string, lastMessage: string, userDa
         }
     }
 
-    // 2. 标准相似度检测（用于其他情况）
-    const similarityScore = calculateTextSimilarity(message, lastMessage);
-
-    if (similarityScore > config.similarity.threshold) {
-        // 对长文本的相似度阈值需要更高
-        // 较长文本需要有更高的相似度才会触发惩罚
-        const lengthAdjustedThreshold = config.similarity.threshold +
-            (Math.log(Math.max(message.length, lastMessage.length) / 100 + 1) * 0.05);
-
-        // 如果是长文本且得分只是略微超过基础阈值，可能不触发惩罚
-        if (message.length > 200 && similarityScore <= lengthAdjustedThreshold) {
-            userData.content.consecutiveSimilarityCount = 0; // 重置连续相似计数
-            return 0;
-        }
-
+    // 2. 标准相似度检测
+    if (similarityResult.isSimilar) {
         // 基础惩罚分，使用对数平滑
-        let penalty = Math.log(similarityScore + 1) * config.similarity.penaltyBase;
+        let penalty = Math.log(similarityResult.score + 1) * config.similarity.penaltyBase;
 
         // 对较长文本的相似性给予更高的基础惩罚，考虑实际长度比例
         if (message.length > 100) {
@@ -327,43 +401,9 @@ function calculateSimilarityPenalty(message: string, lastMessage: string, userDa
             penalty *= (1 + lengthBonus);
         }
 
-        // 4. 内容特征分析
-        // 检查数字比例 - 大量相同数字可能是刷屏
-        const digitRatio1 = (message.match(/\d/g) || []).length / message.length;
-        const digitRatio2 = (lastMessage.match(/\d/g) || []).length / lastMessage.length;
-
-        // 特殊内容检测 - URL/链接、代码片段等
-        const urlPattern = /(https?:\/\/[^\s]+)|(www\.[^\s]+)/g;
-        const hasUrl1 = urlPattern.test(message);
-        urlPattern.lastIndex = 0; // 重置正则表达式状态
-        const hasUrl2 = urlPattern.test(lastMessage);
-
-        // 检测代码风格文本 (有大量标点符号、缩进、括号等)
-        const codeStylePattern = /[{}\[\]()<>:;]/g;
-        const codeCharCount1 = (message.match(codeStylePattern) || []).length;
-        const codeCharCount2 = (lastMessage.match(codeStylePattern) || []).length;
-        const codeStyleRatio1 = codeCharCount1 / message.length;
-        const codeStyleRatio2 = codeCharCount2 / lastMessage.length;
-
-        // 内容特征调整
-        // 如果两条消息都有高比例的数字且相似，可能是重复发送数据/代码
-        if (digitRatio1 > 0.3 && digitRatio2 > 0.3 && Math.abs(digitRatio1 - digitRatio2) < 0.1) {
-            penalty *= 1.2;
-        }
-
-        // URL相似性处理 - 如果含有相似URL，可能是广告刷屏
-        if (hasUrl1 && hasUrl2) {
-            penalty *= 1.1;
-        }
-
-        // 代码风格文本处理 - 更宽松对待代码片段
-        if (codeStyleRatio1 > 0.05 && codeStyleRatio2 > 0.05) {
-            // 如果同时具有代码风格并且相似度较高，更可能是合法的代码分享
-            // 提高惩罚阈值，减少误报
-            if (similarityScore < 0.9) {
-                penalty *= 0.8; // 降低惩罚
-            }
-        }
+        // 内容特征检测和调整
+        const contentAdjustment = detectContentPatterns(message, lastMessage, similarityResult.score);
+        penalty *= contentAdjustment;
 
         // 连续相似惩罚加成 - 改为指数增长模式
         if (userData.content.consecutiveSimilarityCount > 0) {
@@ -391,11 +431,11 @@ function calculateSimilarityPenalty(message: string, lastMessage: string, userDa
  * @param messageId 要删除的消息ID
  * @param logPrefix 日志前缀
  */
-async function safeDeleteMessage(client: MessageEventContext['client'], chatId: number | string, messageId: number, logPrefix: string): Promise<void> {
+async function safeDeleteMessage(client: MessageEventContext['client'], chatId: number | string, messageId: number): Promise<void> {
     try {
         await client.deleteMessagesById(chatId, [messageId]);
     } catch (error) {
-        plugin.logger?.error(`${logPrefix} 删除消息失败: ${error}`);
+        plugin.logger?.error(`删除消息失败: ${error}`);
     }
 }
 
@@ -412,14 +452,14 @@ async function defend(ctx: MessageEventContext, userData: UserData): Promise<voi
 
     if (userData.score.current > config.limitScore) {
         // 删除触发刷屏的消息
-        await safeDeleteMessage(ctx.client, ctx.chatId, ctx.message.id, "[AntiFlood]");
+        await safeDeleteMessage(ctx.client, ctx.chatId, ctx.message.id);
 
         // 检查是否需要发送新的警告消息
         const timeSinceLastWarning = currentTimeSec - userData.warnings.lastSentTime;
         if (timeSinceLastWarning >= config.warningMessageInterval) {
             // 删除旧警告消息（如果存在）
             if (userData.warnings.messageId) {
-                await safeDeleteMessage(ctx.client, ctx.chatId, userData.warnings.messageId, "[AntiFlood]");
+                await safeDeleteMessage(ctx.client, ctx.chatId, userData.warnings.messageId);
                 userData.warnings.messageId = undefined;
             }
 
@@ -474,7 +514,7 @@ async function defend(ctx: MessageEventContext, userData: UserData): Promise<voi
                 setTimeout(async () => {
                     // Need client and chatId again for the delayed deletion
                     if (userData.warnings.messageId === warningMsg.id) {
-                        await safeDeleteMessage(ctx.client, ctx.chatId, warningMsg.id, "[AntiFlood]");
+                        await safeDeleteMessage(ctx.client, ctx.chatId, warningMsg.id);
                         userData.warnings.messageId = undefined; // Clear ID only after successful deletion attempt
                     }
                 }, config.warningMessageDeleteAfter * 1000);
@@ -484,7 +524,7 @@ async function defend(ctx: MessageEventContext, userData: UserData): Promise<voi
         }
     } else if (userData.warnings.messageId) {
         // 如果分数降到阈值以下，并且有警告消息，则删除
-        await safeDeleteMessage(ctx.client, ctx.chatId, userData.warnings.messageId, "[AntiFlood]");
+        await safeDeleteMessage(ctx.client, ctx.chatId, userData.warnings.messageId);
         userData.warnings.messageId = undefined;
     }
 }
@@ -588,7 +628,7 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
             const mildWarningMsg = await ctx.message.replyText(warningText);
 
             // Short display duration
-            setTimeout(() => safeDeleteMessage(ctx.client, ctx.chatId, mildWarningMsg.id, "[AntiFlood Mild]"), 5000); // Increased slightly to 5s
+            setTimeout(() => safeDeleteMessage(ctx.client, ctx.chatId, mildWarningMsg.id), 5000); // Increased slightly to 5s
         } catch (error) {
             plugin.logger?.error(`发送轻度警告失败: ${error}`);
         }
@@ -735,7 +775,7 @@ const plugin: BotPlugin = {
                         const existingUserData = await userActivityMap.get(targetUserId);
                         if (existingUserData.warnings.messageId) {
                             // Pass client and chatId from CommandContext
-                            await safeDeleteMessage(ctx.client, ctx.chatId, existingUserData.warnings.messageId, "[AntiFlood Reset]");
+                            await safeDeleteMessage(ctx.client, ctx.chatId, existingUserData.warnings.messageId);
                         }
                         userActivityMap.reset(targetUserId); // Resets score and other fields
                         await ctx.message.replyText(`${targetName} 的警报值和状态已重置。`);
