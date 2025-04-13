@@ -1,7 +1,7 @@
 import { html, Long } from '@mtcute/bun';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext, PluginEvent } from '../features';
 import DynamicMap from '../utils/DynamicMap';
-import { detectRepeatedSubstrings, isSimilarText } from '../utils/MsgRepeatedCheck';
+import { detectRepeatedSubstrings } from '../utils/MsgRepeatedCheck';
 import type { TextSimilarityOptions } from '../utils/MsgRepeatedCheck';
 
 /**
@@ -84,11 +84,11 @@ const defaultConfig: AntiFloodConfig = {
             // 基础选项
             minTextLength: MIN_LENGTH_FOR_SIMILARITY,
             minWordsCount: 3,
-            
+
             // 相似度阈值选项  
             baseThreshold: 0.75, // 与 threshold 保持一致
             lengthRatioThreshold: 0.3, // 与 lengthRatioThreshold 保持一致
-            
+
             // 语言特定的调整参数
             languageAdjustments: {
                 cjk: {
@@ -104,7 +104,7 @@ const defaultConfig: AntiFloodConfig = {
                     overlapThreshold: 0.2,
                 }
             },
-            
+
             // 长文本处理选项
             longTextThreshold: 200,
             longTextAdjustment: 0.05,
@@ -284,133 +284,32 @@ function calculateHighFrequencyPenalty(userData: UserData, messageContext: Messa
 }
 
 /**
- * 检测特殊内容模式并计算惩罚调整系数
- * 抽取为单独函数以提高代码可读性和可维护性
+ * 计算消息重复子串惩罚分数
  * @param message 当前消息
- * @param lastMessage 上一条消息
- * @param similarityScore 相似度得分
- * @returns 惩罚调整系数
- */
-function detectContentPatterns(
-    message: string, 
-    lastMessage: string, 
-    similarityScore: number
-): number {
-    let adjustmentFactor = 1.0; // 初始调整系数
-
-    // 检查数字比例 - 大量相同数字可能是刷屏
-    const digitRatio1 = (message.match(/\d/g) || []).length / message.length;
-    const digitRatio2 = (lastMessage.match(/\d/g) || []).length / lastMessage.length;
-
-    // 特殊内容检测 - URL/链接、代码片段等
-    const urlPattern = /(https?:\/\/[^\s]+)|(www\.[^\s]+)/g;
-    const hasUrl1 = urlPattern.test(message);
-    urlPattern.lastIndex = 0; // 重置正则表达式状态
-    const hasUrl2 = urlPattern.test(lastMessage);
-
-    // 检测代码风格文本 (有大量标点符号、缩进、括号等)
-    const codeStylePattern = /[{}\[\]()<>:;]/g;
-    const codeCharCount1 = (message.match(codeStylePattern) || []).length;
-    const codeCharCount2 = (lastMessage.match(codeStylePattern) || []).length;
-    const codeStyleRatio1 = codeCharCount1 / message.length;
-    const codeStyleRatio2 = codeCharCount2 / lastMessage.length;
-
-    // 内容特征调整
-    // 如果两条消息都有高比例的数字且相似，可能是重复发送数据/代码
-    if (digitRatio1 > 0.3 && digitRatio2 > 0.3 && Math.abs(digitRatio1 - digitRatio2) < 0.1) {
-        adjustmentFactor *= 1.2;
-    }
-
-    // URL相似性处理 - 如果含有相似URL，可能是广告刷屏
-    if (hasUrl1 && hasUrl2) {
-        adjustmentFactor *= 1.1;
-    }
-
-    // 代码风格文本处理 - 更宽松对待代码片段
-    if (codeStyleRatio1 > 0.05 && codeStyleRatio2 > 0.05) {
-        // 如果同时具有代码风格并且相似度高但不极高，更可能是合法的代码分享
-        if (similarityScore < 0.9) {
-            adjustmentFactor *= 0.8; // 降低惩罚
-        }
-    }
-
-    return adjustmentFactor;
-}
-
-/**
- * 计算消息相似度并评估惩罚分数
- * @param message 当前消息
- * @param lastMessage 上一条消息
  * @param userData 用户数据
- * @returns 相似度惩罚分数
+ * @returns 重复子串惩罚分数
  */
-function calculateSimilarityPenalty(message: string, lastMessage: string, userData: UserData): number {
-    // 消息太短或上一条消息不存在时不计算
-    if (!lastMessage || message.length < MIN_LENGTH_FOR_SIMILARITY || lastMessage.length < MIN_LENGTH_FOR_SIMILARITY) {
+function calculateRepetitionPenalty(message: string, userData: UserData): number {
+    // 消息太短时不计算
+    if (message.length < MIN_LENGTH_FOR_SIMILARITY) {
         userData.content.consecutiveSimilarityCount = 0;
         return 0;
     }
 
-    // 使用统一的相似度计算选项
-    const similarityOptions: Partial<TextSimilarityOptions> = {
-        ...config.similarity.textSimilarityOptions,
-        minTextLength: MIN_LENGTH_FOR_SIMILARITY,
-        baseThreshold: config.similarity.threshold,
-        lengthRatioThreshold: config.similarity.lengthRatioThreshold
-    };
+    // 使用MsgRepeatedCheck中的API计算重复度
+    // 将所有检测逻辑委托给专门的模块处理
+    const repetitionScore = detectRepeatedSubstrings(message);
 
-    // 1. 长度比例检查 - 长度差异过大的文本自然相似度较低
-    const lengthRatio = Math.min(message.length, lastMessage.length) / Math.max(message.length, lastMessage.length);
-
-    // 使用统一的相似度检测API
-    const similarityResult = isSimilarText(message, lastMessage, similarityOptions);
-
-    // 长度差异大的情况下，相似度判断需要更为严格
-    if (lengthRatio < config.similarity.lengthRatioThreshold) {
-        // 对于长度差异大的情况，仅当确定相似时才惩罚
-        if (similarityResult.isSimilar) {
-            // 降低惩罚强度，因为长度差异大
-            let penalty = Math.log(similarityResult.score + 1) * config.similarity.penaltyBase * lengthRatio * 2;
-
-            // 连续相似消息的惩罚加成 - 使用指数增长模式
-            if (userData.content.consecutiveSimilarityCount > 0) {
-                const exponentialFactor = Math.min(
-                    Math.pow(1.3, userData.content.consecutiveSimilarityCount),
-                    4.0 // 限制最大倍数
-                );
-                penalty *= exponentialFactor;
-            }
-
-            userData.content.consecutiveSimilarityCount++;
-            return penalty;
-        } else {
-            userData.content.consecutiveSimilarityCount = 0;
-            return 0;
-        }
-    }
-
-    // 2. 标准相似度检测
-    if (similarityResult.isSimilar) {
+    // 如果重复得分超过阈值则进行惩罚
+    if (repetitionScore > 0.3) {  // 设置合理的阈值，可根据实际情况调整
         // 基础惩罚分，使用对数平滑
-        let penalty = Math.log(similarityResult.score + 1) * config.similarity.penaltyBase;
+        let penalty = Math.log(repetitionScore + 1) * config.similarity.penaltyBase;
 
-        // 对较长文本的相似性给予更高的基础惩罚，考虑实际长度比例
-        if (message.length > 100) {
-            // 修改为考虑两条消息的实际长度比例
-            const lengthBonus = Math.log(message.length / 100 + 1) * 0.5 * lengthRatio;
-            penalty *= (1 + lengthBonus);
-        }
-
-        // 内容特征检测和调整
-        const contentAdjustment = detectContentPatterns(message, lastMessage, similarityResult.score);
-        penalty *= contentAdjustment;
-
-        // 连续相似惩罚加成 - 改为指数增长模式
+        // 连续重复消息的惩罚加成 - 使用更温和的惩罚系数
         if (userData.content.consecutiveSimilarityCount > 0) {
-            // 指数增长的惩罚系数，但设置上限避免过度惩罚
             const exponentialFactor = Math.min(
-                Math.pow(1.5, userData.content.consecutiveSimilarityCount),
-                5.0 // 最大倍数限制
+                Math.pow(1.3, userData.content.consecutiveSimilarityCount),
+                3.0 // 降低最大倍数限制
             );
             penalty *= exponentialFactor;
         }
@@ -418,18 +317,16 @@ function calculateSimilarityPenalty(message: string, lastMessage: string, userDa
         userData.content.consecutiveSimilarityCount++;
         return penalty;
     } else {
-        userData.content.consecutiveSimilarityCount = 0; // 重置连续相似计数
+        userData.content.consecutiveSimilarityCount = 0; // 重置连续计数
         return 0;
     }
 }
 
 /**
  * 尝试删除消息，错误时记录日志但不抛出异常
- * @param ctx 消息上下文
  * @param client The mtcute client instance
  * @param chatId The chat ID where the message exists
  * @param messageId 要删除的消息ID
- * @param logPrefix 日志前缀
  */
 async function safeDeleteMessage(client: MessageEventContext['client'], chatId: number | string, messageId: number): Promise<void> {
     try {
@@ -551,8 +448,7 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
     let scoreIncrease = 0;
     let highFrequencyPenalty = 0;
 
-    // 1. 高频发送检测 (Calculate penalty first, as it uses pre-update state)
-    // Note: calculateHighFrequencyPenalty updates userData.frequency.timestamps and userData.frequency.scoreSum internally
+    // 1. 高频发送检测 - 不论消息内容，任何消息都应计入发送频率
     highFrequencyPenalty = calculateHighFrequencyPenalty(userData, ctx, currentTimeMs);
     scoreIncrease += highFrequencyPenalty;
 
@@ -594,19 +490,16 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
             } else {
                 // 消息内容不同，创建新记录
                 userData.repetition.lastMessage = messageText;
-                userData.repetition.timestamps = [Date.now()];
+                userData.repetition.timestamps = [currentTimeMs];
             }
         } else {
             // 没有最近记录或记录已过期，创建新记录
             userData.repetition.lastMessage = messageText;
-            userData.repetition.timestamps = [Date.now()];
+            userData.repetition.timestamps = [currentTimeMs];
         }
 
-        // 2c. 相似度惩罚 (Also updates userData.content.consecutiveSimilarityCount)
-        scoreIncrease += calculateSimilarityPenalty(messageText, userData.content.lastMessage, userData);
-
-        // 2d. 消息内重复子串惩罚
-        scoreIncrease += detectRepeatedSubstrings(messageText); // Assuming this returns a score penalty
+        // 2c. 重复子串检测 - 检测消息内部的重复模式
+        scoreIncrease += calculateRepetitionPenalty(messageText, userData);
     }
 
     // --- 更新用户总分 ---
@@ -618,17 +511,16 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
     }
 
     // --- 轻度警告 ---
-    // Trigger if score is approaching the limit AND this message contributed significantly (e.g., > 1 point or triggered high freq)
-    // Simplified condition: Check if score is in the upper range and *increased*
-    const mildWarningThreshold = config.limitScore * 0.7; // Example: 70% threshold
+    // Trigger if score is approaching the limit AND this message contributed significantly
+    const mildWarningThreshold = config.limitScore * 0.7; // 70% threshold
     if (userData.score.current > mildWarningThreshold && scoreIncrease >= 1 && userData.score.current < config.limitScore) {
         try {
             const percentage = (userData.score.current / config.limitScore * 100).toFixed(1);
             const warningText = html`检测到风险行为，请注意发言频率 ${userData.score.current.toFixed(1)}/${config.limitScore.toFixed(1)} (${percentage}%)`;
             const mildWarningMsg = await ctx.message.replyText(warningText);
 
-            // Short display duration
-            setTimeout(() => safeDeleteMessage(ctx.client, ctx.chatId, mildWarningMsg.id), 5000); // Increased slightly to 5s
+            // 短时间显示后自动删除
+            setTimeout(() => safeDeleteMessage(ctx.client, ctx.chatId, mildWarningMsg.id), 5000);
         } catch (error) {
             plugin.logger?.error(`发送轻度警告失败: ${error}`);
         }
@@ -638,14 +530,13 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
     await defend(ctx, userData);
 
     // --- 更新用户最后消息状态 ---
-    // Update last message only if it has text content, otherwise similarity check breaks
+    // 仅当消息有文本内容时更新lastMessage，避免相似度检查出错
     if (messageText) {
         userData.content.lastMessage = messageText;
     }
-    // Always update last message time
+    // 更新消息时间戳
     userData.content.lastMessageTime = Math.floor(currentTimeMs / 1000);
-    // Note: lastMediaGroupID is updated within calculateHighFrequencyPenalty now
-
+    // 注：lastMediaGroupID在calculateHighFrequencyPenalty函数中已更新
 }
 
 // 插件定义
