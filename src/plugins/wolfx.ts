@@ -1,6 +1,7 @@
 import type { BotPlugin, CommandContext } from "../features";
 import { enableChats } from "../app";
 import WebSocket from 'ws';
+import { InputMedia, type TelegramClient } from "@mtcute/bun";
 
 // 确保WebSocket常量可用
 const WebSocketStates = {
@@ -165,10 +166,25 @@ class EarthquakeService {
     private data: EarthquakeData = {};
 
     // Telegram客户端引用
-    private client: any;
+    private client: TelegramClient;
 
     // 初始化
-    constructor() { }
+    constructor(client: TelegramClient) {
+        this.client = client;
+        
+        // 根据模式启动服务
+        if (this.forceMode === 'HTTP' || !this.forceMode) {
+            plugin.logger?.info("启动HTTP轮询服务");
+            this.startHttpPolling();
+        }
+
+        if (this.forceMode === 'WebSocket' || !this.forceMode) {
+            plugin.logger?.info("尝试建立WebSocket连接");
+            this.connectWebSocket();
+        }
+
+        plugin.logger?.info("Wolfx防灾预警服务已初始化");
+    }
 
     /**
      * 获取格式化的时间字符串
@@ -496,21 +512,14 @@ class EarthquakeService {
      * 发送位置消息
      */
     private async sendLocation(chatId: number, lat: number, lon: number): Promise<any> {
-        return this.client.sendLocation({
-            chatId: chatId,
-            latitude: lat,
-            longitude: lon
-        });
+        return this.client.sendMedia(chatId, InputMedia.geo(lat, lon));
     }
 
     /**
      * 发送文本消息
      */
     private async sendMessage(chatId: number, text: string): Promise<any> {
-        return this.client.sendMessage({
-            chatId: chatId,
-            text: text
-        });
+        return this.client.sendText(chatId, text);
     }
 
     /**
@@ -518,10 +527,7 @@ class EarthquakeService {
      */
     private async deleteMessage(chatId: number, messageId: number): Promise<boolean> {
         try {
-            return await this.client.deleteMessages({
-                chatId: chatId,
-                ids: [messageId]
-            });
+            return this.client.deleteMessagesById(chatId, [messageId]).then(() => true);
         } catch (error) {
             plugin.logger?.error(`删除消息失败: ${error}`);
             return false;
@@ -836,26 +842,6 @@ ${originTime} 发生
     }
 
     /**
-     * 初始化服务
-     */
-    public async initialize(client: any): Promise<void> {
-        this.client = client;
-
-        // 根据模式启动服务
-        if (this.forceMode === 'HTTP' || !this.forceMode) {
-            plugin.logger?.info("启动HTTP轮询服务");
-            this.startHttpPolling();
-        }
-
-        if (this.forceMode === 'WebSocket' || !this.forceMode) {
-            plugin.logger?.info("尝试建立WebSocket连接");
-            this.connectWebSocket();
-        }
-
-        plugin.logger?.info("Wolfx防灾预警服务已初始化");
-    }
-
-    /**
      * 停止服务
      */
     public shutdown(): void {
@@ -956,7 +942,7 @@ ${originTime} 发生
 }
 
 // 创建单例实例
-const earthquakeService = new EarthquakeService();
+let earthquakeService: EarthquakeService;
 
 /**
  * 插件定义
@@ -968,7 +954,7 @@ const plugin: BotPlugin = {
 
     // 插件加载时调用
     async onLoad(client) {
-        await earthquakeService.initialize(client);
+        earthquakeService = new EarthquakeService(client);
     },
 
     // 插件卸载时调用
