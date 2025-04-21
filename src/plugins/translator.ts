@@ -11,13 +11,19 @@ const STREAM_MIN_LENGTH = 50;          // 启用流式输出的最小文本长�
 const MIN_TEXT_LENGTH = 5;             // 最小可检测文本长度
 const TRANSLATING_SUFFIX = " ...(翻译中)";
 const CHINESE_THRESHOLD = 0.4;         // 中文字符比例阈值
+const FOREIGN_THRESHOLD = 0.5;         // 外语字符比例阈值，当超过此值时必定翻译
 const UPDATE_INTERVAL_MS = 500;        // 流式更新最小间隔(ms)
 const MAX_RETRY_COUNT = 3;             // 最大重试次数
 const RETRY_DELAY_MS = 1000;           // 重试延迟(ms)
 
 // 简短语句的阈值定义
-const SHORT_MSG_MAX_LENGTH = 10;      // 简短消息的最大长度
+const SHORT_MSG_MAX_LENGTH = 15;       // 简短消息的最大长度（增加到15）
 const SHORT_MSG_MAX_WORDS = 3;         // 简短消息的最大单词数
+
+// 语言检测相关常量
+const MIN_CLEANED_LENGTH = 5;          // 清理后文本的最小长度要求
+const MIN_FOREIGN_RATIO = 0.4;         // 外语字符比例翻译阈值（小于中文阈值）
+const MIN_TOTAL_LANG_RATIO = 0.6;      // 文本的总语言字符比例要求（更高以避免误触发）
 
 // Define combined URL pattern globally for reuse
 const COMBINED_URL_PATTERN = new RegExp(
@@ -121,82 +127,83 @@ function removeNonTranslatableContent(text: string): string {
  * 判断文本是否需要翻译（非中文且不是通用内容）
  */
 function isNotChinese(text: string): boolean {
-    const originalText = text; // 保留原始文本用于某些检查
-
-    // 排除太短或空消息 (基于原始文本)
-    if (!originalText || originalText.length < MIN_TEXT_LENGTH) {
-        plugin.logger?.debug(`原始消息太短，不翻译: "${originalText}"`);
+    // 1. 基础检查 - 空文本或过短文本不翻译
+    if (!text || text.length < MIN_TEXT_LENGTH) {
+        plugin.logger?.debug(`消息太短或为空，不翻译: "${text}"`);
         return false;
     }
 
-    // 处理简短语句 (基于原始文本)
-    if (originalText.length <= SHORT_MSG_MAX_LENGTH) {
-        const wordCount = originalText.trim().split(/\s+/).length;
-        if (wordCount <= SHORT_MSG_MAX_WORDS) {
-            plugin.logger?.debug(`原始消息为简短语句 (${wordCount}个单词，${originalText.length}字符)，不翻译: "${originalText}"`);
-            return false;
-        }
-    }
-
-    // 检查是否匹配常见不翻译模式 (基于原始文本)
-    for (const pattern of SKIP_TRANSLATION_PATTERNS) {
-        if (pattern.test(originalText.trim())) {
-            plugin.logger?.debug(`原始消息匹配不翻译模式，跳过翻译: "${originalText.substring(0, 15)}..."`);
-            return false;
-        }
-    }
-
-    // --- 从这里开始，使用清理后的文本进行分析 ---
-    // removeNonTranslatableContent 会移除URL和其他干扰字符
-    const cleanedText = removeNonTranslatableContent(originalText);
+    // 2. 移除干扰字符，准备进行语言分析
+    const cleanedText = removeNonTranslatableContent(text);
     const cleanedLength = cleanedText.length;
 
-    // 如果清理后文本为空或太短，则不翻译
-    const MIN_CLEANED_LENGTH = 5; // 清理后文本的最小长度要求 (Increased from 3)
+    // 3. 如果清理后文本太短，不翻译
     if (cleanedLength < MIN_CLEANED_LENGTH) {
-        plugin.logger?.debug(`清理后文本太短 (${cleanedLength} < ${MIN_CLEANED_LENGTH})，不翻译. 原文: "${originalText.substring(0, 30)}..." 清理后: "${cleanedText}"`);
+        plugin.logger?.debug(`清理后文本太短 (${cleanedLength} < ${MIN_CLEANED_LENGTH})，不翻译`);
         return false;
     }
-    plugin.logger?.debug(`原文长度: ${originalText.length}, 清理后长度: ${cleanedLength}. 清理后文本片段: "${cleanedText.substring(0, 30)}..."`);
 
-    // 计算中文比例 (基于清理后文本)
+    // 4. 快速排除简短消息和常见不翻译模式
+    if (text.length <= SHORT_MSG_MAX_LENGTH) {
+        // 检查词数
+        const wordCount = text.trim().split(/\s+/).length;
+        if (wordCount <= SHORT_MSG_MAX_WORDS) {
+            plugin.logger?.debug(`消息为简短语句 (${wordCount}个单词，${text.length}字符)，不翻译`);
+            return false;
+        }
+
+        // 检查是否匹配常见不翻译模式
+        for (const pattern of SKIP_TRANSLATION_PATTERNS) {
+            if (pattern.test(text.trim())) {
+                plugin.logger?.debug(`消息匹配不翻译模式，跳过翻译`);
+                return false;
+            }
+        }
+    }
+
+    // 5. 计算语言字符比例
     const chineseMatches = cleanedText.match(LANGUAGE_RANGES.chinese) || [];
     const chineseRatio = chineseMatches.length / cleanedLength;
 
-    // 如果清理后文本中文比例高于阈值，不翻译
+    // 6. 如果中文字符比例高，不翻译
     if (chineseRatio >= CHINESE_THRESHOLD) {
-        plugin.logger?.debug(`清理后文本中文比例 ${(chineseRatio * 100).toFixed(1)}% >= ${CHINESE_THRESHOLD * 100}%, 不翻译`);
+        plugin.logger?.debug(`中文比例 ${(chineseRatio * 100).toFixed(1)}% >= ${CHINESE_THRESHOLD * 100}%，不翻译`);
         return false;
     }
 
-    // --- Optimized Language Ratio Calculation (based on cleanedText) ---
+    // 7. 计算外语字符比例
+    const foreignMatches = cleanedText.match(COMBINED_NON_CHINESE_LANG_REGEX) || [];
+    const foreignRatio = foreignMatches.length / cleanedLength;
 
-    // Calculate Non-Chinese Language Ratio
-    const otherLangMatches = cleanedText.match(COMBINED_NON_CHINESE_LANG_REGEX) || [];
-    const foreignLangRatio = otherLangMatches.length / cleanedLength;
+    // 8. 计算总语言字符比例（包括中文和外语）
+    const totalLangRatio = (chineseMatches.length + foreignMatches.length) / cleanedLength;
 
-    // Calculate Total Language Ratio (All languages including Chinese)
-    const totalLangMatches = cleanedText.match(COMBINED_ALL_LANG_REGEX) || [];
-    const totalLangRatio = totalLangMatches.length / cleanedLength;
+    // 9. 详细日志，帮助调试
+    plugin.logger?.debug(
+        `语言分析: 文本长度=${text.length}, 清理后长度=${cleanedLength}, ` +
+        `中文比例=${(chineseRatio * 100).toFixed(1)}%, 外语比例=${(foreignRatio * 100).toFixed(1)}%, ` +
+        `总语言比例=${(totalLangRatio * 100).toFixed(1)}%`
+    );
 
-    // Decision Logic based on ratios
+    // 10. 决策逻辑：基于不同阈值和比例
 
-    // 1. Check if foreign language ratio is high enough
-    const MIN_FOREIGN_RATIO_TO_TRANSLATE = 0.35; // Threshold for foreign language dominance
-    if (foreignLangRatio >= MIN_FOREIGN_RATIO_TO_TRANSLATE) {
-        plugin.logger?.debug(`清理后文本外语比例 ${(foreignLangRatio * 100).toFixed(1)}% >= ${MIN_FOREIGN_RATIO_TO_TRANSLATE * 100}%, 需要翻译`);
-        return true;
+    // 10.1 外语比例超过阈值时翻译
+    if (foreignRatio >= MIN_FOREIGN_RATIO) {
+        // 检查是否外语绝对占优势 - 即外语比例远高于中文比例
+        if (foreignRatio >= FOREIGN_THRESHOLD || foreignRatio > chineseRatio * 2) {
+            plugin.logger?.debug(`外语比例显著 (${(foreignRatio * 100).toFixed(1)}%)，需要翻译`);
+            return true;
+        }
+
+        // 检查总语言比例是否足够高
+        if (totalLangRatio >= MIN_TOTAL_LANG_RATIO) {
+            plugin.logger?.debug(`混合语言文本，外语占比 ${(foreignRatio * 100).toFixed(1)}%，需要翻译`);
+            return true;
+        }
     }
 
-    // 2. Check if total language ratio is high enough (covers mixed languages)
-    const MIN_TOTAL_LANG_RATIO = 0.5; // Threshold for overall language content
-    if (totalLangRatio >= MIN_TOTAL_LANG_RATIO) {
-        plugin.logger?.debug(`清理后文本总语言字符比例 ${(totalLangRatio * 100).toFixed(1)}% >= ${MIN_TOTAL_LANG_RATIO * 100}%, 需要翻译 (外语比例: ${(foreignLangRatio * 100).toFixed(1)}%)`);
-        return true;
-    }
-
-    // If none of the conditions met, do not translate
-    plugin.logger?.debug(`清理后文本不满足翻译条件: 中文比例 ${(chineseRatio * 100).toFixed(1)}%, 外语比例 ${(foreignLangRatio * 100).toFixed(1)}%, 总语言比例 ${(totalLangRatio * 100).toFixed(1)}%`);
+    // 10.2 非中文但语言比例不够，不翻译
+    plugin.logger?.debug(`文本不满足翻译条件，不翻译`);
     return false;
 }
 
@@ -429,7 +436,7 @@ async function streamTranslateWithAI(
         if (finalContent) {
             // 获取发起人ID
             const initiatorId = ctx.message.sender.id;
-            
+
             // 添加带有发起者和原始发送者信息的删除按钮
             // 确保originalSenderId有默认值，即使传入undefined也能正常工作
             const senderId = typeof originalSenderId === 'number' ? originalSenderId : 0;
@@ -440,7 +447,7 @@ async function streamTranslateWithAI(
             const keyboard = BotKeyboard.inline([
                 [BotKeyboard.callback('🗑️ 删除', callbackData)]
             ]);
-            
+
             ctx.client.editMessage({
                 chatId: ctx.chatId,
                 message: waitMsg.id,
@@ -474,7 +481,7 @@ async function simpleTranslateText(ctx: MessageEventContext, text: string): Prom
         // 自动翻译时，使用0作为机器人ID标识（表示系统自动触发）
         const initiatorId = 0; // 系统自动触发
         const originalSenderId = ctx.message.sender.id;
-        
+
         // 添加带有发起者和原始发送者信息的删除按钮
         const callbackData = DeleteTranslationCallback.build({
             initiatorId,
@@ -502,7 +509,7 @@ async function simpleTranslateText(ctx: MessageEventContext, text: string): Prom
             // 自动翻译时，使用0作为机器人ID标识（表示系统自动触发）
             const initiatorId = 0; // 系统自动触发
             const originalSenderId = ctx.message.sender.id;
-            
+
             // 添加带有发起者和原始发送者信息的删除按钮
             const callbackData = DeleteTranslationCallback.build({
                 initiatorId,
@@ -561,12 +568,12 @@ async function commandTranslateText(ctx: CommandContext, text: string, originalS
 
             // 获取发起人ID(命令执行者)
             const initiatorId = ctx.message.sender.id;
-            
+
             // 添加带有发起者和原始发送者信息的删除按钮
             // 确保originalSenderId有默认值，即使传入undefined也能正常工作
             const senderId = typeof originalSenderId === 'number' ? originalSenderId : 0;
             // 只有当原始发送者ID不为0且与发起人不同时，才添加originalSenderId参数
-            const callbackParams: {initiatorId: number, originalSenderId?: number} = {initiatorId};
+            const callbackParams: { initiatorId: number, originalSenderId?: number } = { initiatorId };
             if (senderId > 0 && senderId !== initiatorId) {
                 callbackParams.originalSenderId = senderId;
             }
@@ -607,12 +614,12 @@ async function commandTranslateText(ctx: CommandContext, text: string, originalS
 
             // 获取发起人ID(命令执行者)
             const initiatorId = ctx.message.sender.id;
-            
+
             // 添加带有发起者和原始发送者信息的删除按钮
             // 确保originalSenderId有默认值，即使传入undefined也能正常工作
             const senderId = typeof originalSenderId === 'number' ? originalSenderId : 0;
             // 只有当原始发送者ID不为0且与发起人不同时，才添加originalSenderId参数
-            const callbackParams: {initiatorId: number, originalSenderId?: number} = {initiatorId};
+            const callbackParams: { initiatorId: number, originalSenderId?: number } = { initiatorId };
             if (senderId > 0 && senderId !== initiatorId) {
                 callbackParams.originalSenderId = senderId;
             }
@@ -635,8 +642,8 @@ async function commandTranslateText(ctx: CommandContext, text: string, originalS
 /**
  * 从回复消息中获取待翻译文本
  */
-async function getTextFromReply(ctx: CommandContext): Promise<{text: string | null, senderId?: number}> {
-    if (!ctx.message.replyToMessage?.id) return {text: null};
+async function getTextFromReply(ctx: CommandContext): Promise<{ text: string | null, senderId?: number }> {
+    if (!ctx.message.replyToMessage?.id) return { text: null };
 
     try {
         const msgId = ctx.message.replyToMessage.id;
@@ -644,17 +651,17 @@ async function getTextFromReply(ctx: CommandContext): Promise<{text: string | nu
 
         if (!replyMsg?.[0]?.text) {
             await ctx.message.replyText('⚠️ 只能翻译文本消息');
-            return {text: null};
+            return { text: null };
         }
 
         const text = replyMsg[0].text;
         const senderId = replyMsg[0].sender.id;
-        
+
         plugin.logger?.debug(`从回复消息获取文本: ${text.substring(0, 30)}${text.length > 30 ? '...' : ''}`);
-        return {text, senderId};
+        return { text, senderId };
     } catch (err) {
         plugin.logger?.error(`获取回复消息失败: ${err}`);
-        return {text: null};
+        return { text: null };
     }
 }
 
@@ -670,7 +677,7 @@ async function handleTranslateCommand(ctx: CommandContext): Promise<void> {
 
     try {
         // 尝试从回复获取文本
-        const {text: textFromReply, senderId} = await getTextFromReply(ctx);
+        const { text: textFromReply, senderId } = await getTextFromReply(ctx);
 
         // 如果没有回复文本，使用命令参数
         if (!textFromReply) {
@@ -697,20 +704,20 @@ async function handleDeleteCallback(ctx: CallbackEventContext): Promise<void> {
     try {
         // 获取回调数据，使用类型断言明确数据结构
         const data = ctx.match || {};
-        
+
         // 获取参数
         const initiatorId = typeof data.initiatorId === 'number' ? data.initiatorId : 0;
         const originalSenderId = typeof data.originalSenderId === 'number' ? data.originalSenderId : 0;
-        
+
         // 获取当前用户ID
         const currentUserId = ctx.query.user.id;
-        
+
         // 检查权限：允许 (1)发起人 (2)原始消息发送者 (3)管理员 删除消息
         const isInitiator = currentUserId === initiatorId;
         const isOriginalSender = originalSenderId > 0 && currentUserId === originalSenderId;
-        const isAdmin = await ctx.hasPermission('admin') || 
-                       await isGroupAdmin(ctx.client, ctx.chatId, currentUserId);
-        
+        const isAdmin = await ctx.hasPermission('admin') ||
+            await isGroupAdmin(ctx.client, ctx.chatId, currentUserId);
+
         if (!isInitiator && !isOriginalSender && !isAdmin) {
             await ctx.query.answer({
                 text: '您没有权限删除此翻译消息',
@@ -721,7 +728,7 @@ async function handleDeleteCallback(ctx: CallbackEventContext): Promise<void> {
 
         // 删除消息
         await ctx.client.deleteMessagesById(ctx.chatId, [ctx.query.messageId]);
-        
+
         // 操作成功反馈
         await ctx.query.answer({
             text: '已删除翻译消息'
@@ -750,10 +757,10 @@ async function isGroupAdmin(client: TelegramClient, chatId: number, userId: numb
             chatId,
             userId
         });
-        
+
         // 如果无法获取成员信息，默认返回false
         if (!chatMember || !chatMember.status) return false;
-        
+
         // 检查用户角色是否为管理员或创建者
         return ['creator', 'administrator'].includes(chatMember.status);
     } catch (error) {
