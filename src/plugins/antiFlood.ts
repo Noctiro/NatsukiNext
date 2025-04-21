@@ -1,8 +1,6 @@
 import { html, Long } from '@mtcute/bun';
 import type { BotPlugin, CommandContext, EventContext, MessageEventContext, PluginEvent } from '../features';
 import DynamicMap from '../utils/DynamicMap';
-import { detectRepeatedSubstrings } from '../utils/MsgRepeatedCheck';
-import type { TextSimilarityOptions } from '../utils/MsgRepeatedCheck';
 
 /**
  * 防刷屏插件配置接口
@@ -26,15 +24,6 @@ interface AntiFloodConfig {
         exponentialBase: number;      // 指数惩罚的基数
         maxRepetitionMultiplier: number; // 重复惩罚的最大倍数
     };
-    similarity: {
-        threshold: number;           // 基础相似度阈值
-        penaltyBase: number;         // 相似度惩罚的基础常量
-        incrementalFactor: number;   // 连续相似消息的递增惩罚比例
-        lengthRatioThreshold: number; // 长度比率阈值，低于此值启用特殊处理
-        structuralWeight: number;    // 结构相似性的权重系数
-        minSentenceRatio: number;    // 句子数量比例的最小阈值
-        textSimilarityOptions: Partial<TextSimilarityOptions>; // 文本相似度选项
-    };
     highFrequency: {
         limit: number;
         window: number; // seconds
@@ -48,9 +37,6 @@ interface AntiFloodConfig {
     warningMessageInterval: number; // seconds
     warningMessageDeleteAfter: number; // seconds
 }
-
-// Define minimum length for similarity check as a constant
-const MIN_LENGTH_FOR_SIMILARITY = 6;
 
 /**
  * 默认配置值
@@ -72,43 +58,6 @@ const defaultConfig: AntiFloodConfig = {
         historyTimeWindow: 180000, // 重复消息历史记录的时间窗口（3分钟）
         exponentialBase: 1.5, // 指数惩罚的基数
         maxRepetitionMultiplier: 5.0 // 重复惩罚的最大倍数
-    },
-    similarity: {
-        threshold: 0.75, // 消息相似度阈值（降低基础阈值，让特殊情况由专门的逻辑处理）
-        penaltyBase: 5, // 相似度惩罚的基础常量
-        incrementalFactor: 0.2, // 连续相似消息的递增惩罚比例
-        lengthRatioThreshold: 0.3, // 长度比率阈值，低于此值启用特殊处理
-        structuralWeight: 1.2, // 结构相似性的权重系数
-        minSentenceRatio: 0.5, // 句子数量比例的最小阈值
-        textSimilarityOptions: {
-            // 基础选项
-            minTextLength: MIN_LENGTH_FOR_SIMILARITY,
-            minWordsCount: 3,
-
-            // 相似度阈值选项  
-            baseThreshold: 0.75, // 与 threshold 保持一致
-            lengthRatioThreshold: 0.3, // 与 lengthRatioThreshold 保持一致
-
-            // 语言特定的调整参数
-            languageAdjustments: {
-                cjk: {
-                    thresholdAdjustment: 0.08,  // 中日韩文本需要更高的相似度阈值
-                    overlapThreshold: 0.3,      // 中日韩文本需要更高的字符重叠率
-                },
-                latin: {
-                    thresholdAdjustment: 0,
-                    overlapThreshold: 0.2,
-                },
-                other: {
-                    thresholdAdjustment: 0,
-                    overlapThreshold: 0.2,
-                }
-            },
-
-            // 长文本处理选项
-            longTextThreshold: 200,
-            longTextAdjustment: 0.05,
-        }
     },
     highFrequency: {
         limit: 3, // 高频检测的分数阈值
@@ -281,45 +230,6 @@ function calculateHighFrequencyPenalty(userData: UserData, messageContext: Messa
     }
 
     return 0; // No high-frequency penalty triggered
-}
-
-/**
- * 计算消息重复子串惩罚分数
- * @param message 当前消息
- * @param userData 用户数据
- * @returns 重复子串惩罚分数
- */
-function calculateRepetitionPenalty(message: string, userData: UserData): number {
-    // 消息太短时不计算
-    if (message.length < MIN_LENGTH_FOR_SIMILARITY) {
-        userData.content.consecutiveSimilarityCount = 0;
-        return 0;
-    }
-
-    // 使用MsgRepeatedCheck中的API计算重复度
-    // 将所有检测逻辑委托给专门的模块处理
-    const repetitionScore = detectRepeatedSubstrings(message);
-
-    // 如果重复得分超过阈值则进行惩罚
-    if (repetitionScore > 0.3) {  // 设置合理的阈值，可根据实际情况调整
-        // 基础惩罚分，使用对数平滑
-        let penalty = Math.log(repetitionScore + 1) * config.similarity.penaltyBase;
-
-        // 连续重复消息的惩罚加成 - 使用更温和的惩罚系数
-        if (userData.content.consecutiveSimilarityCount > 0) {
-            const exponentialFactor = Math.min(
-                Math.pow(1.3, userData.content.consecutiveSimilarityCount),
-                3.0 // 降低最大倍数限制
-            );
-            penalty *= exponentialFactor;
-        }
-
-        userData.content.consecutiveSimilarityCount++;
-        return penalty;
-    } else {
-        userData.content.consecutiveSimilarityCount = 0; // 重置连续计数
-        return 0;
-    }
 }
 
 /**
@@ -497,9 +407,6 @@ async function processMessage(ctx: MessageEventContext): Promise<void> {
             userData.repetition.lastMessage = messageText;
             userData.repetition.timestamps = [currentTimeMs];
         }
-
-        // 2c. 重复子串检测 - 检测消息内部的重复模式
-        scoreIncrease += calculateRepetitionPenalty(messageText, userData);
     }
 
     // --- 更新用户总分 ---
