@@ -115,7 +115,8 @@ interface EarthquakeData {
 
 // 配置参数
 const CONFIG = {
-    magThreshold: 3,     // 震级阈值(大于等于此值才播报)
+    intensityThreshold: 3, // 震度/烈度阈值(大于等于此值才播报)
+    magThreshold: 3,     // 震级阈值(在没有烈度信息的时候判断大于等于此值才播报)
     httpDelay: 5 * 1000, // HTTP轮询间隔
     httpTimeout: 5000,   // HTTP请求超时时间
 
@@ -539,10 +540,51 @@ class EarthquakeService {
      * @param currentId 当前数据ID
      * @param lastId 上次处理的ID
      * @param magnitude 震级
+     * @param intensity 震度/烈度，可选
      * @returns 是否应该发送通知
      */
-    private shouldSendNotification(currentId: string | undefined, lastId: string | undefined, magnitude: number): boolean {
-        return !!lastId && !!currentId && currentId !== lastId && magnitude >= CONFIG.magThreshold;
+    private shouldSendNotification(currentId: string | undefined, lastId: string | undefined, magnitude: number, intensity?: string | number): boolean {
+        // 检查ID是否有效
+        if (!lastId || !currentId || currentId === lastId) {
+            return false;
+        }
+        
+        // 如果提供了震度/烈度，检查是否满足条件
+        if (intensity !== undefined) {
+            // 处理不同格式的震度/烈度值
+            let intensityValue: number;
+            
+            if (typeof intensity === 'number') {
+                intensityValue = intensity;
+            } else if (typeof intensity === 'string') {
+                // 尝试解析日本震度（如"3"、"5弱"、"5-"等）
+                if (intensity.includes('弱') || intensity.includes('-')) {
+                    // 对于"5弱"或"5-"，取整数部分
+                    intensityValue = parseInt(intensity.charAt(0));
+                } else if (intensity.includes('強') || intensity.includes('+')) {
+                    // 对于"5強"或"5+"，取整数部分+0.5
+                    intensityValue = parseInt(intensity.charAt(0)) + 0.5;
+                } else {
+                    // 尝试直接解析为数字
+                    intensityValue = parseFloat(intensity);
+                }
+            } else {
+                // 无法解析的情况下不过滤
+                return true;
+            }
+            
+            // 检查震度/烈度是否小于阈值
+            if (isNaN(intensityValue) || intensityValue < CONFIG.intensityThreshold) {
+                return false;
+            }
+        } else {
+            // 检查震级是否满足条件
+            if (magnitude < CONFIG.magThreshold) {
+                return false;
+            }
+        }
+        
+        return true;
     }
 
     /**
@@ -585,7 +627,7 @@ class EarthquakeService {
         }
 
         // 检查是否满足通知条件
-        if (this.shouldSendNotification(data.OriginalText, this.jmaOriginalText, mag)) {
+        if (this.shouldSendNotification(data.OriginalText, this.jmaOriginalText, mag, shindo)) {
             this.sendEarthquakeInfo(`緊急地震速報 (${flag}) | 第${num}報 ${type}
 ${originTime} 発生
 震央: ${region} (北緯: ${lat}度 東経: ${lon}度)
@@ -624,7 +666,7 @@ ${originTime} 発生
         const originTime = this.formatDateTime(timeStr, 'Asia/Tokyo', false);
 
         // 检查是否满足通知条件
-        if (this.shouldSendNotification(data.md5, this.jmaFinalMd5, mag)) {
+        if (this.shouldSendNotification(data.md5, this.jmaFinalMd5, mag, shindo)) {
             this.sendEarthquakeInfo(`地震情報
 ${originTime} 発生
 震央: ${region} (北緯: ${lat}度 東経: ${lon}度)
@@ -659,7 +701,7 @@ ${originTime} 発生
         const originTime = this.formatDateTime(data.OriginTime, 'Asia/Shanghai');
         const finalTag = data.isFinal ? " 最终报" : "";
 
-        // 检查是否满足通知条件
+        // 检查是否满足通知条件 (福建预警没有烈度信息，仅按震级过滤)
         if (this.shouldSendNotification(data.EventID, this.fjEventID, mag)) {
             this.sendEarthquakeInfo(`福建地震预警 | 第${num}报${finalTag}
 ${originTime} 发生
@@ -695,7 +737,7 @@ ${originTime} 发生
         const originTime = this.formatDateTime(data.OriginTime, 'Asia/Shanghai');
 
         // 检查是否满足通知条件
-        if (this.shouldSendNotification(data.EventID, this.scEventID, mag)) {
+        if (this.shouldSendNotification(data.EventID, this.scEventID, mag, intensity)) {
             this.sendEarthquakeInfo(`四川地震预警 | 第${num}报
 ${originTime} 发生
 震中: ${region} (北纬: ${lat}度 东经: ${lon}度)
@@ -729,7 +771,7 @@ ${originTime} 发生
         const depth = `${data.Depth}km`;
         const originTime = this.formatDateTime(data.OriginTime, 'Asia/Taipei');
 
-        // 检查是否满足通知条件
+        // 检查是否满足通知条件 (台湾预警没有烈度信息，仅按震级过滤)
         if (this.shouldSendNotification(data.ReportTime, this.cwaTS, mag)) {
             this.sendEarthquakeInfo(`台灣地震預警 | 第${num}報
 ${originTime} 發生
@@ -763,16 +805,17 @@ ${originTime} 發生
         const depth = info.depth;
         const lat = info.latitude;
         const lon = info.longitude;
+        const intensity = info.intensity; // 烈度值
         const originTime = this.formatDateTime(timeStr, 'Asia/Shanghai', false);
         const type = info.type === "automatic" ? "自动发布" : "人工发布";
 
         // 检查是否满足通知条件
-        if (this.shouldSendNotification(data.md5, this.cencMd5, mag)) {
+        if (this.shouldSendNotification(data.md5, this.cencMd5, mag, intensity)) {
             this.sendEarthquakeInfo(`中国地震台网 | ${type}
 ${originTime} 发生
 震源地: ${region} (北纬: ${lat}度 东经: ${lon}度)
 震级: ${mag}
-震源深度: ${depth}`, lat, lon);
+震源深度: ${depth}${intensity ? `\n烈度: ${intensity}` : ''}`, lat, lon);
         }
 
         // 更新标识符
@@ -819,6 +862,7 @@ ${originTime} 发生
         // 详细模式显示更多信息
         if (detailed) {
             content += `\n\n监控震级阈值: M${CONFIG.magThreshold}+`;
+            content += `\n监控震度/烈度阈值: ${CONFIG.intensityThreshold}+`;
 
             // 显示数据源状态
             content += '\n\n数据源状态:';
