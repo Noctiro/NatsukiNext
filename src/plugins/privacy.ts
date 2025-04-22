@@ -445,6 +445,14 @@ const platformRules: SpecialUrlRule[] = [
         }
     },
 
+    {
+        name: "YouTube Posts",
+        pattern: /https?:\/\/(?:www\.)?youtube\.com\/post\/([\w-]+)(?:\?.*)?/,
+        description: "去除Youtube Posts的跟踪参数",
+        shouldTransform: (url) => url.includes('?'), // 只有有参数时才转换
+        transform: CommonTransforms.removeAllParams
+    },
+
     // 哔哩哔哩 - 需要保留时间戳参数，去除其他跟踪参数
     {
         name: "哔哩哔哩视频",
@@ -1490,13 +1498,14 @@ async function processLinkInfo(linkInfo: LinkInfo): Promise<LinkInfo> {
 async function processLinksInMessage(messageText: string): Promise<{
     text: string,
     foundLinks: boolean,
-    processedCount: number
+    processedCount: number,
+    hasChanges: boolean  // 添加一个明确表示文本是否有变化的标志
 }> {
     let processedCount = 0;
 
     // 快速检查：消息中是否可能包含URL
     if (!UrlUtils.hasUrlCharacteristics(messageText)) {
-        return { text: messageText, foundLinks: false, processedCount: 0 };
+        return { text: messageText, foundLinks: false, processedCount: 0, hasChanges: false };
     }
 
     // 存储所有发现的链接
@@ -1583,7 +1592,7 @@ async function processLinksInMessage(messageText: string): Promise<{
 
     // 如果没有找到任何链接，直接返回原始文本
     if (foundLinks.length === 0) {
-        return { text: messageText, foundLinks: false, processedCount: 0 };
+        return { text: messageText, foundLinks: false, processedCount: 0, hasChanges: false };
     }
 
     // 批量处理URL - 使用Promise.all并限制并发请求数
@@ -1616,7 +1625,7 @@ async function processLinksInMessage(messageText: string): Promise<{
 
     // 如果没有处理任何链接，直接返回原始文本
     if (processedCount === 0) {
-        return { text: messageText, foundLinks: true, processedCount: 0 };
+        return { text: messageText, foundLinks: true, processedCount: 0, hasChanges: false };
     }
 
     // 按照位置从后往前排序，以便从后向前替换不影响前面的位置
@@ -1648,14 +1657,19 @@ async function processLinksInMessage(messageText: string): Promise<{
 
     // 组合成最终文本
     const result = parts.join('');
+    const finalText = result.trim();
+    
+    // 明确比较处理后的文本与原文本是否相同
+    const hasChanges = result.trim() !== messageText.trim();
 
     // 在结果返回前添加日志
-    plugin.logger?.debug(`处理完成, 共处理了 ${processedCount} 个链接`);
+    plugin.logger?.debug(`处理完成, 共处理了 ${processedCount} 个链接, 文本${hasChanges ? '有' : '无'}变化`);
 
     return {
-        text: result.trim(),
+        text: finalText,
         foundLinks: true,
-        processedCount
+        processedCount,
+        hasChanges
     };
 }
 
@@ -1711,10 +1725,12 @@ const plugin: BotPlugin = {
                 }
 
                 try {
-                    const { text: processedText, foundLinks, processedCount } = await processLinksInMessage(messageText);
+                    const { text: processedText, foundLinks, processedCount, hasChanges } = await processLinksInMessage(messageText);
 
-                    // 只有在找到链接并且实际处理了链接（有变化）时才替换消息
-                    if (foundLinks && processedCount > 0 && processedText !== messageText) {
+                    // 简化条件判断，只检查处理数量和是否有变化
+                    if (processedCount > 0 && hasChanges) {
+                        plugin.logger?.debug(`处理链接有效，将替换消息`);
+                        
                         const content = html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName}</a> 分享内容（隐私保护，已移除跟踪参数）:\n${processedText}`;
 
                         // 添加删除按钮
@@ -1737,6 +1753,10 @@ const plugin: BotPlugin = {
                         } catch (sendError) {
                             plugin.logger?.error(`发送替换消息失败: ${sendError}`);
                         }
+                    } else if (foundLinks) {
+                        // 发现链接但不需要替换消息的情况
+                        const reason = processedCount === 0 ? "未处理任何链接" : "文本无变化";
+                        plugin.logger?.debug(`发现链接但不替换消息: ${reason}`);
                     }
                 } catch (error) {
                     plugin.logger?.error(`处理消息错误: ${error}`);
