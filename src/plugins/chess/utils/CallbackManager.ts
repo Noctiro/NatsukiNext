@@ -13,7 +13,7 @@ export const AIDifficultyCB = new CallbackDataBuilder<{
 // 创建游戏控制回调构建器 (认输、和棋请求等)
 export const GameControlCB = new CallbackDataBuilder<{
     gameId: string;
-    action: string;   // 'resign', 'draw', 'review', 'help', 'commands', 'status', 'accept', 'decline'
+    action: string;   // 'resign', 'draw', 'review', 'help', 'commands', 'status', 'accept', 'decline', 'restart', 'start_ai_game', 'start_player_game'
     userId: number;   // 仅当操作需要用户身份验证时才检查此字段
 }>('chess', 'control', ['gameId', 'action', 'userId']);
 

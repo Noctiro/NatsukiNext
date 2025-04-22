@@ -162,7 +162,9 @@ async function showHelp(ctx: CommandContext) {
 • 玩家对战: /chess challenge @用户名 - 挑战其他玩家 例如: /chess challenge @user<br>
 ( 接受挑战: /chess accept - 接受挑战 )<br>
 <br>
-若12小时后没有进行其他操作则自动结束游戏<br>
+<b>重要说明:</b><br>
+• 游戏结束后可以点击"开始新游戏"按钮，然后选择进行AI对战或玩家对战<br>
+• 超时机制: 若12小时内没有任何操作，游戏将自动结束并判定当前回合方超时负<br>
 `);
 }
 
@@ -398,7 +400,19 @@ async function moveCommand(ctx: CommandContext) {
 
         if (game.status === GameStatus.FINISHED) {
             const winner = game.winner === PieceColor.RED ? '红方' : '黑方';
-            await renderAndSendBoard(game, ctx, `游戏结束！${winner}获胜！`);
+
+            // 创建重新开始游戏按钮
+            const keyboard = BotKeyboard.inline([
+                [
+                    BotKeyboard.callback('🔄 开始新游戏', GameControlCB.build({
+                        gameId: '0', // 新游戏不需要关联旧游戏ID
+                        action: 'restart',
+                        userId: userId
+                    }))
+                ]
+            ]);
+
+            await renderAndSendBoard(game, ctx, `游戏结束！${winner}获胜！`, keyboard);
 
             // 确保游戏资源被释放
             const gameId = game.id;
@@ -422,7 +436,7 @@ async function moveCommand(ctx: CommandContext) {
 /**
  * 渲染并发送棋盘
  */
-async function renderAndSendBoard(game: Game, ctx: CommandContext | CallbackEventContext, caption: string) {
+async function renderAndSendBoard(game: Game, ctx: CommandContext | CallbackEventContext, caption: string, replyMarkup?: any) {
     try {
         const boardBuffer = await BoardRenderer.drawBoardImage(game);
 
@@ -434,7 +448,7 @@ async function renderAndSendBoard(game: Game, ctx: CommandContext | CallbackEven
                     file: boardBuffer,
                     fileName: `chess_${game.id}.png`
                 },
-                { caption: html(caption) }
+                { caption: html(caption), replyMarkup }
             );
         } else {
             // 回调上下文 - 始终发送新消息而不是编辑
@@ -442,7 +456,7 @@ async function renderAndSendBoard(game: Game, ctx: CommandContext | CallbackEven
                 type: 'photo',
                 file: boardBuffer,
                 fileName: `chess_${game.id}.png`
-            }, { caption: html(caption) });
+            }, { caption: html(caption), replyMarkup });
         }
     } catch (error) {
         // 图片渲染失败，尝试使用HTML作为回退方案
@@ -451,19 +465,19 @@ async function renderAndSendBoard(game: Game, ctx: CommandContext | CallbackEven
             const fullContent = boardHtml + '<br>' + caption;
 
             if (ctx.type === 'command') {
-                await ctx.message.replyText(html(fullContent));
+                await ctx.message.replyText(html(fullContent), { replyMarkup });
             } else {
                 // 回调上下文 - 始终发送新消息而不是编辑
-                await ctx.client.sendText(ctx.chatId, html(fullContent));
+                await ctx.client.sendText(ctx.chatId, html(fullContent), { replyMarkup });
             }
         } catch (fallbackError) {
             // 即使HTML渲染也失败，发送简单的错误消息
             const errorMessage = '无法显示棋盘，请使用 /chess status 重试';
 
             if (ctx.type === 'command') {
-                await ctx.message.replyText(errorMessage).catch(() => { });
+                await ctx.message.replyText(errorMessage, { replyMarkup }).catch(() => { });
             } else {
-                await ctx.client.sendText(ctx.chatId, errorMessage).catch(() => { });
+                await ctx.client.sendText(ctx.chatId, errorMessage, { replyMarkup }).catch(() => { });
             }
         }
     }
@@ -494,25 +508,46 @@ async function updateGameBoard(game: Game, ctx: CommandContext) {
  * 处理AI走棋
  */
 async function processAIMove(game: Game, ctx: CommandContext) {
-    const thinkingMessage = await ctx.message.replyText('AI 正在思考中...');
+    const aiDifficulty = (game as any).aiDifficulty || AI_DIFFICULTY_LEVELS.normal;
+    const difficultyText = getDifficultyText(aiDifficulty);
+
+    const thinkingMessage = await ctx.message.replyText(`${difficultyText}级AI正在思考中...`);
     let thinkingMessageId: number | undefined = thinkingMessage?.id;
 
     try {
-        const aiDifficulty = (game as any).aiDifficulty || AI_DIFFICULTY_LEVELS.normal;
         const useCloudLibrary = aiDifficulty === AI_DIFFICULTY_LEVELS.hard;
         // 创建AI实例时传入logger
         const chessAI = new ChessAI(aiDifficulty, useCloudLibrary, 60000, plugin.logger);
         const aiMove = await chessAI.getMove(game);
 
+        // 确保无论如何都尝试删除思考中消息
         if (thinkingMessageId) {
-            ctx.client.deleteMessagesById(ctx.chatId, [thinkingMessageId]);
-            thinkingMessageId = undefined;
+            try {
+                await ctx.client.deleteMessagesById(ctx.chatId, [thinkingMessageId]);
+            } catch (deleteError) {
+                plugin.logger?.error('删除AI思考消息失败:', deleteError);
+            } finally {
+                thinkingMessageId = undefined;
+            }
         }
 
         if (!aiMove) {
             game.status = GameStatus.FINISHED;
             game.winner = PieceColor.RED;
-            await renderAndSendBoard(game, ctx, `AI无法行动，您获胜了！`);
+
+            // 创建重新开始按钮
+            const keyboard = BotKeyboard.inline([
+                [
+                    BotKeyboard.callback('🔄 开始新游戏', GameControlCB.build({
+                        gameId: '0',
+                        action: 'restart',
+                        userId: game.redPlayer
+                    }))
+                ]
+            ]);
+
+            await renderAndSendBoard(game, ctx, `AI无法行动，您获胜了！`, keyboard);
+
             // 结束游戏并释放资源
             if (gameManager.endGame(game.id)) {
                 plugin.logger?.info(`游戏 ${game.id} 因AI无法行动而结束`);
@@ -525,7 +560,20 @@ async function processAIMove(game: Game, ctx: CommandContext) {
             plugin.logger?.warn(`AI走法无效: ${moveResult.message}`);
             game.status = GameStatus.FINISHED;
             game.winner = PieceColor.RED;
-            await renderAndSendBoard(game, ctx, `AI走法无效，您获胜了！`);
+
+            // 创建重新开始按钮
+            const keyboard = BotKeyboard.inline([
+                [
+                    BotKeyboard.callback('🔄 开始新游戏', GameControlCB.build({
+                        gameId: '0',
+                        action: 'restart',
+                        userId: game.redPlayer
+                    }))
+                ]
+            ]);
+
+            await renderAndSendBoard(game, ctx, `AI走法无效，您获胜了！`, keyboard);
+
             // 结束游戏并释放资源
             if (gameManager.endGame(game.id)) {
                 plugin.logger?.info(`游戏 ${game.id} 因AI走法无效而结束`);
@@ -538,32 +586,46 @@ async function processAIMove(game: Game, ctx: CommandContext) {
 
         let statusMessage: string;
         let shouldEndGame = false;
+        let keyboard;
 
         if (game.status === GameStatus.FINISHED) {
-            statusMessage = 'AI获胜了！';
+            statusMessage = `${difficultyText}级AI获胜了！`;
             shouldEndGame = true;
+
+            // 游戏结束时添加重新开始按钮
+            keyboard = BotKeyboard.inline([
+                [
+                    BotKeyboard.callback('🔄 开始新游戏', GameControlCB.build({
+                        gameId: '0',
+                        action: 'restart',
+                        userId: game.redPlayer
+                    }))
+                ]
+            ]);
         } else {
             statusMessage = '轮到您行动';
         }
 
         const caption = `第 ${Math.floor(game.history.length / 2) + 1} 回合 - ${statusMessage}${game.lastMove ? ` | AI走法：${game.lastMove}` : ''}`;
-        await renderAndSendBoard(game, ctx, caption);
+        await renderAndSendBoard(game, ctx, caption, keyboard);
 
         // 如果游戏结束，释放资源
         if (shouldEndGame && gameManager.endGame(game.id)) {
             plugin.logger?.info(`游戏 ${game.id} 已结束，AI获胜`);
         }
     } catch (error) {
+        // 确保删除思考中消息
         if (thinkingMessageId) {
             try {
                 await ctx.client.deleteMessagesById(ctx.chatId, [thinkingMessageId]);
             } catch (deleteError) {
-                plugin.logger?.error('Failed to delete thinking message:', deleteError);
+                plugin.logger?.error('删除AI思考消息失败:', deleteError);
             }
         }
         // 记录错误
         plugin.logger?.error('AI走棋处理错误:', error);
-        throw error;
+        // 给用户友好提示
+        await ctx.message.replyText('AI处理走棋时出错，请使用 /chess status 查看游戏状态，或者 /chess resign 结束当前游戏').catch(() => { });
     }
 }
 
@@ -607,8 +669,19 @@ async function resignGame(ctx: CommandContext) {
             : `<a href="tg://user?id=${game.blackPlayer}">黑方玩家</a>`;
     }
 
+    // 创建重新开始按钮
+    const keyboard = BotKeyboard.inline([
+        [
+            BotKeyboard.callback('🔄 开始新游戏', GameControlCB.build({
+                gameId: '0',
+                action: 'restart',
+                userId: userId
+            }))
+        ]
+    ]);
+
     // 先发送游戏结束消息
-    await renderAndSendBoard(game, ctx, `第 ${Math.floor(game.history.length / 2) + 1} 回合 - 游戏结束，${winner}获胜！`);
+    await renderAndSendBoard(game, ctx, `第 ${Math.floor(game.history.length / 2) + 1} 回合 - 游戏结束，${winner}获胜！`, keyboard);
 
     // 结束游戏，确保释放资源
     const gameId = game.id;
@@ -637,18 +710,33 @@ async function showGameStatus(ctx: CommandContext) {
 /**
  * 生成象棋菜单文本
  */
-function getChessMenuText(): string {
-    return `
+function getChessMenuText(hasActiveGame: boolean = false): string {
+    if (hasActiveGame) {
+        return `
+<b>🎮 中国象棋游戏</b><br>
+<br>
+欢迎来到中国象棋游戏！您当前已有一局进行中的游戏：<br>
+• 查看当前游戏 - 使用下方按钮查看游戏状态<br>
+• 认输当前游戏 - 如果您想结束当前游戏<br>
+• 挑战好友 - 完成当前游戏后可使用命令 /chess challenge @用户名<br>
+<br>
+输入 <code>/chess help</code> 查看完整命令列表<br>
+注意：若12小时内没有任何操作，游戏将自动结束<br>
+祝您游戏愉快！
+`;
+    } else {
+        return `
 <b>🎮 中国象棋游戏</b><br>
 <br>
 欢迎来到中国象棋游戏！您可以：<br>
 • 与AI对弈 - 选择下方难度按钮<br>
 • 挑战好友 - 使用命令 /chess challenge @用户名<br>
-• 查看当前游戏 - 如果您有进行中的游戏<br>
 <br>
 输入 <code>/chess help</code> 查看完整命令列表<br>
+注意：若12小时内没有任何操作，游戏将自动结束<br>
 祝您游戏愉快！
 `;
+    }
 }
 
 /**
@@ -678,7 +766,7 @@ function createChessMenuKeyboard(userId: number): any {
         ];
     }
 
-    // 创建AI对战难度选择按钮 - 不包含userId，任何人都可以点击
+    // 创建AI对战难度选择按钮 - 仅在用户没有活跃游戏时显示
     const aiDifficultyButtons = [
         BotKeyboard.callback('🤖 简单AI', AIDifficultyCB.build({
             difficulty: 'easy'
@@ -691,22 +779,34 @@ function createChessMenuKeyboard(userId: number): any {
         }))
     ];
 
-    return BotKeyboard.inline([
-        aiDifficultyButtons,
-        ...gameStatusButtons,
-        [
-            BotKeyboard.callback('ℹ️ 游戏规则', GameControlCB.build({
-                gameId: '0',
-                action: 'help',
-                userId: 0  // 设置为0，表示任何人都可以查看
-            })),
-            BotKeyboard.callback('📚 命令帮助', GameControlCB.build({
-                gameId: '0',
-                action: 'commands',
-                userId: 0  // 设置为0，表示任何人都可以查看
-            }))
-        ]
+    // 构建按钮数组
+    const buttons = [];
+
+    // 只有在没有活跃游戏时才添加AI难度选择按钮
+    if (!activeGame) {
+        buttons.push(aiDifficultyButtons);
+    }
+
+    // 添加游戏状态按钮（如果有）
+    if (gameStatusButtons.length > 0) {
+        buttons.push(...gameStatusButtons);
+    }
+
+    // 添加帮助按钮
+    buttons.push([
+        BotKeyboard.callback('ℹ️ 游戏规则', GameControlCB.build({
+            gameId: '0',
+            action: 'help',
+            userId: 0  // 设置为0，表示任何人都可以查看
+        })),
+        BotKeyboard.callback('📚 命令帮助', GameControlCB.build({
+            gameId: '0',
+            action: 'commands',
+            userId: 0  // 设置为0，表示任何人都可以查看
+        }))
     ]);
+
+    return BotKeyboard.inline(buttons);
 }
 
 /**
@@ -714,9 +814,10 @@ function createChessMenuKeyboard(userId: number): any {
  */
 async function showChessMenu(ctx: CommandContext) {
     const userId = ctx.message.sender.id;
+    const activeGame = gameManager.getPlayerActiveGame(userId);
     const keyboard = createChessMenuKeyboard(userId);
 
-    await ctx.message.replyText(html(getChessMenuText()), {
+    await ctx.message.replyText(html(getChessMenuText(!!activeGame)), {
         replyMarkup: keyboard
     });
 }
@@ -1200,6 +1301,126 @@ async function handleGameControlCallback(ctx: CallbackEventContext) {
 
                 await renderAndSendBoard(game, ctx, `第 ${Math.floor(game.history.length / 2) + 1} 回合 - 游戏结束，${winner}获胜！`);
                 gameManager.endGame(game.id);
+            } else if (action === 'restart') {
+                // 验证用户身份
+                if (ctx.query.user.id !== userId) {
+                    await ctx.query.answer({
+                        text: '只有原游戏的玩家可以开始新游戏',
+                        alert: true
+                    });
+                    return;
+                }
+
+                // 检查用户是否已有游戏
+                if (gameManager.getPlayerActiveGame(userId)) {
+                    plugin.logger?.warn(`用户${userId}已有活跃游戏，不能创建新游戏`);
+                    await ctx.query.answer({
+                        text: '您已经在进行一场游戏，请先完成当前游戏',
+                        alert: true
+                    });
+                    return;
+                }
+
+                // 告知用户将开始新游戏
+                await ctx.query.answer({
+                    text: '准备选择游戏类型'
+                });
+
+                // 显示游戏类型选择菜单
+                const keyboard = BotKeyboard.inline([
+                    [
+                        BotKeyboard.callback('🤖 与AI对战', GameControlCB.build({
+                            gameId: '0',
+                            action: 'start_ai_game',
+                            userId: userId
+                        })),
+                        BotKeyboard.callback('👥 与玩家对战', GameControlCB.build({
+                            gameId: '0',
+                            action: 'start_player_game',
+                            userId: userId
+                        }))
+                    ]
+                ]);
+
+                await ctx.client.sendText(ctx.chatId, '请选择游戏类型：', {
+                    replyMarkup: keyboard
+                });
+                return;
+            } else if (action === 'start_ai_game') {
+                // 验证用户身份
+                if (ctx.query.user.id !== userId) {
+                    await ctx.query.answer({
+                        text: '请使用自己的菜单进行操作',
+                        alert: true
+                    });
+                    return;
+                }
+
+                // 检查用户是否已有游戏
+                if (gameManager.getPlayerActiveGame(userId)) {
+                    await ctx.query.answer({
+                        text: '您已经在进行一场游戏，请先完成当前游戏',
+                        alert: true
+                    });
+                    return;
+                }
+
+                // 告知用户将开始AI对战
+                await ctx.query.answer({
+                    text: '准备开始AI对战'
+                });
+
+                // 显示AI难度选择界面
+                const keyboard = BotKeyboard.inline([
+                    [
+                        BotKeyboard.callback('🟢 简单', AIDifficultyCB.build({
+                            difficulty: 'easy'
+                        })),
+                        BotKeyboard.callback('🟡 普通', AIDifficultyCB.build({
+                            difficulty: 'normal'
+                        })),
+                        BotKeyboard.callback('🔴 困难', AIDifficultyCB.build({
+                            difficulty: 'hard'
+                        }))
+                    ]
+                ]);
+
+                await ctx.client.sendText(ctx.chatId, '请选择AI难度：', {
+                    replyMarkup: keyboard
+                });
+                return;
+            } else if (action === 'start_player_game') {
+                // 验证用户身份
+                if (ctx.query.user.id !== userId) {
+                    await ctx.query.answer({
+                        text: '请使用自己的菜单进行操作',
+                        alert: true
+                    });
+                    return;
+                }
+
+                // 检查用户是否已有游戏
+                if (gameManager.getPlayerActiveGame(userId)) {
+                    await ctx.query.answer({
+                        text: '您已经在进行一场游戏，请先完成当前游戏',
+                        alert: true
+                    });
+                    return;
+                }
+
+                // 告知用户如何发起挑战
+                await ctx.query.answer({
+                    text: '请使用命令发起挑战'
+                });
+
+                await ctx.client.sendText(ctx.chatId, html`
+<b>向玩家发起挑战</b><br>
+请使用命令 <code>/chess challenge @用户名</code> 来向指定用户发起挑战<br>
+例如: <code>/chess challenge @friend</code><br>
+<br>
+您也可以直接使用用户ID: <code>/chess challenge 123456789</code>
+`);
+                return;
             } else {
                 await ctx.query.answer({
                     text: `未知操作: ${action}`,
@@ -1233,19 +1454,20 @@ async function handleMenuCallback(ctx: CallbackEventContext) {
 
         // 重建主菜单并编辑消息
         const userId = ctx.query.user.id;
+        const activeGame = gameManager.getPlayerActiveGame(userId);
         const keyboard = createChessMenuKeyboard(userId);
 
         try {
             await ctx.client.editMessage({
                 chatId: ctx.chatId,
                 message: ctx.query.messageId,
-                text: html(getChessMenuText()),
+                text: html(getChessMenuText(!!activeGame)),
                 replyMarkup: keyboard
             });
         } catch (error) {
             plugin.logger?.error(`编辑消息返回主菜单失败: ${error}`);
             // 如果编辑失败，尝试发送新消息
-            await ctx.client.sendText(ctx.chatId, html(getChessMenuText()), { replyMarkup: keyboard });
+            await ctx.client.sendText(ctx.chatId, html(getChessMenuText(!!activeGame)), { replyMarkup: keyboard });
         }
     } catch (error) {
         plugin.logger?.error(`处理菜单回调时出错: ${error}`);
