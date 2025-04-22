@@ -161,6 +161,8 @@ async function showHelp(ctx: CommandContext) {
 • AI人机对局: /chess ai [难度] - 与AI对战（难度可选：easy, normal, hard） 例如: /chess ai hard<br>
 • 玩家对战: /chess challenge @用户名 - 挑战其他玩家 例如: /chess challenge @user<br>
 ( 接受挑战: /chess accept - 接受挑战 )<br>
+<br>
+若12小时后没有进行其他操作则自动结束游戏<br>
 `);
 }
 
@@ -174,19 +176,36 @@ async function challengePlayer(ctx: CommandContext) {
         return;
     }
 
+    // 检查发起挑战者自己是否已经在一个游戏中
+    const senderId = ctx.message.sender.id;
+    if (gameManager.getPlayerActiveGame(senderId)) {
+        await ctx.message.replyText('您已经在进行一场游戏了，请先完成当前游戏');
+        return;
+    }
+
     let targetUserId: number | null = null;
+    let targetDisplayName: string = '玩家';
 
     if (targetUsername.startsWith('@')) {
         try {
             const username = targetUsername.substring(1);
             const user = await ctx.client.getUser(username);
             targetUserId = user.id;
+            targetDisplayName = user.firstName || '玩家';
         } catch (error) {
             await ctx.message.replyText(`找不到用户 ${targetUsername}`);
             return;
         }
     } else if (/^\d+$/.test(targetUsername)) {
         targetUserId = parseInt(targetUsername);
+        try {
+            // 使用更通用的getUser方法，传入用户ID
+            const user = await ctx.client.getUser(targetUserId.toString());
+            targetDisplayName = user.firstName || '玩家';
+        } catch (error) {
+            // 如果无法获取用户信息，保持默认名称
+            plugin.logger?.warn(`无法获取用户 ${targetUserId} 的信息:`, error);
+        }
     } else {
         await ctx.message.replyText('请使用有效的@用户名或用户ID');
         return;
@@ -198,14 +217,41 @@ async function challengePlayer(ctx: CommandContext) {
     }
 
     if (targetUserId !== null) {
+        // 检查对方是否已经在一个游戏中
         if (gameManager.getPlayerActiveGame(targetUserId)) {
             await ctx.message.replyText('对方已经在进行一场游戏');
             return;
         }
 
-        gameManager.addInvite(targetUserId, ctx.message.sender.id);
+        // 检查两名玩家是否已经在对战
+        if (gameManager.arePlayersInGame(senderId, targetUserId)) {
+            await ctx.message.replyText('您已经在与该玩家对战中');
+            return;
+        }
+
+        // 创建邀请并获取ID
+        const inviteId = gameManager.addInvite(targetUserId, ctx.message.sender.id);
+
+        // 创建接受/拒绝按钮
+        const keyboard = BotKeyboard.inline([
+            [
+                BotKeyboard.callback('✅ 接受挑战', GameControlCB.build({
+                    gameId: inviteId,
+                    action: 'accept',
+                    userId: targetUserId
+                })),
+                BotKeyboard.callback('❌ 拒绝挑战', GameControlCB.build({
+                    gameId: inviteId,
+                    action: 'decline',
+                    userId: targetUserId
+                }))
+            ]
+        ]);
+
+        // 发送带有按钮的邀请消息
         await ctx.message.replyText(
-            html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName || '玩家'}</a> 邀请您下象棋！\n使用 /chess accept 接受挑战，或 /chess decline 拒绝挑战。`
+            html`<a href="tg://user?id=${ctx.message.sender.id}">${ctx.message.sender.displayName || '玩家'}</a> 邀请 <a href="tg://user?id=${targetUserId}">${targetDisplayName}</a> 下象棋！\n您可以点击下方按钮接受或拒绝，也可以使用命令 /chess accept 接受挑战，或 /chess decline 拒绝挑战。`,
+            { replyMarkup: keyboard }
         );
     }
 }
@@ -239,6 +285,11 @@ async function startAiGame(ctx: CommandContext) {
     }
 
     const game = gameManager.createGame(userId, 'AI', ctx.message.chat.id);
+    if (!game) {
+        await ctx.message.replyText('创建游戏失败，您可能已经在另一个游戏中');
+        return;
+    }
+
     (game as any).aiDifficulty = aiDifficulty;
     plugin.logger?.info(`成功创建AI游戏，ID: ${game.id}，难度: ${getDifficultyText(aiDifficulty)}(${aiDifficulty})`);
 
@@ -251,6 +302,12 @@ async function startAiGame(ctx: CommandContext) {
 async function acceptChallenge(ctx: CommandContext) {
     try {
         const targetUserId = ctx.message.sender.id;
+
+        // 检查接受挑战的玩家是否已经在一个游戏中
+        if (gameManager.getPlayerActiveGame(targetUserId)) {
+            await ctx.message.replyText('您已经在进行一场游戏了，请先完成当前游戏');
+            return;
+        }
 
         const invite = gameManager.getInvite(targetUserId);
 
@@ -265,7 +322,27 @@ async function acceptChallenge(ctx: CommandContext) {
             return;
         }
 
+        // 检查发起挑战的玩家是否已经在另一个游戏中
+        if (gameManager.getPlayerActiveGame(invite.inviter)) {
+            gameManager.removeInvite(targetUserId);
+            await ctx.message.replyText('发起挑战的玩家已经在另一个游戏中，无法接受挑战');
+            return;
+        }
+
+        // 检查两名玩家是否已经在对战
+        if (gameManager.arePlayersInGame(targetUserId, invite.inviter)) {
+            gameManager.removeInvite(targetUserId);
+            await ctx.message.replyText('您已经在与该玩家对战中');
+            return;
+        }
+
         const game = gameManager.createGame(invite.inviter, targetUserId, ctx.message.chat.id);
+        if (!game) {
+            gameManager.removeInvite(targetUserId);
+            await ctx.message.replyText('创建游戏失败，可能有玩家已经在其他游戏中');
+            return;
+        }
+
         gameManager.removeInvite(targetUserId);
 
         await renderAndSendBoard(game, ctx, `第 1 回合 - 游戏开始！红方先行，请输入您的走法，例如：/m 炮二平五`);
@@ -322,6 +399,12 @@ async function moveCommand(ctx: CommandContext) {
         if (game.status === GameStatus.FINISHED) {
             const winner = game.winner === PieceColor.RED ? '红方' : '黑方';
             await renderAndSendBoard(game, ctx, `游戏结束！${winner}获胜！`);
+
+            // 确保游戏资源被释放
+            const gameId = game.id;
+            if (gameManager.endGame(gameId)) {
+                plugin.logger?.info(`游戏 ${gameId} 已结束，${winner}获胜`);
+            }
             return;
         }
 
@@ -331,6 +414,7 @@ async function moveCommand(ctx: CommandContext) {
             await processAIMove(game, ctx);
         }
     } catch (error) {
+        plugin.logger?.error('处理走棋时出错:', error);
         await ctx.message.replyText('处理走棋时出错，请稍后再试').catch(() => { });
     }
 }
@@ -429,20 +513,46 @@ async function processAIMove(game: Game, ctx: CommandContext) {
             game.status = GameStatus.FINISHED;
             game.winner = PieceColor.RED;
             await renderAndSendBoard(game, ctx, `AI无法行动，您获胜了！`);
+            // 结束游戏并释放资源
+            if (gameManager.endGame(game.id)) {
+                plugin.logger?.info(`游戏 ${game.id} 因AI无法行动而结束`);
+            }
             return;
         }
 
-        game.move(aiMove.from, aiMove.to);
+        const moveResult = game.move(aiMove.from, aiMove.to);
+        if (!moveResult.success) {
+            plugin.logger?.warn(`AI走法无效: ${moveResult.message}`);
+            game.status = GameStatus.FINISHED;
+            game.winner = PieceColor.RED;
+            await renderAndSendBoard(game, ctx, `AI走法无效，您获胜了！`);
+            // 结束游戏并释放资源
+            if (gameManager.endGame(game.id)) {
+                plugin.logger?.info(`游戏 ${game.id} 因AI走法无效而结束`);
+            }
+            return;
+        }
 
         // 更新AI移动后的最后活动时间
         game.lastActiveTime = Date.now();
 
-        const statusMessage = game.status === GameStatus.FINISHED
-            ? 'AI获胜了！'
-            : '轮到您行动';
+        let statusMessage: string;
+        let shouldEndGame = false;
+
+        if (game.status === GameStatus.FINISHED) {
+            statusMessage = 'AI获胜了！';
+            shouldEndGame = true;
+        } else {
+            statusMessage = '轮到您行动';
+        }
 
         const caption = `第 ${Math.floor(game.history.length / 2) + 1} 回合 - ${statusMessage}${game.lastMove ? ` | AI走法：${game.lastMove}` : ''}`;
         await renderAndSendBoard(game, ctx, caption);
+
+        // 如果游戏结束，释放资源
+        if (shouldEndGame && gameManager.endGame(game.id)) {
+            plugin.logger?.info(`游戏 ${game.id} 已结束，AI获胜`);
+        }
     } catch (error) {
         if (thinkingMessageId) {
             try {
@@ -451,6 +561,8 @@ async function processAIMove(game: Game, ctx: CommandContext) {
                 plugin.logger?.error('Failed to delete thinking message:', deleteError);
             }
         }
+        // 记录错误
+        plugin.logger?.error('AI走棋处理错误:', error);
         throw error;
     }
 }
@@ -495,8 +607,16 @@ async function resignGame(ctx: CommandContext) {
             : `<a href="tg://user?id=${game.blackPlayer}">黑方玩家</a>`;
     }
 
+    // 先发送游戏结束消息
     await renderAndSendBoard(game, ctx, `第 ${Math.floor(game.history.length / 2) + 1} 回合 - 游戏结束，${winner}获胜！`);
-    gameManager.endGame(game.id);
+
+    // 结束游戏，确保释放资源
+    const gameId = game.id;
+    if (!gameManager.endGame(gameId)) {
+        plugin.logger?.warn(`无法结束游戏 ${gameId}，可能已经被删除`);
+    } else {
+        plugin.logger?.info(`游戏 ${gameId} 已通过认输结束`);
+    }
 }
 
 /**
@@ -692,6 +812,15 @@ async function handleAIDifficultyCallback(ctx: CallbackEventContext) {
 
         // 创建新游戏 - 使用当前用户ID
         const game = gameManager.createGame(currentUserId, 'AI', ctx.chatId);
+        if (!game) {
+            plugin.logger?.warn(`用户${currentUserId}创建游戏失败，可能已经在另一个游戏中`);
+            await ctx.query.answer({
+                text: '您已经在进行一场游戏，请先完成当前游戏',
+                alert: true
+            });
+            return;
+        }
+
         (game as any).aiDifficulty = aiDifficulty;
 
         plugin.logger?.info(`用户${currentUserId}创建了${getDifficultyText(aiDifficulty)}难度的AI游戏${game.id}`);
@@ -743,6 +872,135 @@ async function handleGameControlCallback(ctx: CallbackEventContext) {
                 text: '系统错误：缺少操作类型',
                 alert: true
             }).catch(() => { });
+            return;
+        }
+
+        // 处理接受挑战按钮
+        if (action === 'accept') {
+            // 检查用户ID是否匹配
+            if (ctx.query.user.id !== userId) {
+                await ctx.query.answer({
+                    text: '这不是发给您的邀请',
+                    alert: true
+                });
+                return;
+            }
+
+            // 检查接受挑战的玩家是否已经在一个游戏中
+            if (gameManager.getPlayerActiveGame(userId)) {
+                await ctx.query.answer({
+                    text: '您已经在进行一场游戏了，请先完成当前游戏',
+                    alert: true
+                });
+                return;
+            }
+
+            const invite = gameManager.getInvite(userId);
+            if (!invite) {
+                await ctx.query.answer({
+                    text: '找不到邀请，可能已过期',
+                    alert: true
+                });
+                return;
+            }
+
+            // 检查发起挑战的玩家是否已经在另一个游戏中
+            if (gameManager.getPlayerActiveGame(invite.inviter)) {
+                gameManager.removeInvite(userId);
+                await ctx.query.answer({
+                    text: '发起挑战的玩家已经在另一个游戏中',
+                    alert: true
+                });
+
+                // 尝试更新邀请消息
+                try {
+                    // 获取邀请者的信息
+                    const inviter = await ctx.client.getUser(invite.inviter.toString());
+                    const inviterName = inviter?.firstName || '邀请者';
+
+                    await ctx.client.editMessage({
+                        chatId: ctx.chatId,
+                        message: ctx.query.messageId,
+                        text: html`<a href="tg://user?id=${userId}">${ctx.query.user.firstName || '玩家'}</a> 已接受 <a href="tg://user?id=${invite.inviter}">${inviterName}</a> 的挑战，游戏开始！`
+                    });
+                } catch (error) {
+                    plugin.logger?.error('更新邀请消息失败:', error);
+                }
+                return;
+            }
+
+            // 检查两名玩家是否已经在对战
+            if (gameManager.arePlayersInGame(userId, invite.inviter)) {
+                gameManager.removeInvite(userId);
+                await ctx.query.answer({
+                    text: '您已经在与该玩家对战中',
+                    alert: true
+                });
+                return;
+            }
+
+            // 创建游戏
+            const game = gameManager.createGame(invite.inviter, userId, ctx.chatId);
+            if (!game) {
+                gameManager.removeInvite(userId);
+                await ctx.query.answer({
+                    text: '创建游戏失败，可能有玩家已经在其他游戏中',
+                    alert: true
+                });
+                return;
+            }
+
+            // 移除邀请
+            gameManager.removeInvite(userId);
+
+            // 告知用户成功接受挑战
+            await ctx.query.answer({
+                text: '您已接受挑战，游戏开始！'
+            });
+
+            // 发送游戏开始消息和棋盘
+            await renderAndSendBoard(game, ctx, `第 1 回合 - 游戏开始！红方先行，请输入您的走法，例如：/m 炮二平五`);
+            return;
+        }
+
+        // 处理拒绝挑战按钮
+        if (action === 'decline') {
+            // 检查用户ID是否匹配
+            if (ctx.query.user.id !== userId) {
+                await ctx.query.answer({
+                    text: '这不是发给您的邀请',
+                    alert: true
+                });
+                return;
+            }
+
+            const invite = gameManager.getInvite(userId);
+            if (!invite) {
+                await ctx.query.answer({
+                    text: '找不到邀请，可能已过期',
+                    alert: true
+                });
+                return;
+            }
+
+            // 移除邀请
+            gameManager.removeInvite(userId);
+
+            // 告知用户已拒绝挑战
+            await ctx.query.answer({
+                text: '您已拒绝挑战'
+            });
+
+            // 更新邀请消息
+            try {
+                await ctx.client.editMessage({
+                    chatId: ctx.chatId,
+                    message: ctx.query.messageId,
+                    text: html`<a href="tg://user?id=${userId}">${ctx.query.user.firstName || '玩家'}</a> 已拒绝 <a href="tg://user?id=${invite.inviter}">对手</a> 的挑战。`
+                });
+            } catch (error) {
+                plugin.logger?.error('更新邀请消息失败:', error);
+            }
             return;
         }
 

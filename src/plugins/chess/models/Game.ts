@@ -30,7 +30,8 @@ export class Game implements IGame {
      * 创建新游戏
      */
     constructor(redPlayer: number, blackPlayer: number | 'AI', chatId: number) {
-        this.id = `game_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        // 使用更安全的方式生成ID，添加更多随机性和唯一性
+        this.id = `game_${Date.now()}_${Math.floor(Math.random() * 1000000)}_${redPlayer}`;
         this.redPlayer = redPlayer;
         this.blackPlayer = blackPlayer;
         this.status = GameStatus.PLAYING;
