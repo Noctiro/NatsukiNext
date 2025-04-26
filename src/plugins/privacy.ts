@@ -260,7 +260,7 @@ const CommonTransforms = {
 
     /**
      * 转换路径和域名为标准格式
-     * 例如将m.example.com转换为www.example.com
+     * 例如将www.example.com转换为https://www.example.com
      */
     standardizeDomain: (targetDomain: string) => {
         return (url: string, _match: RegExpMatchArray | null): string => {

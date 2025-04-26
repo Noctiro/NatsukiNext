@@ -549,13 +549,10 @@ const plugin: BotPlugin = {
                 let targetName = ctx.message.sender.displayName;
 
                 // 如果是回复消息，获取被回复用户的名称
-                if (ctx.message.replyToMessage && ctx.message.replyToMessage.sender) {
-                    const replyMsg = ctx.message.replyToMessage;
-                    if (replyMsg.sender) {
-                        // 使用类型安全的方式检查sender类型并获取ID
-                        if ('id' in replyMsg.sender) {
-                            targetUserId = replyMsg.sender.id;
-                        }
+                if (ctx.message.replyToMessage) {
+                    const replyMsg = await ctx.client.getReplyTo(ctx.message);
+                    if (replyMsg?.sender) {
+                        targetUserId = replyMsg.sender.id;
                         targetName = replyMsg.sender.displayName;
                     }
                 }

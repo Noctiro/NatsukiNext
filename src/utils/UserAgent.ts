@@ -7,8 +7,8 @@
 type BrowserType = 'chrome' | 'firefox' | 'safari' | 'edge' | 'random';
 
 // 预定义常量以提高性能
-const CHROME_VERSIONS = Array.from({ length: 31 }, (_, i) => 90 + i); // 90-120
-const FIREFOX_VERSIONS = Array.from({ length: 31 }, (_, i) => 90 + i); // 90-120
+const CHROME_VERSIONS = Array.from({ length: 46 }, (_, i) => 90 + i); // 90-135
+const FIREFOX_VERSIONS = Array.from({ length: 48 }, (_, i) => 90 + i); // 90-137
 const SAFARI_MAJOR_VERSIONS = Array.from({ length: 6 }, (_, i) => 12 + i); // 12-17
 const SAFARI_MINOR_VERSIONS = [0, 1, 2, 3];
 const SAFARI_SUB_VERSIONS = Array.from({ length: 15 }, (_, i) => i + 1); // 1-15

@@ -1588,13 +1588,13 @@ class AIPlugin {
         // 如果是回复其他消息，将回复内容加入问题
         if (ctx.message.replyToMessage?.id) {
             try {
-                const repliedMsg = await ctx.client.getMessages(ctx.chatId, [ctx.message.replyToMessage.id]);
+                const repliedMsg = await ctx.client.getReplyTo(ctx.message);
 
-                if (repliedMsg?.[0]?.text) {
+                if (repliedMsg?.text) {
                     if (question) {
-                        question = `${repliedMsg[0].text}\n\n${question}`;
+                        question = `${repliedMsg.text}\n\n${question}`;
                     } else {
-                        question = repliedMsg[0].text;
+                        question = repliedMsg.text;
                     }
                 }
             } catch (err) {

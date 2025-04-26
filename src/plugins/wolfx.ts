@@ -141,7 +141,7 @@ class EarthquakeService {
     private socket: WebSocket | null = null;
     private reconnectAttempts = 0;
     private webSocketPing: number = 0;
-    
+
     // 事件监听器引用，用于清理
     private listeners = {
         open: null as ((event: any) => void) | null,
@@ -172,7 +172,7 @@ class EarthquakeService {
     // 初始化
     constructor(client: TelegramClient) {
         this.client = client;
-        
+
         // 根据模式启动服务
         if (this.forceMode === 'HTTP' || !this.forceMode) {
             plugin.logger?.info("启动HTTP轮询服务");
@@ -218,7 +218,7 @@ class EarthquakeService {
             if (this.httpController) {
                 this.httpController.abort();
             }
-            
+
             this.httpController = new AbortController();
             const timeoutId = setTimeout(() => {
                 if (this.httpController) {
@@ -247,21 +247,14 @@ class EarthquakeService {
 
             // 获取新数据并处理
             const responseData = await response.json();
-            
+
             // 检查数据有效性
             if (!responseData || typeof responseData !== 'object') {
                 throw new Error('收到的数据格式无效');
             }
-            
-            this.data = responseData;
 
-            // 处理各种地震数据
-            this.processJmaEew();
-            this.processJmaEqlist();
-            this.processFjEew();
-            this.processScEew();
-            this.processCwaEew();
-            this.processCencEqlist();
+            this.data = responseData;
+            this.dispatchData(responseData);
         } catch (error) {
             // 仅在非中止错误时记录
             if (!(error instanceof DOMException && error.name === 'AbortError')) {
@@ -293,7 +286,7 @@ class EarthquakeService {
         try {
             // 清理之前的WebSocket连接
             this.closeAllWebSockets();
-            
+
             plugin.logger?.info(`尝试建立WebSocket连接(第${this.reconnectAttempts + 1}次)`);
             this.socket = new WebSocket(CONFIG.wsApi);
 
@@ -319,7 +312,7 @@ class EarthquakeService {
                         plugin.logger?.warn('收到空WebSocket消息');
                         return;
                     }
-                    
+
                     const message = JSON.parse(typeof rawData === 'string' ? rawData : rawData.toString());
 
                     // 处理心跳和延迟测量
@@ -344,12 +337,7 @@ class EarthquakeService {
                     this.lastDataTimestamp = Date.now();
 
                     // 处理各种地震数据
-                    this.processJmaEew();
-                    this.processJmaEqlist();
-                    this.processFjEew();
-                    this.processScEew();
-                    this.processCwaEew();
-                    this.processCencEqlist();
+                    this.dispatchData(message);
                 } catch (error) {
                     plugin.logger?.error(`WebSocket消息处理错误: ${error}`);
                 }
@@ -374,7 +362,7 @@ class EarthquakeService {
 
                 // 启动HTTP轮询作为备份
                 this.startHttpPolling();
-                
+
                 // 关闭错误的连接
                 this.closeAllWebSockets();
 
@@ -389,19 +377,19 @@ class EarthquakeService {
             if (this.listeners.message) this.socket.addEventListener('message', this.listeners.message);
             if (this.listeners.close) this.socket.addEventListener('close', this.listeners.close);
             if (this.listeners.error) this.socket.addEventListener('error', this.listeners.error);
-            
+
             // 设置连接超时
             setTimeout(() => {
                 if (this.socket && this.socket.readyState === WebSocketStates.CONNECTING) {
                     plugin.logger?.warn('WebSocket连接超时');
                     this.closeAllWebSockets();
-                    
+
                     if (this.forceMode !== 'HTTP') {
                         setTimeout(() => this.connectWebSocket(), CONFIG.reconnectDelay);
                     }
                 }
             }, CONFIG.httpTimeout); // 使用相同的超时时间
-            
+
         } catch (error) {
             plugin.logger?.error(`创建WebSocket连接失败: ${error}`);
 
@@ -441,7 +429,7 @@ class EarthquakeService {
             clearInterval(this.httpInterval);
             this.httpInterval = null;
         }
-        
+
         // 取消正在进行的请求
         if (this.httpController) {
             this.httpController.abort();
@@ -457,7 +445,7 @@ class EarthquakeService {
             plugin.logger?.warn('没有启用接收地震信息的聊天');
             return;
         }
-        
+
         // 确保坐标有效
         if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
             plugin.logger?.error(`无效的地理坐标: 纬度=${lat}, 经度=${lon}`);
@@ -467,8 +455,10 @@ class EarthquakeService {
         for (const chatId of enableChats) {
             try {
                 // 发送位置和消息
-                const locMsg = await this.sendLocation(chatId, lat, lon);
-                await this.sendMessage(chatId, text);
+                const [locMsg, txtMsg] = await Promise.all([
+                    this.sendLocation(chatId, lat, lon),
+                    this.sendMessage(chatId, text)
+                ]);
 
                 // 获取上一次发送的消息列表
                 if (!this.lastSendMsgsMap.has(chatId)) {
@@ -480,7 +470,7 @@ class EarthquakeService {
                 // 清理旧消息
                 if (lastSendMsgs.length > 0) {
                     const deletePromises: Promise<any>[] = [];
-                    
+
                     for (let i = lastSendMsgs.length - 1; i >= 0; i--) {
                         try {
                             const msg = await lastSendMsgs[i];
@@ -493,7 +483,7 @@ class EarthquakeService {
                             lastSendMsgs.splice(i, 1);
                         }
                     }
-                    
+
                     // 并行处理所有删除请求
                     await Promise.allSettled(deletePromises);
                 }
@@ -548,12 +538,12 @@ class EarthquakeService {
         if (!lastId || !currentId || currentId === lastId) {
             return false;
         }
-        
+
         // 如果提供了震度/烈度，检查是否满足条件
         if (intensity !== undefined) {
             // 处理不同格式的震度/烈度值
             let intensityValue: number;
-            
+
             if (typeof intensity === 'number') {
                 intensityValue = intensity;
             } else if (typeof intensity === 'string') {
@@ -572,7 +562,7 @@ class EarthquakeService {
                 // 无法解析的情况下不过滤
                 return true;
             }
-            
+
             // 检查震度/烈度是否小于阈值
             if (isNaN(intensityValue) || intensityValue < CONFIG.intensityThreshold) {
                 return false;
@@ -583,21 +573,30 @@ class EarthquakeService {
                 return false;
             }
         }
-        
+
         return true;
+    }
+
+    /**
+     * 分发函数
+     * @param data 源数据
+     */
+    private dispatchData(data: EarthquakeData) {
+        if (data.jma_eew) this.processJmaEew(data.jma_eew);
+        if (data.jma_eqlist) this.processJmaEqlist(data.jma_eqlist);
+        if (data.fj_eew) this.processFjEew(data.fj_eew);
+        if (data.sc_eew) this.processScEew(data.sc_eew);
+        if (data.cwa_eew) this.processCwaEew(data.cwa_eew);
+        if (data.cenc_eqlist) this.processCencEqlist(data.cenc_eqlist);
     }
 
     /**
      * 处理日本气象厅紧急地震速报
      */
-    private processJmaEew() {
-        // 检查数据是否有更新
-        if (!this.data.jma_eew || this.data.jma_eew.OriginalText === this.jmaOriginalText) {
+    private processJmaEew(data: EarthquakeData['jma_eew']) {
+        if (!data || data.OriginalText === this.jmaOriginalText) {
             return;
         }
-
-        const data = this.data.jma_eew;
-
         // 获取所需字段
         const flag = data.Title?.substring(7, 9) || "";
         const reportTime = data.AnnouncedTime;
@@ -644,16 +643,12 @@ ${originTime} 発生
     /**
      * 处理日本气象厅地震列表
      */
-    private processJmaEqlist() {
-        if (!this.data.jma_eqlist || this.data.jma_eqlist.md5 === this.jmaFinalMd5) {
+    private processJmaEqlist(data: EarthquakeData['jma_eqlist']) {
+        if (!data || data.md5 === this.jmaFinalMd5) {
             return;
         }
-
-        const data = this.data.jma_eqlist;
         const info = data.No1;
-
         if (!info) return;
-
         // 获取所需字段
         const timeStr = info.time;
         const region = info.location;
@@ -683,13 +678,10 @@ ${originTime} 発生
     /**
      * 处理福建地震预警
      */
-    private processFjEew() {
-        if (!this.data.fj_eew || this.data.fj_eew.EventID === this.fjEventID) {
+    private processFjEew(data: EarthquakeData['fj_eew']) {
+        if (!data || data.EventID === this.fjEventID) {
             return;
         }
-
-        const data = this.data.fj_eew;
-
         // 获取所需字段
         const reportTime = data.ReportTime;
         const num = data.ReportNum;
@@ -718,13 +710,10 @@ ${originTime} 发生
     /**
      * 处理四川地震预警
      */
-    private processScEew() {
-        if (!this.data.sc_eew || this.data.sc_eew.EventID === this.scEventID) {
+    private processScEew(data: EarthquakeData['sc_eew']) {
+        if (!data || data.EventID === this.scEventID) {
             return;
         }
-
-        const data = this.data.sc_eew;
-
         // 获取所需字段
         const reportTime = data.ReportTime;
         const num = data.ReportNum;
@@ -754,13 +743,10 @@ ${originTime} 发生
     /**
      * 处理台湾气象局预警
      */
-    private processCwaEew() {
-        if (!this.data.cwa_eew || this.data.cwa_eew.ReportTime === this.cwaTS) {
+    private processCwaEew(data: EarthquakeData['cwa_eew']) {
+        if (!data || data.ReportTime === this.cwaTS) {
             return;
         }
-
-        const data = this.data.cwa_eew;
-
         // 获取所需字段
         const reportTime = data.ReportTime;
         const num = data.ReportNum;
@@ -788,16 +774,12 @@ ${originTime} 發生
     /**
      * 处理中国地震台网
      */
-    private processCencEqlist() {
-        if (!this.data.cenc_eqlist || this.data.cenc_eqlist.md5 === this.cencMd5) {
+    private processCencEqlist(data: EarthquakeData['cenc_eqlist']) {
+        if (!data || data.md5 === this.cencMd5) {
             return;
         }
-
-        const data = this.data.cenc_eqlist;
         const info = data.No1;
-
         if (!info) return;
-
         // 获取所需字段
         const timeStr = info.time;
         const region = info.location;
@@ -894,7 +876,7 @@ ${originTime} 发生
 
         // 关闭WebSocket连接
         this.closeAllWebSockets();
-        
+
         // 清理消息映射
         this.lastSendMsgsMap.clear();
 
@@ -960,7 +942,7 @@ ${originTime} 发生
             if (this.listeners.message) this.socket.removeEventListener('message', this.listeners.message);
             if (this.listeners.close) this.socket.removeEventListener('close', this.listeners.close);
             if (this.listeners.error) this.socket.removeEventListener('error', this.listeners.error);
-            
+
             // 关闭连接
             if (this.socket.readyState === WebSocketStates.OPEN ||
                 this.socket.readyState === WebSocketStates.CONNECTING) {
@@ -971,10 +953,10 @@ ${originTime} 发生
                     plugin.logger?.error(`关闭WebSocket连接出错: ${error}`);
                 }
             }
-            
+
             this.socket = null;
         }
-        
+
         // 重置所有监听器
         this.listeners = {
             open: null,
@@ -1017,6 +999,7 @@ const plugin: BotPlugin = {
 
                 // 根据子命令执行相应操作
                 switch (subCommand) {
+                    case 'detail':
                     case 'status':
                     case 'stat':
                         // 查看详细状态
@@ -1065,4 +1048,4 @@ const plugin: BotPlugin = {
     ]
 };
 
-export default plugin; 
+export default plugin;
